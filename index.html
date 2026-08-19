@@ -482,7 +482,9 @@ function validateCard(card){
     }
     card.cols.forEach((c, i) => {
       const L = effLeft(c, card);
-      if ([L, c.width, c.depth].some(v => !(v > 0))) errs.push(`立柱 ${i+1} 三个数都要填正整数（毫米）`);
+      const needLeft = !c.corner;                 // 贴角时离左自动算，不要求手填
+      const nums = needLeft ? [c.left, c.width, c.depth] : [c.width, c.depth];
+      if (nums.some(v => !(v > 0))) errs.push(`立柱 ${i+1} ${needLeft ? "三个数" : "宽和深"}都要填正整数（毫米）`);
       else if (W > 0 && L + c.width > W) errs.push(`立柱 ${i+1} 离左距离 + 宽度超过了墙宽`);
     });
   }
