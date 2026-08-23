@@ -229,7 +229,7 @@ test("整屋展开图 · 后墙在地面下方、顶边贴地面底边", () => {
   check("后墙水平居中于地面", near(bk.x + bk.w / 2, f.x + f.w / 2, 1), `${bk.x + bk.w / 2} vs ${f.x + f.w / 2}`);
 });
 
-test("整屋展开图 · 左/右墙旋转 90°（包围盒宽=墙高、高=墙宽），分居地面左右并垂直居中", () => {
+test("整屋展开图 · 左/右墙旋转 90°（包围盒宽=墙高、高=墙宽），砖缝对齐地面边（不再垂直居中）", () => {
   const st = roomState();
   const scene = E.computeScene(st);
   const net = E.computeRoomNet(scene, st, { maxWidth: 1000, maxHeight: 1400, margin: 40 });
@@ -241,9 +241,22 @@ test("整屋展开图 · 左/右墙旋转 90°（包围盒宽=墙高、高=墙�
   check("左墙 rot=true（转了 90°）", lf.rot === true);
   check("左墙包围盒宽 ≈ 墙高×scale、高 ≈ 墙宽×scale", near(lf.w / lf.h, 2400 / 2000, 0.01), `比 ${lf.w / lf.h}`);
   check("左墙右边 x+w == 地面左边 x（紧贴左侧）", near(lf.x + lf.w, f.x, 1), `${lf.x + lf.w} vs ${f.x}`);
-  check("左墙垂直居中于地面", near(lf.y + lf.h / 2, f.y + f.h / 2, 1), `${lf.y + lf.h / 2} vs ${f.y + f.h / 2}`);
   check("右墙左边 x == 地面右边 x+w（紧贴右侧）", near(rt.x, f.x + f.w, 1), `${rt.x} vs ${f.x + f.w}`);
-  check("右墙垂直居中于地面", near(rt.y + rt.h / 2, f.y + f.h / 2, 1), `${rt.y + rt.h / 2} vs ${f.y + f.h / 2}`);
+
+  // 砖缝对齐检查：墙旋转后，墙 x 缝应落在地面竖边(y)缝上（消除原“垂直居中”造成的整体偏移）
+  const minOff = (wr) => {
+    const card = st.cards.find(c => c.id === wr);
+    const entry = scene.walls[wr];
+    const y_mm = (net.walls.find(w => w.id === wr).y - f.y) / net.scale; // Y(0)=f.y 反推 mm
+    const cw = card.w;                                                   // 包围盒高 = 墙长 c.w
+    const seamy = entry.x.segments.map(xs => y_mm + cw - xs.start);      // 复刻 renderRoomNet 变换
+    const floorSeams = scene.floor.y.segments.map(s => s.start);
+    return Math.min(...seamy.map(sy => Math.min(...floorSeams.map(fs2 => Math.abs(sy - fs2)))));
+  };
+  check("左墙砖缝与地面竖边缝对上（无整体偏移）", minOff(lf.id) < 3, `最小偏离 ${minOff(lf.id)} mm`);
+  check("右墙砖缝与地面竖边缝对上（无整体偏移）", minOff(rt.id) < 3, `最小偏离 ${minOff(rt.id)} mm`);
+  // 旧行为“垂直居中”会把墙整体挪开 ~38mm，确认已不再居中
+  check("左墙不再垂直居中于地面", !near(lf.y + lf.h / 2, f.y + f.h / 2, 1), `中线差 ${Math.abs((lf.y + lf.h / 2) - (f.y + f.h / 2))}`);
 });
 
 test("整屋展开图 · 墙未设 alignEdge 时按剩余边自动补位（不重叠）", () => {

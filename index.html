@@ -289,10 +289,10 @@ const Engine = (() => {
    * phaseOverride: 锁定网格起点（通缝对齐用），给了就不再做 1/3 调整
    * 返回 { segments:[{start,width,cut}], phase, cutLeft, cutRight, adjusted, narrow } */
   const layoutAxis = (L, t, g, mode, phaseOverride) => {
-    if (!(L > 0) || !(t > 0)) return { segments:[], phase:0, cutLeft:null, cutRight:null, adjusted:false, narrow:false };
+    if (!(L > 0) || !(t > 0)) return { segments:[], phase:0, step:0, cutLeft:null, cutRight:null, adjusted:false, narrow:false };
     const p = t + g;
     if (L < t) { // 墙比一块砖还窄：一整块裁砖覆盖
-      return { segments:[{ start:0, width:L, cut:true }], phase:0, cutLeft:L, cutRight:L, adjusted:false, narrow:true };
+      return { segments:[{ start:0, width:L, cut:true }], phase:0, step:p, cutLeft:L, cutRight:L, adjusted:false, narrow:true };
     }
     const build = (phase) => {
       const segs = [];
@@ -335,7 +335,7 @@ const Engine = (() => {
     }
     const segments = build(phase);
     const cuts = edgeCuts(segments);
-    return { segments, phase, cutLeft:cuts.left, cutRight:cuts.right, adjusted, narrow:false };
+    return { segments, phase, step:p, cutLeft:cuts.left, cutRight:cuts.right, adjusted, narrow:false };
   };
 
   /* 计算整个场景：先地面（定型），再各墙（竖直自由、水平可被通缝锁定） */
@@ -455,7 +455,10 @@ const Engine = (() => {
       const rot = (side === "left" || side === "right");
       const w = rot ? c.h : c.w;   // 包围盒宽（mm）
       const h = rot ? c.w : c.h;   // 包围盒高（mm）
-      wallsMM.push({ id:c.id, name:c.name, side, rot, w, h });
+      // 记录贴墙那根轴（沿地面边的轴）的相位/步距，用于左/右墙旋转后把砖缝对齐地面边缝
+      const xAxis = (e && e.x) ? e.x : null;
+      wallsMM.push({ id:c.id, name:c.name, side, rot, w, h,
+        xphase: xAxis ? xAxis.phase : null, xstep: xAxis ? xAxis.step : null });
     }
 
     // 3) 整体包围盒
@@ -481,8 +484,21 @@ const Engine = (() => {
       let x, y;
       if (w.side === "front") { x = (fw - w.w) / 2; y = -w.h; }
       else if (w.side === "back")  { x = (fw - w.w) / 2; y = fh; }
-      else if (w.side === "left")  { x = -w.w;            y = (fh - w.h) / 2; }
-      else /* right */             { x = fw;              y = (fh - w.h) / 2; }
+      else if (w.side === "left" || w.side === "right") {
+        x = (w.side === "left") ? -w.w : fw;
+        // 左/右墙：墙长(c.w = 包围盒高 w.h)沿地面那条竖边(fh)。renderRoomNet 把墙转 90°，
+        // 旋转让砖缝方向与地面反向，故墙x相位需“镜像”——墙缝落在地面边缝上的充要条件是
+        //   y ≡ (2·phaseX − w.h) (mod stepX)
+        // 再就近取整到“墙根尽量盖住地面整条边”的居中位置（避免墙整段悬空）。
+        if (w.xphase != null && w.xstep > 0) {
+          const y0 = ((2 * w.xphase - w.h) % w.xstep + w.xstep) % w.xstep; // 落在 [0, stepX)
+          const target = (0 + fh - w.h) / 2;                              // 居中目标
+          const k = Math.round((target - y0) / w.xstep);
+          y = y0 + k * w.xstep;
+        } else {
+          y = (fh - w.h) / 2; // 兜底：相位缺失仍居中，至少不串位
+        }
+      }
       return { id:w.id, name:w.name, side:w.side, rot:w.rot, x:X(x), y:Y(y), w:px(w.w), h:px(w.h) };
     });
 
