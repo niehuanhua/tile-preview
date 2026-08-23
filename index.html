@@ -155,6 +155,12 @@ button{cursor:pointer; touch-action:manipulation}
 
 /* 增加墙 / 地面 */
 .add-row{display:flex; gap:10px; margin-top:16px}
+.room-net{margin-top:18px; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px}
+.rn-title{font-size:16px; margin:0 0 4px}
+.rn-sub{margin:0 0 10px; font-size:13px; color:var(--ink-soft)}
+.rn-plot{display:flex; justify-content:center; position:relative; overflow-x:auto}
+.rn-plot canvas{display:block}
+.rn-plot .plot-empty{position:absolute; top:50%; left:0; right:0; transform:translateY(-50%); margin:0; font-size:13px; color:var(--ink-soft); text-align:center}
 .add-btn{flex:1; min-height:50px; border-radius:12px; border:1px solid var(--accent); background:var(--accent-soft); color:var(--accent); font-size:16px; font-weight:800}
 .app-foot{margin-top:18px; text-align:center; font-size:12px; color:var(--ink-soft)}
 </style>
@@ -234,6 +240,15 @@ button{cursor:pointer; touch-action:manipulation}
   <main id="cards"></main>
 
   <div class="add-row" id="addRow"></div>
+
+  <section class="room-net" id="roomNetWrap">
+    <h2 class="rn-title">整屋展开图</h2>
+    <p class="rn-sub" id="roomNetSub">地面居中，四面墙按“墙地通缝”设定的边围在四周（像把盒子拆开）</p>
+    <div class="rn-plot">
+      <canvas id="roomNet"></canvas>
+      <p class="plot-empty" id="roomNetEmpty">填好地面尺寸、选好地砖规格后，这里显示整屋展开图</p>
+    </div>
+  </section>
 
   <footer class="app-foot">改完自动保存 · 给业主看效果：手机截图发微信即可</footer>
 </div>
@@ -403,7 +418,82 @@ const Engine = (() => {
 
   const nameOfEdge = (e) => ({ front:"前边", back:"后边", left:"左边", right:"右边" }[e] || e);
 
-  return { deriveEdges, laidDims, compatible, layoutAxis, computeScene, nameOfEdge };
+  /* 整屋展开图（unfolded net）的几何布局：地面居中，四面墙按 alignEdge 围在四周。
+   * 纯函数、不碰 canvas：只算“每个矩形在画布上的像素位置/尺寸/旋转”，便于测试与复用。
+   * side 映射：front=地面上方、back=下方、left=左、right=右。
+   * 墙贴前/后时墙宽沿地面宽；贴左/右时墙“转 90°”，包围盒宽=墙高、高=墙宽。
+   * 返回 { ok, scale, canvas:{w,h}, floor:{x,y,w,h}, walls:[{id,name,side,rot,x,y,w,h}] }（单位 px）。 */
+  const computeRoomNet = (scene, state, opts = {}) => {
+    const maxW   = opts.maxWidth  != null ? opts.maxWidth  : 1000;
+    const maxH   = opts.maxHeight != null ? opts.maxHeight : 1400;
+    const margin = opts.margin    != null ? opts.margin    : 40;
+    const floor = scene && scene.floor;
+    if (!floor || !floor.card || !(floor.card.w > 0) || !(floor.card.h > 0)) {
+      return { ok:false, reason:"no-floor" };
+    }
+    const fw = floor.card.w, fh = floor.card.h;
+
+    // 1) 给每面墙分配 side：优先用 alignEdge；未指定则按剩余空位补（避免两块挤同一边）
+    const used = new Set();
+    const order = ["front", "back", "left", "right"];
+    const sideOf = (card) => {
+      if (card.alignEdge && card.alignEdge !== "none" && !used.has(card.alignEdge)) {
+        used.add(card.alignEdge); return card.alignEdge;
+      }
+      for (const s of order) if (!used.has(s)) { used.add(s); return s; }
+      return null; // 超过四面则放不下，跳过
+    };
+
+    // 2) 各墙在“毫米坐标系”里的包围盒（地面占 [0,fw]×[0,fh]）
+    const wallsMM = [];
+    for (const c of state.cards) {
+      if (c.type !== "wall") continue;
+      const e = scene.walls && scene.walls[c.id];
+      if (!e || !(c.w > 0) || !(c.h > 0)) continue;
+      const side = sideOf(c);
+      if (!side) continue;
+      const rot = (side === "left" || side === "right");
+      const w = rot ? c.h : c.w;   // 包围盒宽（mm）
+      const h = rot ? c.w : c.h;   // 包围盒高（mm）
+      wallsMM.push({ id:c.id, name:c.name, side, rot, w, h });
+    }
+
+    // 3) 整体包围盒
+    let minX = 0, maxX = fw, minY = 0, maxY = fh;
+    for (const w of wallsMM) {
+      if (w.side === "front") minY = Math.min(minY, -w.h);
+      if (w.side === "back")  maxY = Math.max(maxY, fh + w.h);
+      if (w.side === "left")  minX = Math.min(minX, -w.w);
+      if (w.side === "right") maxX = Math.max(maxX, fw + w.w);
+    }
+    const bboxW = maxX - minX, bboxH = maxY - minY;
+
+    // 4) 缩放：整张图塞进 maxW×maxH（留 margin）
+    const scale = Math.min((maxW - 2 * margin) / bboxW, (maxH - 2 * margin) / bboxH);
+    const shiftX = -minX * scale + margin, shiftY = -minY * scale + margin;
+    const px = (mm) => mm * scale;
+    const X = (mmx) => px(mmx) + shiftX;
+    const Y = (mmy) => px(mmy) + shiftY;
+
+    // 5) 地面与每面墙的像素矩形（left/right 已转 90°，w/h 是包围盒尺寸）
+    const floorRect = { x:X(0), y:Y(0), w:px(fw), h:px(fh) };
+    const walls = wallsMM.map(w => {
+      let x, y;
+      if (w.side === "front") { x = (fw - w.w) / 2; y = -w.h; }
+      else if (w.side === "back")  { x = (fw - w.w) / 2; y = fh; }
+      else if (w.side === "left")  { x = -w.w;            y = (fh - w.h) / 2; }
+      else /* right */             { x = fw;              y = (fh - w.h) / 2; }
+      return { id:w.id, name:w.name, side:w.side, rot:w.rot, x:X(x), y:Y(y), w:px(w.w), h:px(w.h) };
+    });
+
+    return {
+      ok:true, scale,
+      canvas:{ w: Math.round(px(bboxW) + 2 * margin), h: Math.round(px(bboxH) + 2 * margin) },
+      floor: floorRect, walls,
+    };
+  };
+
+  return { deriveEdges, laidDims, compatible, layoutAxis, computeScene, nameOfEdge, computeRoomNet };
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = Engine;
 /*ENGINE-END*/
@@ -862,6 +952,7 @@ function update(){
         (card.w == null || card.h == null) ? "还差一条边没填" : "尺寸填好后这里出图";
     }
   });
+  renderRoomNet(scene);
   hookFeatSync();
 }
 
@@ -1058,6 +1149,141 @@ function drawFloor(canvas, card, scene){
     badge(EDGE_NAMES[name], cx, cy);
   }
   paintCuts(ctx, f.x, f.y, s, cssW, cssH);
+}
+
+/* ---- 整屋展开图：在“一张画布”上合成地面 + 四面墙 ----
+ * 直接复用底层绘图原语（paintTiles/paintCuts/dashedRect/labelText），都吃显式 scale，
+ * 不依赖 setupCanvas，因此和“每面墙单独预览”互不干扰。 */
+function paintFloorNet(ctx, card, scene, s, W, H){
+  const f = scene.floor;
+  ctx.fillStyle = cssVar("--joint"); ctx.fillRect(0, 0, W, H);
+  paintTiles(ctx, f.x, f.y, s, W, H);
+
+  const accent = cssVar("--accent");
+  const badge = (text, cx, cy) => {
+    const bw = 30, bh = 22, r = 6;
+    ctx.save();
+    ctx.fillStyle = accent;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(cx - bw/2, cy - bh/2, bw, bh, r);
+    else ctx.rect(cx - bw/2, cy - bh/2, bw, bh);
+    ctx.fill();
+    ctx.fillStyle = "#fff";
+    ctx.font = '700 13px -apple-system, "PingFang SC", sans-serif';
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(text, cx, cy + 0.5);
+    ctx.restore();
+  };
+  const inset = 18;
+  const mid = { top:[W/2, inset], bottom:[W/2, H - inset], left:[inset * 1.2, H/2], right:[W - inset * 1.2, H/2] };
+  for (const [name, diagramEdge] of Object.entries(f.edges)) {
+    const [cx, cy] = mid[diagramEdge];
+    badge(EDGE_NAMES[name], cx, cy);
+  }
+  paintCuts(ctx, f.x, f.y, s, W, H);
+}
+
+function paintWallNet(ctx, card, entry, s, W, H){
+  if (!entry || !entry.x || !entry.y) return;
+  ctx.fillStyle = cssVar("--joint"); ctx.fillRect(0, 0, W, H);
+  paintTiles(ctx, entry.x, entry.y, s, W, H);
+
+  const soft = cssVar("--ink-soft");
+  if (doorValid(card)) {
+    const d = card.door;
+    const x = d.left * s, y = (card.h - d.height) * s, w = d.width * s, h = d.height * s;
+    ctx.fillStyle = cssVar("--open"); ctx.fillRect(x, y, w, h);
+    dashedRect(ctx, x, y, w, h, soft);
+    labelText(ctx, "门", x + w/2, y + h/2, soft);
+  }
+  if (winValid(card)) {
+    const n = card.win;
+    const x = n.left * s, y = (card.h - n.sill - n.height) * s, w = n.width * s, h = n.height * s;
+    ctx.fillStyle = cssVar("--open"); ctx.fillRect(x, y, w, h);
+    dashedRect(ctx, x, y, w, h, soft);
+    labelText(ctx, "窗", x + w/2, y + h/2, soft);
+  }
+  card.cols.forEach((c, i) => {
+    if (!colValid(c, card)) return;
+    const x = effLeft(c, card) * s, w = c.width * s, h = card.h * s;
+    ctx.fillStyle = cssVar("--column"); ctx.fillRect(x, 0, w, h);
+    dashedRect(ctx, x, 0, w, h, soft);
+    ctx.save();
+    ctx.fillStyle = cssVar("--ink");
+    ctx.font = '700 12px -apple-system, "PingFang SC", sans-serif';
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    const tx = x + w/2, ty = h/2 - 20;
+    `立柱${i+1}`.split("").forEach((ch, k) => ctx.fillText(ch, tx, ty + k * 15));
+    ctx.restore();
+  });
+  paintCuts(ctx, entry.x, entry.y, s, W, H);
+}
+
+function renderRoomNet(scene){
+  const wrap = $("#roomNetWrap");
+  if (!wrap) return;
+  const canvas = $("#roomNet"), sub = $("#roomNetSub"), empty = $("#roomNetEmpty");
+  const f = scene.floor;
+  if (!f || !(f.card.w > 0) || !(f.card.h > 0) || !state.settings.floorTile) {
+    canvas.style.display = "none"; empty.style.display = "block";
+    sub.textContent = "地面居中，四面墙按“墙地通缝”设定的边围在四周（像把盒子拆开）";
+    return;
+  }
+  const avail = Math.min(wrap.clientWidth || 1000, 1000);
+  const net = Engine.computeRoomNet(scene, state, { maxWidth: avail, maxHeight: 1400, margin: 40 });
+  if (!net.ok) { canvas.style.display = "none"; empty.style.display = "block"; return; }
+
+  const dpr = window.devicePixelRatio || 1;
+  canvas.style.width = net.canvas.w + "px";
+  canvas.style.height = net.canvas.h + "px";
+  canvas.width = Math.round(net.canvas.w * dpr);
+  canvas.height = Math.round(net.canvas.h * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, net.canvas.w, net.canvas.h);
+
+  const s = net.scale;
+  // 1) 地面
+  ctx.save();
+  ctx.translate(net.floor.x, net.floor.y);
+  paintFloorNet(ctx, f.card, scene, s, Math.round(net.floor.w), Math.round(net.floor.h));
+  ctx.restore();
+
+  // 2) 四面墙（左/右墙转 90° 合成；推导见注释，保证墙根贴地、不串位）
+  net.walls.forEach(wr => {
+    const card = state.cards.find(c => c.id === wr.id);
+    const entry = scene.walls[wr.id];
+    if (!card || !entry) return;
+    const Wn = Math.round(card.w * s), Hn = Math.round(card.h * s);
+    const tmp = document.createElement("canvas");
+    tmp.width = Wn; tmp.height = Hn;
+    const tctx = tmp.getContext("2d");
+    paintWallNet(tctx, card, entry, s, Wn, Hn);
+
+    ctx.save();
+    ctx.translate(wr.x, wr.y);
+    if (wr.rot) {
+      if (wr.side === "left") {            // 墙根（natural 底边）贴到包围盒右边 = 地面左缘
+        ctx.translate(0, wr.h); ctx.rotate(-Math.PI / 2);
+      } else {                             // right：墙根贴到包围盒左边 = 地面右缘
+        ctx.translate(wr.w, 0); ctx.rotate(Math.PI / 2);
+      }
+    }
+    ctx.drawImage(tmp, 0, 0, Wn, Hn);
+    ctx.restore();
+  });
+
+  // 3) 每面墙标名字（让平面图一眼看懂）
+  net.walls.forEach(wr => {
+    const card = state.cards.find(c => c.id === wr.id);
+    if (!card) return;
+    let cx, cy;
+    if (wr.side === "front")      { cx = wr.x + wr.w/2; cy = wr.y - 12; }
+    else if (wr.side === "back")  { cx = wr.x + wr.w/2; cy = wr.y + wr.h + 14; }
+    else if (wr.side === "left")  { cx = wr.x - 12;     cy = wr.y + wr.h/2; }
+    else /* right */              { cx = wr.x + wr.w + 12; cy = wr.y + wr.h/2; }
+    labelText(ctx, card.name, cx, cy, cssVar("--ink"));
+  });
 }
 
 /* 调试自检：网址末尾加 #debug 时，把超宽元素列表写进标题和页脚，方便排查手机端适配 */
