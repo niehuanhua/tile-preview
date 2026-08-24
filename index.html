@@ -489,14 +489,17 @@ const Engine = (() => {
         // 左/右墙：墙长(c.w = 包围盒高 w.h)沿地面那条竖边(fh)。renderRoomNet 把墙转 90°，
         // 旋转让砖缝方向与地面反向，故墙x相位需“镜像”——墙缝落在地面边缝上的充要条件是
         //   y ≡ (2·phaseX − w.h) (mod stepX)
-        // 再就近取整到“墙根尽量盖住地面整条边”的居中位置（避免墙整段悬空）。
+        // 但“相位锁”只保证起点相位一致；带缝宽时模块(墙 800+2 / 地 400+2)无法真正整周期重合，
+        // 若直接套用会把整面墙从地面边整体挪偏（如本例挪 392mm）。正确做法：墙根必须贴着
+        // 地面边 [0, fh]（y_mm ∈ [fh−w.h, 0]），在此前提下再取最接近的相位锁值，越界就夹回边界。
         if (w.xphase != null && w.xstep > 0) {
           const y0 = ((2 * w.xphase - w.h) % w.xstep + w.xstep) % w.xstep; // 落在 [0, stepX)
-          const target = (0 + fh - w.h) / 2;                              // 居中目标
-          const k = Math.round((target - y0) / w.xstep);
-          y = y0 + k * w.xstep;
+          const k = Math.round((0 - y0) / w.xstep);          // 最接近“贴地面顶边角(y=0)”的相位锁值
+          const yc = y0 + k * w.xstep;
+          const lo = fh - w.h, hi = 0;                        // 墙根必须覆盖地面边的合法区间
+          y = Math.min(hi, Math.max(lo, yc));                // 夹到合法区间：墙根贴地、不悬空、也不被相位锁整体挪偏
         } else {
-          y = (fh - w.h) / 2; // 兜底：相位缺失仍居中，至少不串位
+          y = 0; // 兜底：相位缺失也贴顶边，至少不悬空错位
         }
       }
       return { id:w.id, name:w.name, side:w.side, rot:w.rot, x:X(x), y:Y(y), w:px(w.w), h:px(w.h) };
@@ -1199,7 +1202,7 @@ function paintFloorNet(ctx, card, scene, s, W, H){
   paintCuts(ctx, f.x, f.y, s, W, H);
 }
 
-function paintWallNet(ctx, card, entry, s, W, H){
+function paintWallNet(ctx, card, entry, s, W, H, noText){
   if (!entry || !entry.x || !entry.y) return;
   ctx.fillStyle = cssVar("--joint"); ctx.fillRect(0, 0, W, H);
   paintTiles(ctx, entry.x, entry.y, s, W, H);
@@ -1210,27 +1213,29 @@ function paintWallNet(ctx, card, entry, s, W, H){
     const x = d.left * s, y = (card.h - d.height) * s, w = d.width * s, h = d.height * s;
     ctx.fillStyle = cssVar("--open"); ctx.fillRect(x, y, w, h);
     dashedRect(ctx, x, y, w, h, soft);
-    labelText(ctx, "门", x + w/2, y + h/2, soft);
+    if (!noText) labelText(ctx, "门", x + w/2, y + h/2, soft);
   }
   if (winValid(card)) {
     const n = card.win;
     const x = n.left * s, y = (card.h - n.sill - n.height) * s, w = n.width * s, h = n.height * s;
     ctx.fillStyle = cssVar("--open"); ctx.fillRect(x, y, w, h);
     dashedRect(ctx, x, y, w, h, soft);
-    labelText(ctx, "窗", x + w/2, y + h/2, soft);
+    if (!noText) labelText(ctx, "窗", x + w/2, y + h/2, soft);
   }
   card.cols.forEach((c, i) => {
     if (!colValid(c, card)) return;
     const x = effLeft(c, card) * s, w = c.width * s, h = card.h * s;
     ctx.fillStyle = cssVar("--column"); ctx.fillRect(x, 0, w, h);
     dashedRect(ctx, x, 0, w, h, soft);
-    ctx.save();
-    ctx.fillStyle = cssVar("--ink");
-    ctx.font = '700 12px -apple-system, "PingFang SC", sans-serif';
-    ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    const tx = x + w/2, ty = h/2 - 20;
-    `立柱${i+1}`.split("").forEach((ch, k) => ctx.fillText(ch, tx, ty + k * 15));
-    ctx.restore();
+    if (!noText) {
+      ctx.save();
+      ctx.fillStyle = cssVar("--ink");
+      ctx.font = '700 12px -apple-system, "PingFang SC", sans-serif';
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      const tx = x + w/2, ty = h/2 - 20;
+      `立柱${i+1}`.split("").forEach((ch, k) => ctx.fillText(ch, tx, ty + k * 15));
+      ctx.restore();
+    }
   });
   paintCuts(ctx, entry.x, entry.y, s, W, H);
 }
@@ -1274,7 +1279,8 @@ function renderRoomNet(scene){
     const tmp = document.createElement("canvas");
     tmp.width = Wn; tmp.height = Hn;
     const tctx = tmp.getContext("2d");
-    paintWallNet(tctx, card, entry, s, Wn, Hn);
+    // 后墙经竖翻(scale 1,-1)合成，墙内文字会被镜像，故跳过文字、仅保留门/窗/立柱色块
+    paintWallNet(tctx, card, entry, s, Wn, Hn, wr.side === "back");
 
     ctx.save();
     ctx.translate(wr.x, wr.y);
@@ -1284,7 +1290,11 @@ function renderRoomNet(scene){
       } else {                             // right：墙根贴到包围盒左边 = 地面右缘
         ctx.translate(wr.w, 0); ctx.rotate(Math.PI / 2);
       }
+    } else if (wr.side === "back") {
+      // 后墙翻 180° 竖放：墙根（natural 底边/门所在）贴地面后缘、向远离地面方向长，否则会上下颠倒
+      ctx.translate(0, wr.h); ctx.scale(1, -1);
     }
+    // front：不旋转也不翻转，墙根天然贴地面前缘
     ctx.drawImage(tmp, 0, 0, Wn, Hn);
     ctx.restore();
   });
