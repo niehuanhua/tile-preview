@@ -1422,14 +1422,17 @@ function buildRoomModel(scene, state){
     const e = scene.walls && scene.walls[card.id];
     if (!e || !(card.w > 0) || !(card.h > 0)) continue;
     const side = sideOf(card); if (!side) continue;
-    // 水平相位：前/后墙贴地面“宽”边(floorX)，左/右墙贴“深”边(floorY)；相位直接用地面同边相位
+    const isDoor = !!(card.door && card.door.on);   // 有门那面墙：与整屋展开图一致，左右镜像
+    // 水平相位：前/后墙贴地面“宽”边(floorX)，左/右墙贴“深”边(floorY)
+    // 门墙用 (墙长 − 地面相位) 镜像相位，配合纹理水平翻转后墙地砖仍对缝
     let xLayout = e.x;
     if (wDims && fDims && floorX && floorY) {
       const map = (side === "left" || side === "right")
         ? { axis: floorY, dim: fDims.y }
         : { axis: floorX, dim: fDims.x };
       if (Engine.compatible(wDims.x, map.dim)) {
-        xLayout = Engine.layoutAxis(card.w, wDims.x, g, st.startMode, map.axis.phase);
+        const po = isDoor ? (card.w - map.axis.phase) : map.axis.phase;
+        xLayout = Engine.layoutAxis(card.w, wDims.x, g, st.startMode, po);
       }
     }
     const tex = (() => {
@@ -1442,7 +1445,7 @@ function buildRoomModel(scene, state){
       return c;
     })();
     maxH = Math.max(maxH, card.h);
-    walls.push({ id: card.id, name: card.name, side, tex, w: card.w, h: card.h });
+    walls.push({ id: card.id, name: card.name, side, tex, w: card.w, h: card.h, flip: isDoor });
   }
   if (!walls.length) return null;
   return { FW, FH, ts, floorTex, walls, maxH, dim: Math.max(FW, FH) };
@@ -1473,16 +1476,19 @@ function lerpQuad(q, u, v){
   return { x: top.x + (bot.x - top.x) * v, y: top.y + (bot.y - top.y) * v };
 }
 
-function drawTexturedQuad(ctx, tex, q, tw, th, bright){
+function drawTexturedQuad(ctx, tex, q, tw, th, bright, flip){
   const N = 8;
   for (let i = 0; i < N; i++) {
     const u0 = i / N, u1 = (i + 1) / N;
     for (let j = 0; j < N; j++) {
       const v0 = j / N, v1 = (j + 1) / N;
       const sTL = lerpQuad(q, u0, v0), sTR = lerpQuad(q, u1, v0), sBR = lerpQuad(q, u1, v1), sBL = lerpQuad(q, u0, v1);
-      const su = u0 * tw, sv = v0 * th, suw = (u1 - u0) * tw, suh = (v1 - v0) * th;
-      drawTri(ctx, tex, [sTL, sTR, sBR], [[su, sv], [su + suw, sv], [su + suw, sv + suh]]);
-      drawTri(ctx, tex, [sTL, sBR, sBL], [[su, sv], [su + suw, sv + suh], [su, sv + suh]]);
+      // flip：水平镜像（门墙与整屋展开图一致，门左右与实测一致），仅反转 u
+      const tu0 = flip ? (1 - u0) : u0, tu1 = flip ? (1 - u1) : u1;
+      const su0 = tu0 * tw, su1 = tu1 * tw, su = Math.min(su0, su1), suw = Math.abs(tu1 - tu0) * tw;
+      const sv0 = v0 * th, sv1 = v1 * th, sv = Math.min(sv0, sv1), suh = (v1 - v0) * th;
+      drawTri(ctx, tex, [sTL, sTR, sBR], [[su0, sv0], [su1, sv0], [su1, sv1]]);
+      drawTri(ctx, tex, [sTL, sBR, sBL], [[su0, sv0], [su1, sv1], [su0, sv1]]);
     }
   }
   if (bright < 0.999) {   // 背光面压暗，增强立体感
@@ -1526,7 +1532,7 @@ function makeWallFace(wll, model, project){
   const bright = clamp(0.5 + 0.5 * Math.max(0, inx*0.3 + iny*1 + inz*0.35), 0.35, 1);
   const topC = { x: (corners.TL.x + corners.TR.x)/2, y: h + 2, z: (corners.TL.z + corners.TR.z)/2 };
   const labelPt = project(topC);
-  return { kind: "wall", tex, tw, th, screen: [sTL, sTR, sBR, sBL], center, normal, depth, bright, labelPt, name: wll.name };
+  return { kind: "wall", tex, tw, th, screen: [sTL, sTR, sBR, sBL], center, normal, depth, bright, labelPt, name: wll.name, flip: wll.flip };
 }
 
 function renderRoom3D(scene){
@@ -1586,7 +1592,7 @@ function renderRoom3DDraw(){
   visible.sort((a, b) => b.depth - a.depth);  // 远→近
 
   visible.forEach(fc => {
-    drawTexturedQuad(ctx, fc.tex, fc.screen, fc.tw, fc.th, fc.bright);
+    drawTexturedQuad(ctx, fc.tex, fc.screen, fc.tw, fc.th, fc.bright, fc.flip);
     ctx.save();
     ctx.strokeStyle = "rgba(0,0,0,0.18)"; ctx.lineWidth = Math.max(1, dpr);
     ctx.beginPath(); ctx.moveTo(fc.screen[0].x, fc.screen[0].y);
