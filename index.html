@@ -161,6 +161,12 @@ button{cursor:pointer; touch-action:manipulation}
 .rn-plot{display:flex; justify-content:center; position:relative; overflow-x:auto}
 .rn-plot canvas{display:block}
 .rn-plot .plot-empty{position:absolute; top:50%; left:0; right:0; transform:translateY(-50%); margin:0; font-size:13px; color:var(--ink-soft); text-align:center}
+
+/* 三维整屋图 */
+.r3d-plot{position:relative; display:flex; justify-content:center; background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:hidden}
+.r3d-plot canvas{display:block; width:100%; height:auto; touch-action:none; cursor:grab}
+.r3d-plot canvas:active{cursor:grabbing}
+.r3d-plot .plot-empty{position:absolute; top:50%; left:0; right:0; transform:translateY(-50%); margin:0; font-size:13px; color:var(--ink-soft); text-align:center; padding:0 12px}
 .add-btn{flex:1; min-height:50px; border-radius:12px; border:1px solid var(--accent); background:var(--accent-soft); color:var(--accent); font-size:16px; font-weight:800}
 .app-foot{margin-top:18px; text-align:center; font-size:12px; color:var(--ink-soft)}
 </style>
@@ -245,6 +251,15 @@ button{cursor:pointer; touch-action:manipulation}
     <div class="rn-plot">
       <canvas id="roomNet"></canvas>
       <p class="plot-empty" id="roomNetEmpty"></p>
+    </div>
+  </section>
+
+  <section class="room-net" id="room3dWrap">
+    <h2 class="rn-title">三维整屋图</h2>
+    <p class="rn-sub">按住鼠标拖动旋转视角，滚轮缩放；离镜头近的墙会自动隐藏，方便看进屋里。</p>
+    <div class="r3d-plot">
+      <canvas id="room3d"></canvas>
+      <p class="plot-empty" id="room3dEmpty">填好地面、墙砖规格并出图后，这里出现可旋转的三维房间</p>
     </div>
   </section>
 
@@ -978,6 +993,7 @@ function update(){
     }
   });
   renderRoomNet(scene);
+  renderRoom3D(scene);
   hookFeatSync();
 }
 
@@ -1163,13 +1179,9 @@ function effLeft(c, card){
 }
 const colValid = (c, card) => { const L = effLeft(c, card); return L >= 0 && c.width > 0 && c.depth > 0 && L + c.width <= (card.w || 0); };
 
-function drawWall(canvas, card, entry){
-  if (!entry || !entry.x || !entry.y) return;
-  const { ctx, s, cssW, cssH } = setupCanvas(canvas, card.w, card.h);
-  ctx.fillStyle = cssVar("--joint");
-  ctx.fillRect(0, 0, cssW, cssH);
-  paintTiles(ctx, entry.x, entry.y, s, cssW, cssH);
-
+/* 墙面的门/窗/立柱（色块 + 虚线框 + 文字）。drawWall 与 3D 离屏渲染共用，
+ * 这样 3D 墙面上也能看到门、窗、立柱的位置。 */
+function paintWallFeatures(ctx, card, s){
   const soft = cssVar("--ink-soft");
   // 门洞（从地面起）
   if (doorValid(card)) {
@@ -1202,6 +1214,16 @@ function drawWall(canvas, card, entry){
     `立柱${i+1}`.split("").forEach((ch, k) => ctx.fillText(ch, tx, ty + k * 15));
     ctx.restore();
   });
+}
+
+function drawWall(canvas, card, entry){
+  if (!entry || !entry.x || !entry.y) return;
+  const { ctx, s, cssW, cssH } = setupCanvas(canvas, card.w, card.h);
+  ctx.fillStyle = cssVar("--joint");
+  ctx.fillRect(0, 0, cssW, cssH);
+  paintTiles(ctx, entry.x, entry.y, s, cssW, cssH);
+
+  paintWallFeatures(ctx, card, s);
   paintCuts(ctx, entry.x, entry.y, s, cssW, cssH, null, { skipHeight: true });
 }
 
@@ -1352,6 +1374,255 @@ function renderRoomNet(scene){
   });
 }
 
+/* ============================================================
+ * 三维整屋图（纯 Canvas2D 手绘透视，零依赖）
+ *   - 把地面/每面墙的砖纹渲染到离屏画布当“贴图”，再贴到 3D 四边形上
+ *   - 绕 Y(yaw) + 绕 X(pitch) 转视角，远墙先画、近墙按外法线朝向自动隐藏
+ *   - 鼠标拖动旋转、滚轮缩放
+ * ============================================================ */
+const R3D_FOV = 45 * Math.PI / 180;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+let R3D = { model: null, cam: null };
+
+/* 离屏渲染一面墙的砖纹（含门/窗/立柱）。尺寸 s 按房间大小自适应，避免画布过大。 */
+function buildRoomModel(scene, state){
+  const f = scene && scene.floor;
+  if (!f || !f.card || !(f.card.w > 0) || !(f.card.h > 0)) return null;
+  const FW = f.card.w, FH = f.card.h;
+  const ts = Math.min(0.7, 700 / Math.max(FW, FH, 1));   // px / mm
+
+  // 地面贴图
+  const floorTex = (() => {
+    const Wn = Math.max(1, Math.round(FW * ts)), Hn = Math.max(1, Math.round(FH * ts));
+    const c = document.createElement("canvas"); c.width = Wn; c.height = Hn;
+    const x = c.getContext("2d");
+    paintFloorNet(x, f.card, scene, ts, Wn, Hn);
+    return c;
+  })();
+
+  // 四面墙：side 分配复用展开图的逻辑（alignEdge 优先，否则按空位补）
+  const used = new Set(); const order = ["front", "back", "left", "right"];
+  const sideOf = (card) => {
+    if (card.alignEdge && card.alignEdge !== "none" && !used.has(card.alignEdge)) { used.add(card.alignEdge); return card.alignEdge; }
+    for (const s of order) if (!used.has(s)) { used.add(s); return s; }
+    return null;
+  };
+
+  const walls = []; let maxH = 0;
+  for (const card of state.cards) {
+    if (card.type !== "wall") continue;
+    const e = scene.walls && scene.walls[card.id];
+    if (!e || !(card.w > 0) || !(card.h > 0)) continue;
+    const side = sideOf(card); if (!side) continue;
+    const tex = (() => {
+      const Wn = Math.max(1, Math.round(card.w * ts)), Hn = Math.max(1, Math.round(card.h * ts));
+      const c = document.createElement("canvas"); c.width = Wn; c.height = Hn;
+      const x = c.getContext("2d");
+      x.fillStyle = cssVar("--joint"); x.fillRect(0, 0, Wn, Hn);
+      if (e.x && e.y) paintTiles(x, e.x, e.y, ts, Wn, Hn);
+      paintWallFeatures(x, card, ts);
+      return c;
+    })();
+    maxH = Math.max(maxH, card.h);
+    walls.push({ id: card.id, name: card.name, side, tex, w: card.w, h: card.h });
+  }
+  if (!walls.length) return null;
+  return { FW, FH, ts, floorTex, walls, maxH, dim: Math.max(FW, FH) };
+}
+
+/* 把“纹理三角形”映射到“屏幕三角形”：解出仿射矩阵后裁剪到三角形再贴图。
+ * 每个四边形用 N×N 细分，每个子格拆两个三角形，足以近似透视梯形。 */
+function drawTri(ctx, tex, pts, tcs){
+  const p0 = pts[0], p1 = pts[1], p2 = pts[2];
+  const u1 = tcs[0][0], v1 = tcs[0][1], u2 = tcs[1][0], v2 = tcs[1][1], u3 = tcs[2][0], v3 = tcs[2][1];
+  const x1 = p0.x, y1 = p0.y, x2 = p1.x, y2 = p1.y, x3 = p2.x, y3 = p2.y;
+  const A = u1 - u3, B = v1 - v3, C = x1 - x3, D = u2 - u3, E = v2 - v3, F = x2 - x3;
+  const den = A * E - B * D; if (Math.abs(den) < 1e-9) return;
+  const a = (C * E - B * F) / den, c = (A * F - C * D) / den, e = x1 - a * u1 - c * v1;
+  const b = ((y1 - y3) * E - B * (y2 - y3)) / den, d = (A * (y2 - y3) - (y1 - y3) * D) / den, f = y1 - b * u1 - d * v1;
+  const su = Math.min(u1, u2, u3), sv = Math.min(v1, v2, v3);
+  const suw = Math.max(u1, u2, u3) - su, suh = Math.max(v1, v2, v3) - sv;
+  ctx.save();
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.lineTo(x3, y3); ctx.closePath(); ctx.clip();
+  ctx.transform(a, b, c, d, e, f);
+  ctx.drawImage(tex, su, sv, suw, suh, su, sv, suw, suh);
+  ctx.restore();
+}
+
+function lerpQuad(q, u, v){
+  const top = { x: q[0].x + (q[1].x - q[0].x) * u, y: q[0].y + (q[1].y - q[0].y) * u };
+  const bot = { x: q[3].x + (q[2].x - q[3].x) * u, y: q[3].y + (q[2].y - q[3].y) * u };
+  return { x: top.x + (bot.x - top.x) * v, y: top.y + (bot.y - top.y) * v };
+}
+
+function drawTexturedQuad(ctx, tex, q, tw, th, bright){
+  const N = 8;
+  for (let i = 0; i < N; i++) {
+    const u0 = i / N, u1 = (i + 1) / N;
+    for (let j = 0; j < N; j++) {
+      const v0 = j / N, v1 = (j + 1) / N;
+      const sTL = lerpQuad(q, u0, v0), sTR = lerpQuad(q, u1, v0), sBR = lerpQuad(q, u1, v1), sBL = lerpQuad(q, u0, v1);
+      const su = u0 * tw, sv = v0 * th, suw = (u1 - u0) * tw, suh = (v1 - v0) * th;
+      drawTri(ctx, tex, [sTL, sTR, sBR], [[su, sv], [su + suw, sv], [su + suw, sv + suh]]);
+      drawTri(ctx, tex, [sTL, sBR, sBL], [[su, sv], [su + suw, sv + suh], [su, sv + suh]]);
+    }
+  }
+  if (bright < 0.999) {   // 背光面压暗，增强立体感
+    ctx.save();
+    ctx.beginPath(); ctx.moveTo(q[0].x, q[0].y);
+    for (let i = 1; i < 4; i++) ctx.lineTo(q[i].x, q[i].y);
+    ctx.closePath(); ctx.clip();
+    ctx.fillStyle = "rgba(0,0,0," + ((1 - bright) * 0.55) + ")";
+    ctx.fillRect(0, 0, 1e7, 1e7);
+    ctx.restore();
+  }
+}
+
+function makeFloorFace(model, project){
+  const y = 0, FW = model.FW, FH = model.FH;
+  const TL = { x: -FW/2, y, z: -FH/2 }, TR = { x: FW/2, y, z: -FH/2 }, BR = { x: FW/2, y, z: FH/2 }, BL = { x: -FW/2, y, z: FH/2 };
+  const sTL = project(TL), sTR = project(TR), sBR = project(BR), sBL = project(BL);
+  if (!(sTL.valid && sTR.valid && sBR.valid && sBL.valid)) return null;
+  const tex = model.floorTex, tw = tex.width, th = tex.height;
+  const depth = (sTL.cz + sTR.cz + sBR.cz + sBL.cz) / 4;
+  const bright = clamp(0.6 + 0.4 * 1, 0.4, 1); // 地面朝上，最亮
+  return { kind: "floor", tex, tw, th, screen: [sTL, sTR, sBR, sBL],
+           center: { x: 0, y: 0, z: 0 }, normal: { x: 0, y: -1, z: 0 }, depth, bright, name: "" };
+}
+
+function makeWallFace(wll, model, project){
+  const h = wll.h, FW = model.FW, FH = model.FH;
+  let corners, normal;
+  if (wll.side === "front") { const z = -FH/2; corners = { TL:{x:-wll.w/2,y:h,z}, TR:{x:wll.w/2,y:h,z}, BR:{x:wll.w/2,y:0,z}, BL:{x:-wll.w/2,y:0,z} }; normal = { x:0, y:0, z:-1 }; }
+  else if (wll.side === "back") { const z = FH/2; corners = { TL:{x:-wll.w/2,y:h,z}, TR:{x:wll.w/2,y:h,z}, BR:{x:wll.w/2,y:0,z}, BL:{x:-wll.w/2,y:0,z} }; normal = { x:0, y:0, z:1 }; }
+  else if (wll.side === "left") { const x = -FW/2; corners = { TL:{x,y:h,z:-wll.w/2}, TR:{x,y:h,z:wll.w/2}, BR:{x,y:0,z:wll.w/2}, BL:{x,y:0,z:-wll.w/2} }; normal = { x:-1, y:0, z:0 }; }
+  else { const x = FW/2; corners = { TL:{x,y:h,z:-wll.w/2}, TR:{x,y:h,z:wll.w/2}, BR:{x,y:0,z:wll.w/2}, BL:{x,y:0,z:-wll.w/2} }; normal = { x:1, y:0, z:0 }; }
+  const sTL = project(corners.TL), sTR = project(corners.TR), sBR = project(corners.BR), sBL = project(corners.BL);
+  if (!(sTL.valid && sTR.valid && sBR.valid && sBL.valid)) return null;
+  const tex = wll.tex, tw = tex.width, th = tex.height;
+  const center = { x: (corners.TL.x + corners.BR.x)/2, y: h/2, z: (corners.TL.z + corners.BR.z)/2 };
+  const depth = (sTL.cz + sTR.cz + sBR.cz + sBL.cz) / 4;
+  // 可见面是“内法线”那侧；用内法线点光源求亮度
+  const inx = -normal.x, iny = -normal.y, inz = -normal.z;
+  const bright = clamp(0.5 + 0.5 * Math.max(0, inx*0.3 + iny*1 + inz*0.35), 0.35, 1);
+  const topC = { x: (corners.TL.x + corners.TR.x)/2, y: h + 2, z: (corners.TL.z + corners.TR.z)/2 };
+  const labelPt = project(topC);
+  return { kind: "wall", tex, tw, th, screen: [sTL, sTR, sBR, sBL], center, normal, depth, bright, labelPt, name: wll.name };
+}
+
+function renderRoom3D(scene){
+  const wrap = $("#room3dWrap"); if (!wrap) return;
+  R3D.model = buildRoomModel(scene, state);
+  if (!R3D.cam) R3D.cam = { yaw: 0.7, pitch: 0.45, dist: null };
+  if (R3D.model && R3D.cam.dist == null) R3D.cam.dist = (R3D.model.dim * 0.5) / Math.tan(R3D_FOV / 2) * 1.8;
+  renderRoom3DDraw();
+}
+
+function renderRoom3DDraw(){
+  const wrap = $("#room3dWrap"); if (!wrap) return;
+  const canvas = $("#room3d"), empty = $("#room3dEmpty");
+  const model = R3D.model;
+  if (!model || !model.floorTex) { canvas.style.display = "none"; empty.style.display = "block"; return; }
+  empty.style.display = "none"; canvas.style.display = "block";
+
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = wrap.clientWidth || 600, cssH = 420;
+  if (canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(cssH * dpr)) {
+    canvas.style.width = cssW + "px"; canvas.style.height = cssH + "px";
+    canvas.width = Math.round(cssW * dpr); canvas.height = Math.round(cssH * dpr);
+  }
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = cssVar("--card"); ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const cam = R3D.cam;
+  const T = { x: 0, y: model.maxH * 0.5, z: 0 };
+  const cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch), cyaw = Math.cos(cam.yaw), syaw = Math.sin(cam.yaw);
+  const camPos = { x: T.x + cam.dist * cp * syaw, y: T.y + cam.dist * sp, z: T.z + cam.dist * cp * cyaw };
+
+  // 相机基向量：forward = 指向目标，right = cross(f, up)，up = cross(right, f)
+  let fx = T.x - camPos.x, fy = T.y - camPos.y, fz = T.z - camPos.z;
+  const fl = Math.hypot(fx, fy, fz) || 1; fx /= fl; fy /= fl; fz /= fl;
+  let rxc = -fz, ryc = 0, rzc = fx;
+  const rl = Math.hypot(rxc, ryc, rzc) || 1; rxc /= rl; ryc /= rl; rzc /= rl;
+  const ux = ryc * fz - rzc * fy, uy = rzc * fx - rxc * fz, uz = rxc * fy - ryc * fx;
+  const focal = (canvas.height / 2) / Math.tan(R3D_FOV / 2);
+  const CX = canvas.width / 2, CY = canvas.height / 2;
+  const project = (p) => {
+    const dx = p.x - camPos.x, dy = p.y - camPos.y, dz = p.z - camPos.z;
+    const cz = dx * fx + dy * fy + dz * fz;
+    const cx = dx * rxc + dy * ryc + dz * rzc;
+    const cy = dx * ux + dy * uy + dz * uz;
+    return { x: CX + (cx / cz) * focal, y: CY - (cy / cz) * focal, cz, valid: cz > 0.01 };
+  };
+
+  const faces = [];
+  const ff = makeFloorFace(model, project); if (ff) faces.push(ff);
+  model.walls.forEach(wll => { const fc = makeWallFace(wll, model, project); if (fc) faces.push(fc); });
+
+  // 近墙（外法线朝向镜头）隐藏，露出屋内
+  const visible = faces.filter(fc => {
+    const c = fc.center;
+    const d = fc.normal.x * (camPos.x - c.x) + fc.normal.y * (camPos.y - c.y) + fc.normal.z * (camPos.z - c.z);
+    return d < 0;
+  });
+  visible.sort((a, b) => b.depth - a.depth);  // 远→近
+
+  visible.forEach(fc => {
+    drawTexturedQuad(ctx, fc.tex, fc.screen, fc.tw, fc.th, fc.bright);
+    ctx.save();
+    ctx.strokeStyle = "rgba(0,0,0,0.18)"; ctx.lineWidth = Math.max(1, dpr);
+    ctx.beginPath(); ctx.moveTo(fc.screen[0].x, fc.screen[0].y);
+    for (let i = 1; i < 4; i++) ctx.lineTo(fc.screen[i].x, fc.screen[i].y);
+    ctx.closePath(); ctx.stroke(); ctx.restore();
+  });
+
+  // 墙面标 A/B/C/D
+  visible.forEach(fc => {
+    if (fc.kind !== "wall" || !fc.labelPt.valid) return;
+    const m = /墙\s*([A-Da-d])/.exec(fc.name || "");
+    const name = m ? (m[1].toUpperCase() + "墙") : (fc.name || "");
+    if (!name) return;
+    const p = fc.labelPt, r = 11 * dpr;
+    ctx.save();
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
+    ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#fff";
+    ctx.font = '700 ' + (12 * dpr) + 'px -apple-system, "PingFang SC", sans-serif';
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(name, p.x, p.y);
+    ctx.restore();
+  });
+}
+
+/* 拖动旋转 + 滚轮缩放（仅重绘，不重建模型） */
+function bindRoom3D(){
+  const canvas = $("#room3d"); if (!canvas) return;
+  let dragging = false, lastX = 0, lastY = 0;
+  const minDist = () => R3D.model ? R3D.model.dim * 0.6 : 100;
+  const maxDist = () => R3D.model ? R3D.model.dim * 5 : 5000;
+  canvas.addEventListener("pointerdown", (e) => {
+    dragging = true; lastX = e.clientX; lastY = e.clientY;
+    try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    const dx = e.clientX - lastX, dy = e.clientY - lastY; lastX = e.clientX; lastY = e.clientY;
+    R3D.cam.yaw += dx * 0.01;
+    R3D.cam.pitch = clamp(R3D.cam.pitch + dy * 0.01, -1.2, 1.2);
+    renderRoom3DDraw();
+  });
+  const end = () => { dragging = false; };
+  canvas.addEventListener("pointerup", end);
+  canvas.addEventListener("pointercancel", end);
+  canvas.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    R3D.cam.dist = clamp(R3D.cam.dist * (1 + e.deltaY * 0.001), minDist(), maxDist());
+    renderRoom3DDraw();
+  }, { passive: false });
+}
+
 /* 调试自检：网址末尾加 #debug 时，把超宽元素列表写进标题和页脚，方便排查手机端适配 */
 function debugOverflow(){
   if (location.hash !== "#debug") return;
@@ -1377,6 +1648,7 @@ function boot(){
   renderCards();
   update();
   hookFeatSync();
+  bindRoom3D();
   let rt = null;
   window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(update, 150); });
   debugOverflow();
