@@ -1043,54 +1043,94 @@ function paintTiles(ctx, xe, ye, s, W, H){
  *      左缘被裁 → 贴顶部；右缘被裁 → 贴底部
  *   - 纵向裁砖（某行为整块被裁的“高”）：尺寸线竖着画在贴边一侧
  *      上缘被裁 → 贴左边；下缘被裁 → 贴右边
+ * 角部一张砖若被裁了两条边（如地面左上角），宽/高两个标签会挤在角落重叠；
+ * 这里先把所有标签收集起来，再把重叠的成对沿“各自轴线”推开（宽标左右移、高标上下移），
+ * 既分开又不脱离它所量的那条被裁边。
  * opts.skipHeight：墙砖高度方向整体允许高 1~2cm，故墙面预览不标高度方向裁砖尺寸。
  * map(lx, ly)：可选坐标变换，用于后墙（镜像绘制时把文字翻回正常视角）。 */
 function paintCuts(ctx, xe, ye, s, W, H, map, opts){
   const M = map || ((x, y) => ({ x, y }));
   const cut = cssVar("--danger");
-  const mmW = W / s, mmH = H / s;
   const pad = 14; // 尺寸线离边缘的距离（也顺带避开地面的前/后/左/右徽标）
   const skipHeight = !!(opts && opts.skipHeight);
   ctx.save();
   ctx.font = '700 12px -apple-system, "PingFang SC", sans-serif';
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  const pillW = (txt) => ctx.measureText(txt).width + 10;
   const pill = (cx, cy, txt) => {
     const p = M(cx, cy);
-    const w = ctx.measureText(txt).width + 10;
+    const w = pillW(txt);
     ctx.fillStyle = "rgba(255,255,255,0.92)";
     ctx.fillRect(p.x - w/2, p.y - 10, w, 20);
     ctx.fillStyle = cut;
     ctx.fillText(txt, p.x, p.y);
   };
-  // 横向裁砖条：标出该列“宽度”（mm）
+
+  // 1) 收集所有标注：主尺寸线两端点 + 标签默认落点
+  const marks = [];
+  const add = (axis, x0, x1, y0, y1, vx, vy, txt) =>
+    marks.push({ axis, x0, x1, y0, y1, cx: vx, cy: vy, txt, w: pillW(txt), h: 20 });
+
+  // 横向裁砖（宽）
   xe.segments.forEach((xs) => {
     if (!xs.cut) return;
     const x0 = xs.start * s, x1 = (xs.start + xs.width) * s;
-    const leftEdge = xs.start < 1;
-    const cy = leftEdge ? pad : H - pad;               // 左缘→顶部；右缘→底部
-    const midx = (x0 + x1) / 2;
-    ctx.strokeStyle = cut; ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(x0, cy); ctx.lineTo(x1, cy);            // 尺寸主线（横）
-    ctx.moveTo(x0, cy - 5); ctx.lineTo(x0, cy + 5);    // 左端刻度
-    ctx.moveTo(x1, cy - 5); ctx.lineTo(x1, cy + 5);    // 右端刻度
-    ctx.stroke();
-    pill(midx, cy, String(Math.round(xs.width)));
+    const cy = (xs.start < 1) ? pad : H - pad;         // 左缘→顶；右缘→底
+    add("h", x0, x1, cy, cy, (x0 + x1) / 2, cy, String(Math.round(xs.width)));
   });
-  // 纵向裁砖条：标出该行“高度”（mm）；墙面预览可跳过
+  // 纵向裁砖（高）；墙面预览可跳过
   if (!skipHeight) ye.segments.forEach((ys) => {
     if (!ys.cut) return;
     const y0 = ys.start * s, y1 = (ys.start + ys.width) * s;
-    const topEdge = ys.start < 1;
-    const cx = topEdge ? pad : W - pad;                // 上缘→左边；下缘→右边
-    const midy = (y0 + y1) / 2;
+    const cx = (ys.start < 1) ? pad : W - pad;         // 上缘→左；下缘→右
+    add("v", cx, cx, y0, y1, cx, (y0 + y1) / 2, String(Math.round(ys.width)));
+  });
+
+  // 2) 先把贴边的标签夹回画布内（贴边标签会略微内移）
+  marks.forEach((m) => {
+    m.cx = Math.max(m.w / 2 + 2, Math.min(W - m.w / 2 - 2, m.cx));
+    m.cy = Math.max(m.h / 2 + 2, Math.min(H - m.h / 2 - 2, m.cy));
+  });
+  // 3) 解角部重叠：宽标靠某角、高标也靠某角（如地面左上角）会挤在一起；
+  //    把高标整体挪到对侧的那条垂直边（顶→右、底→左），等于"挪到另一个格子"，
+  //    既一定不重叠，又仍然量的是同一段裁砖的高度，语义不变。
+  const overlap = (a, b) =>
+    Math.abs(a.cx - b.cx) < (a.w + b.w) / 2 &&
+    Math.abs(a.cy - b.cy) < (a.h + b.h) / 2;
+  const flipH = (m) => {
+    const newCx = (m.x0 < W / 2) ? W - pad : pad;   // 对侧垂直边
+    m.x0 = m.x1 = newCx;
+    m.cx = Math.max(m.w / 2 + 2, Math.min(W - m.w / 2 - 2, newCx));
+  };
+  // 最多翻两次以防翻转后又撞上另一侧的宽标
+  for (let pass = 0; pass < 2; pass++) {
+    let any = false;
+    for (let i = 0; i < marks.length; i++) for (let j = 0; j < marks.length; j++) {
+      if (i === j) continue;
+      const a = marks[i], b = marks[j];
+      if (!(a.axis !== b.axis && overlap(a, b))) continue;
+      // 翻动“高度”标；优先翻 b 是高度的；若 a 也是高度，翻 a 即可
+      const h = a.axis === "v" ? a : b;
+      flipH(h);
+      any = true;
+    }
+    if (!any) break;
+  }
+
+  // 4) 画主尺寸线 + 两端短刻度 + 标签
+  marks.forEach((m) => {
     ctx.strokeStyle = cut; ctx.lineWidth = 1.5;
     ctx.beginPath();
-    ctx.moveTo(cx, y0); ctx.lineTo(cx, y1);            // 尺寸主线（竖）
-    ctx.moveTo(cx - 5, y0); ctx.lineTo(cx + 5, y0);    // 上端刻度
-    ctx.moveTo(cx - 5, y1); ctx.lineTo(cx + 5, y1);    // 下端刻度
+    ctx.moveTo(m.x0, m.y0); ctx.lineTo(m.x1, m.y1);            // 主尺寸线
+    if (m.axis === "h") {
+      ctx.moveTo(m.x0, m.y0 - 5); ctx.lineTo(m.x0, m.y0 + 5);  // 左端刻度
+      ctx.moveTo(m.x1, m.y1 - 5); ctx.lineTo(m.x1, m.y1 + 5);  // 右端刻度
+    } else {
+      ctx.moveTo(m.x0 - 5, m.y0); ctx.lineTo(m.x0 + 5, m.y0);  // 上端刻度
+      ctx.moveTo(m.x1 - 5, m.y1); ctx.lineTo(m.x1 + 5, m.y1);  // 下端刻度
+    }
     ctx.stroke();
-    pill(cx, midy, String(Math.round(ys.width)));
+    pill(m.cx, m.cy, m.txt);
   });
   ctx.restore();
 }
