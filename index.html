@@ -393,10 +393,10 @@ const Engine = (() => {
           const edgeLen   = horizontal ? floorCard.w : floorCard.h;
           if (compatible(wDims.x, floorDim)) {
             locked = true;
-            // 左墙在展开图里转 -90°（net_y = 边 − 墙x），墙 x 方向与地面竖边相反，
+            // 左墙转 -90°、后墙(有门那面)在展开图里左右镜像，墙的 x 方向都相对地面对应边反向，
             // 直接照搬地面相位会把整面墙的缝翻到另一端（错位≈一个相位）。
-            // 故左墙镜像：墙相位 = (墙长 − 地面相位) mod 墙模块；前/后/右方向一致，直接照搬。
-            const phaseOverride = (wall.alignEdge === "left")
+            // 故左墙/后墙镜像：墙相位 = (墙长 − 地面相位) mod 墙模块；前/右方向一致，直接照搬。
+            const phaseOverride = (wall.alignEdge === "left" || wall.alignEdge === "back")
               ? (wall.w - floorAxis.phase)
               : floorAxis.phase;
             entry.x = layoutAxis(wall.w, wDims.x, g, s.startMode, phaseOverride);
@@ -688,7 +688,9 @@ function bindSettings(){
  * ============================================================ */
 function renderCards(){
   const root = $("#cards"); root.innerHTML = "";
-  state.cards.forEach(card => root.appendChild(card.type === "floor" ? buildFloorCard(card) : buildWallCard(card)));
+  // 地面卡永远排最前，再排各面墙（无论 localStorage 里顺序如何）
+  const ordered = state.cards.filter(c => c.type === "floor").concat(state.cards.filter(c => c.type === "wall"));
+  ordered.forEach(card => root.appendChild(card.type === "floor" ? buildFloorCard(card) : buildWallCard(card)));
   renderAddRow();
 }
 
@@ -1184,11 +1186,9 @@ function paintFloorNet(ctx, card, scene, s, W, H){
   const f = scene.floor;
   ctx.fillStyle = cssVar("--joint"); ctx.fillRect(0, 0, W, H);
   paintTiles(ctx, f.x, f.y, s, W, H);
-
-  paintCuts(ctx, f.x, f.y, s, W, H); // 彩砖尺寸
 }
 
-function paintWallNet(ctx, card, entry, s, W, H, skipCuts){
+function paintWallNet(ctx, card, entry, s, W, H){
   if (!entry || !entry.x || !entry.y) return;
   ctx.fillStyle = cssVar("--joint"); ctx.fillRect(0, 0, W, H);
   paintTiles(ctx, entry.x, entry.y, s, W, H);
@@ -1212,7 +1212,6 @@ function paintWallNet(ctx, card, entry, s, W, H, skipCuts){
     ctx.fillStyle = cssVar("--column"); ctx.fillRect(x, 0, w, h);
     dashedRect(ctx, x, 0, w, h, soft);
   });
-  if (!skipCuts) paintCuts(ctx, entry.x, entry.y, s, W, H); // 彩砖尺寸（后墙在 net 里翻正重画）
 }
 
 function renderRoomNet(scene){
@@ -1254,8 +1253,8 @@ function renderRoomNet(scene){
     const tmp = document.createElement("canvas");
     tmp.width = Wn; tmp.height = Hn;
     const tctx = tmp.getContext("2d");
-    // 后墙经竖翻(scale 1,-1)合成，墙内文字会被镜像；故 tmp 里跳过裁砖尺寸，画完翻转图后翻正重画
-    paintWallNet(tctx, card, entry, s, Wn, Hn, wr.side === "back");
+    // 展开图不标裁砖尺寸（手机上看很乱），墙块/门/窗/立柱只画色块
+    paintWallNet(tctx, card, entry, s, Wn, Hn);
 
     ctx.save();
     ctx.translate(wr.x, wr.y);
@@ -1266,18 +1265,13 @@ function renderRoomNet(scene){
         ctx.translate(wr.w, 0); ctx.rotate(Math.PI / 2);
       }
     } else if (wr.side === "back") {
-      // 后墙翻 180° 竖放：墙根（natural 底边/门所在）贴地面后缘、向远离地面方向长，否则会上下颠倒
-      ctx.translate(0, wr.h); ctx.scale(1, -1);
+      // 后墙=B墙(有门那面)：测量时人面朝它，左右镜像使门/尺寸左右与实测一致；
+      // 同时竖翻让墙根(门所在)贴地面后缘。等效 scale(-1,-1) 即左右+上下都翻。
+      ctx.translate(wr.w, wr.h); ctx.scale(-1, -1);
     }
     // front：不旋转也不翻转，墙根天然贴地面前缘
     ctx.drawImage(tmp, 0, 0, Wn, Hn);
     ctx.restore();
-
-    // 后墙裁砖尺寸：tmp 里的被竖翻成了镜像字，这里在正常视角下重画（位置做同样的竖翻映射）
-    if (wr.side === "back") {
-      paintCuts(ctx, entry.x, entry.y, s, Wn, Hn,
-        (lx, ly) => ({ x: wr.x + lx, y: wr.y + wr.h - ly }));
-    }
   });
 
   // 3) 每面墙标名字（A/B/C/D），其余字样不显示
