@@ -590,7 +590,7 @@ function validateCard(card){
       else {
         if (!(n.sill > 0)) errs.push("窗台离地高度必须大于 0（不做落地窗）");
         if (W > 0 && n.left + n.width > W) errs.push("窗左边距离 + 窗宽超过了墙宽");
-        if (H > 0 && n.sill + n.height > H) errs.push("窗台高度 + 窗高超过了墙高");
+        // 窗户可高于标注墙高：标注墙高是“需贴砖尺寸”，真实墙往往更高，窗顶可进入贴砖区上方，不报错
       }
     }
     card.cols.forEach((c, i) => {
@@ -1037,11 +1037,20 @@ function paintTiles(ctx, xe, ye, s, W, H){
 }
 
 /* 在非整砖（裁砖）处标注其实测尺寸（毫米），方便现场下料。
+ * 思路：只沿着“真实被裁的那条边”画一段尺寸线（两端短刻度 + 中间数值），
+ * 让人一眼看出这个尺寸指的是哪条边、是宽还是高；不画高亮框，避免视觉杂乱。
+ *   - 横向裁砖（某列为整块被裁的“宽”）：尺寸线横着画在贴边一侧
+ *      左缘被裁 → 贴顶部；右缘被裁 → 贴底部
+ *   - 纵向裁砖（某行为整块被裁的“高”）：尺寸线竖着画在贴边一侧
+ *      上缘被裁 → 贴左边；下缘被裁 → 贴右边
+ * opts.skipHeight：墙砖高度方向整体允许高 1~2cm，故墙面预览不标高度方向裁砖尺寸。
  * map(lx, ly)：可选坐标变换，用于后墙（镜像绘制时把文字翻回正常视角）。 */
-function paintCuts(ctx, xe, ye, s, W, H, map){
+function paintCuts(ctx, xe, ye, s, W, H, map, opts){
   const M = map || ((x, y) => ({ x, y }));
   const cut = cssVar("--danger");
   const mmW = W / s, mmH = H / s;
+  const pad = 14; // 尺寸线离边缘的距离（也顺带避开地面的前/后/左/右徽标）
+  const skipHeight = !!(opts && opts.skipHeight);
   ctx.save();
   ctx.font = '700 12px -apple-system, "PingFang SC", sans-serif';
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
@@ -1053,21 +1062,35 @@ function paintCuts(ctx, xe, ye, s, W, H, map){
     ctx.fillStyle = cut;
     ctx.fillText(txt, p.x, p.y);
   };
-  // 横向裁砖条：标出该条宽度（mm）
+  // 横向裁砖条：标出该列“宽度”（mm）
   xe.segments.forEach((xs) => {
     if (!xs.cut) return;
-    let cx = (xs.start + xs.width/2) * s;
-    if (xs.start < 1) cx = Math.max(cx, 40);            // 左缘：避开“左”徽标
-    else if (xs.start + xs.width > mmW - 1) cx = Math.min(cx, W - 40); // 右缘
-    pill(cx, H/2, String(Math.round(xs.width)));
+    const x0 = xs.start * s, x1 = (xs.start + xs.width) * s;
+    const leftEdge = xs.start < 1;
+    const cy = leftEdge ? pad : H - pad;               // 左缘→顶部；右缘→底部
+    const midx = (x0 + x1) / 2;
+    ctx.strokeStyle = cut; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x0, cy); ctx.lineTo(x1, cy);            // 尺寸主线（横）
+    ctx.moveTo(x0, cy - 5); ctx.lineTo(x0, cy + 5);    // 左端刻度
+    ctx.moveTo(x1, cy - 5); ctx.lineTo(x1, cy + 5);    // 右端刻度
+    ctx.stroke();
+    pill(midx, cy, String(Math.round(xs.width)));
   });
-  // 纵向裁砖条：标出该条高度（mm）
-  ye.segments.forEach((ys) => {
+  // 纵向裁砖条：标出该行“高度”（mm）；墙面预览可跳过
+  if (!skipHeight) ye.segments.forEach((ys) => {
     if (!ys.cut) return;
-    let cy = (ys.start + ys.width/2) * s;
-    if (ys.start < 1) cy = Math.max(cy, 40);            // 上缘：避开“上”徽标
-    else if (ys.start + ys.width > mmH - 1) cy = Math.min(cy, H - 40); // 下缘
-    pill(W/2, cy, String(Math.round(ys.width)));
+    const y0 = ys.start * s, y1 = (ys.start + ys.width) * s;
+    const topEdge = ys.start < 1;
+    const cx = topEdge ? pad : W - pad;                // 上缘→左边；下缘→右边
+    const midy = (y0 + y1) / 2;
+    ctx.strokeStyle = cut; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(cx, y0); ctx.lineTo(cx, y1);            // 尺寸主线（竖）
+    ctx.moveTo(cx - 5, y0); ctx.lineTo(cx + 5, y0);    // 上端刻度
+    ctx.moveTo(cx - 5, y1); ctx.lineTo(cx + 5, y1);    // 下端刻度
+    ctx.stroke();
+    pill(cx, midy, String(Math.round(ys.width)));
   });
   ctx.restore();
 }
@@ -1091,7 +1114,7 @@ function labelText(ctx, text, cx, cy, color){
 const doorValid = (card) => card.door.on && card.door.left > 0 && card.door.width > 0 && card.door.height > 0
   && card.door.left + card.door.width <= card.w && card.door.height <= card.h;
 const winValid = (card) => card.win.on && card.win.left > 0 && card.win.sill > 0 && card.win.width > 0 && card.win.height > 0
-  && card.win.left + card.win.width <= card.w && card.win.sill + card.win.height <= card.h;
+  && card.win.left + card.win.width <= card.w; // 窗宽在墙宽内即可；窗可高于标注墙高(真实墙更高)，不限制
 /* 立柱的有效“离左”距离：贴角时由墙宽推算，自由时取存的值 */
 function effLeft(c, card){
   if (c.corner === "left") return 0;
@@ -1139,7 +1162,7 @@ function drawWall(canvas, card, entry){
     `立柱${i+1}`.split("").forEach((ch, k) => ctx.fillText(ch, tx, ty + k * 15));
     ctx.restore();
   });
-  paintCuts(ctx, entry.x, entry.y, s, cssW, cssH);
+  paintCuts(ctx, entry.x, entry.y, s, cssW, cssH, null, { skipHeight: true });
 }
 
 function drawFloor(canvas, card, scene){
