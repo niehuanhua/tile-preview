@@ -1408,18 +1408,36 @@ function buildRoomModel(scene, state){
     return null;
   };
 
+  // 通缝：把每面墙“贴地面的那条边”的水平相位锁到地面对应边，3D 里墙地砖才对缝
+  const st = state.settings;
+  const g = st.grout;
+  const wDims = st.wallTile ? Engine.laidDims(st.wallTile, st.direction) : null;
+  const fDims = st.floorTile ? Engine.laidDims(st.floorTile, st.direction) : null;
+  const floorX = scene.floor ? scene.floor.x : null;
+  const floorY = scene.floor ? scene.floor.y : null;
+
   const walls = []; let maxH = 0;
   for (const card of state.cards) {
     if (card.type !== "wall") continue;
     const e = scene.walls && scene.walls[card.id];
     if (!e || !(card.w > 0) || !(card.h > 0)) continue;
     const side = sideOf(card); if (!side) continue;
+    // 水平相位：前/后墙贴地面“宽”边(floorX)，左/右墙贴“深”边(floorY)；相位直接用地面同边相位
+    let xLayout = e.x;
+    if (wDims && fDims && floorX && floorY) {
+      const map = (side === "left" || side === "right")
+        ? { axis: floorY, dim: fDims.y }
+        : { axis: floorX, dim: fDims.x };
+      if (Engine.compatible(wDims.x, map.dim)) {
+        xLayout = Engine.layoutAxis(card.w, wDims.x, g, st.startMode, map.axis.phase);
+      }
+    }
     const tex = (() => {
       const Wn = Math.max(1, Math.round(card.w * ts)), Hn = Math.max(1, Math.round(card.h * ts));
       const c = document.createElement("canvas"); c.width = Wn; c.height = Hn;
       const x = c.getContext("2d");
       x.fillStyle = cssVar("--joint"); x.fillRect(0, 0, Wn, Hn);
-      if (e.x && e.y) paintTiles(x, e.x, e.y, ts, Wn, Hn);
+      if (xLayout && e.y) paintTiles(x, xLayout, e.y, ts, Wn, Hn);
       paintWallFeatures(x, card, ts);
       return c;
     })();
@@ -1493,10 +1511,11 @@ function makeFloorFace(model, project){
 function makeWallFace(wll, model, project){
   const h = wll.h, FW = model.FW, FH = model.FH;
   let corners, normal;
-  if (wll.side === "front") { const z = -FH/2; corners = { TL:{x:-wll.w/2,y:h,z}, TR:{x:wll.w/2,y:h,z}, BR:{x:wll.w/2,y:0,z}, BL:{x:-wll.w/2,y:0,z} }; normal = { x:0, y:0, z:-1 }; }
-  else if (wll.side === "back") { const z = FH/2; corners = { TL:{x:-wll.w/2,y:h,z}, TR:{x:wll.w/2,y:h,z}, BR:{x:wll.w/2,y:0,z}, BL:{x:-wll.w/2,y:0,z} }; normal = { x:0, y:0, z:1 }; }
-  else if (wll.side === "left") { const x = -FW/2; corners = { TL:{x,y:h,z:-wll.w/2}, TR:{x,y:h,z:wll.w/2}, BR:{x,y:0,z:wll.w/2}, BL:{x,y:0,z:-wll.w/2} }; normal = { x:-1, y:0, z:0 }; }
-  else { const x = FW/2; corners = { TL:{x,y:h,z:-wll.w/2}, TR:{x,y:h,z:wll.w/2}, BR:{x,y:0,z:wll.w/2}, BL:{x,y:0,z:-wll.w/2} }; normal = { x:1, y:0, z:0 }; }
+  // 墙左缘对齐到地面对应边起点（-FW/2 或 -FH/2），与通缝锁定的相位起点一致
+  if (wll.side === "front") { const z = -FH/2; corners = { TL:{x:-FW/2,y:h,z}, TR:{x:-FW/2+wll.w,y:h,z}, BR:{x:-FW/2+wll.w,y:0,z}, BL:{x:-FW/2,y:0,z} }; normal = { x:0, y:0, z:-1 }; }
+  else if (wll.side === "back") { const z = FH/2; corners = { TL:{x:-FW/2,y:h,z}, TR:{x:-FW/2+wll.w,y:h,z}, BR:{x:-FW/2+wll.w,y:0,z}, BL:{x:-FW/2,y:0,z} }; normal = { x:0, y:0, z:1 }; }
+  else if (wll.side === "left") { const x = -FW/2; corners = { TL:{x,y:h,z:-FH/2}, TR:{x,y:h,z:-FH/2+wll.w}, BR:{x,y:0,z:-FH/2+wll.w}, BL:{x,y:0,z:-FH/2} }; normal = { x:-1, y:0, z:0 }; }
+  else { const x = FW/2; corners = { TL:{x,y:h,z:-FH/2}, TR:{x,y:h,z:-FH/2+wll.w}, BR:{x,y:0,z:-FH/2+wll.w}, BL:{x,y:0,z:-FH/2} }; normal = { x:1, y:0, z:0 }; }
   const sTL = project(corners.TL), sTR = project(corners.TR), sBR = project(corners.BR), sBL = project(corners.BL);
   if (!(sTL.valid && sTR.valid && sBR.valid && sBL.valid)) return null;
   const tex = wll.tex, tw = tex.width, th = tex.height;
@@ -1513,7 +1532,7 @@ function makeWallFace(wll, model, project){
 function renderRoom3D(scene){
   const wrap = $("#room3dWrap"); if (!wrap) return;
   R3D.model = buildRoomModel(scene, state);
-  if (!R3D.cam) R3D.cam = { yaw: 0.7, pitch: 0.45, dist: null };
+  if (!R3D.cam) R3D.cam = { yaw: 0.15, pitch: 0.95, dist: null };
   if (R3D.model && R3D.cam.dist == null) R3D.cam.dist = (R3D.model.dim * 0.5) / Math.tan(R3D_FOV / 2) * 1.8;
   renderRoom3DDraw();
 }
@@ -1561,12 +1580,9 @@ function renderRoom3DDraw(){
   const ff = makeFloorFace(model, project); if (ff) faces.push(ff);
   model.walls.forEach(wll => { const fc = makeWallFace(wll, model, project); if (fc) faces.push(fc); });
 
-  // 近墙（外法线朝向镜头）隐藏，露出屋内
-  const visible = faces.filter(fc => {
-    const c = fc.center;
-    const d = fc.normal.x * (camPos.x - c.x) + fc.normal.y * (camPos.y - c.y) + fc.normal.z * (camPos.z - c.z);
-    return d < 0;
-  });
+  // 四面墙都画（远→近排序，画家算法）。默认俯视角度即可一次看全屋内四面墙，
+  // 不必隐藏近墙——拖动到接近水平时也只是看到盒子的外侧，不会“丢”掉哪面墙。
+  const visible = faces;
   visible.sort((a, b) => b.depth - a.depth);  // 远→近
 
   visible.forEach(fc => {
