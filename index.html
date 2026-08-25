@@ -1538,7 +1538,7 @@ function makeWallFace(wll, model, project){
 function renderRoom3D(scene){
   const wrap = $("#room3dWrap"); if (!wrap) return;
   R3D.model = buildRoomModel(scene, state);
-  if (!R3D.cam) R3D.cam = { yaw: 0.15, pitch: 0.95, dist: null };
+  if (!R3D.cam) R3D.cam = { yaw: 0.7, pitch: 0.45, dist: null };
   if (R3D.model && R3D.cam.dist == null) R3D.cam.dist = (R3D.model.dim * 0.5) / Math.tan(R3D_FOV / 2) * 1.8;
   renderRoom3DDraw();
 }
@@ -1586,9 +1586,12 @@ function renderRoom3DDraw(){
   const ff = makeFloorFace(model, project); if (ff) faces.push(ff);
   model.walls.forEach(wll => { const fc = makeWallFace(wll, model, project); if (fc) faces.push(fc); });
 
-  // 四面墙都画（远→近排序，画家算法）。默认俯视角度即可一次看全屋内四面墙，
-  // 不必隐藏近墙——拖动到接近水平时也只是看到盒子的外侧，不会“丢”掉哪面墙。
-  const visible = faces;
+  // 近墙（外法线朝向镜头）隐藏，露出屋内——一次主要看 2 面墙，拖动可换角度
+  const visible = faces.filter(fc => {
+    const c = fc.center;
+    const d = fc.normal.x * (camPos.x - c.x) + fc.normal.y * (camPos.y - c.y) + fc.normal.z * (camPos.z - c.z);
+    return d < 0;
+  });
   visible.sort((a, b) => b.depth - a.depth);  // 远→近
 
   visible.forEach(fc => {
