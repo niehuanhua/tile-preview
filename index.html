@@ -226,10 +226,8 @@ button{cursor:pointer; touch-action:manipulation}
         <div class="set-row">
           <span class="set-label">砖缝宽度</span>
           <div class="seg" id="groutSeg">
-            <button data-v="1">1 mm</button>
             <button data-v="2">2 mm</button>
-            <button data-v="3">3 mm</button>
-            <button data-v="5">5 mm</button>
+            <button data-v="2.5">2.5 mm</button>
           </div>
         </div>
 
@@ -246,7 +244,7 @@ button{cursor:pointer; touch-action:manipulation}
     <p class="rn-sub" id="roomNetSub">地面居中，四面墙按“墙地通缝”设定的边围在四周（像把盒子拆开）</p>
     <div class="rn-plot">
       <canvas id="roomNet"></canvas>
-      <p class="plot-empty" id="roomNetEmpty">填好地面尺寸、选好地砖规格后，这里显示整屋展开图</p>
+      <p class="plot-empty" id="roomNetEmpty"></p>
     </div>
   </section>
 
@@ -395,7 +393,13 @@ const Engine = (() => {
           const edgeLen   = horizontal ? floorCard.w : floorCard.h;
           if (compatible(wDims.x, floorDim)) {
             locked = true;
-            entry.x = layoutAxis(wall.w, wDims.x, g, s.startMode, floorAxis.phase);
+            // 左墙在展开图里转 -90°（net_y = 边 − 墙x），墙 x 方向与地面竖边相反，
+            // 直接照搬地面相位会把整面墙的缝翻到另一端（错位≈一个相位）。
+            // 故左墙镜像：墙相位 = (墙长 − 地面相位) mod 墙模块；前/后/右方向一致，直接照搬。
+            const phaseOverride = (wall.alignEdge === "left")
+              ? (wall.w - floorAxis.phase)
+              : floorAxis.phase;
+            entry.x = layoutAxis(wall.w, wDims.x, g, s.startMode, phaseOverride);
             entry.align = { ok:true };
             entry.statuses.push({ kind:"ok", text:"通缝已对齐" });
             if (Math.abs(wall.w - edgeLen) > 1) {
@@ -522,7 +526,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = Engine;
  * ============================================================ */
 const STORE_KEY = "tilePreviewV12";
 const WALL_PRESETS  = [[300,600],[400,800],[600,1200]];
-const FLOOR_PRESETS = [[300,300],[400,400],[800,800]];
+const FLOOR_PRESETS = [[300,300],[400,400],[600,600]];
 const EDGE_NAMES = { front:"前边", back:"后边", left:"左边", right:"右边" };
 
 const defaultState = () => ({
@@ -644,7 +648,7 @@ function renderSettings(){
   // 分段按钮
   $$("#dirSeg button").forEach(b => b.classList.toggle("on", b.dataset.v === s.direction));
   $$("#startSeg button").forEach(b => b.classList.toggle("on", b.dataset.v === s.startMode));
-  $$("#groutSeg button").forEach(b => b.classList.toggle("on", parseInt(b.dataset.v,10) === s.grout));
+  $$("#groutSeg button").forEach(b => b.classList.toggle("on", parseFloat(b.dataset.v) === s.grout));
 
   // 摘要行
   const wt = s.wallTile ? (s.wallTile.preset === "custom"
@@ -676,7 +680,7 @@ function bindSettings(){
   custBind("#floorCW", "#floorCH", "floorTile");
   $$("#dirSeg button").forEach(b => b.onclick = () => { state.settings.direction = b.dataset.v; save(); renderSettings(); update(); });
   $$("#startSeg button").forEach(b => b.onclick = () => { state.settings.startMode = b.dataset.v; save(); renderSettings(); update(); });
-  $$("#groutSeg button").forEach(b => b.onclick = () => { state.settings.grout = parseInt(b.dataset.v,10); save(); renderSettings(); update(); });
+  $$("#groutSeg button").forEach(b => b.onclick = () => { state.settings.grout = parseFloat(b.dataset.v); save(); renderSettings(); update(); });
 }
 
 /* ============================================================
@@ -1030,19 +1034,22 @@ function paintTiles(ctx, xe, ye, s, W, H){
   }
 }
 
-/* 在非整砖（裁砖）处标注其实测尺寸（毫米），方便现场下料 */
-function paintCuts(ctx, xe, ye, s, W, H){
+/* 在非整砖（裁砖）处标注其实测尺寸（毫米），方便现场下料。
+ * map(lx, ly)：可选坐标变换，用于后墙（镜像绘制时把文字翻回正常视角）。 */
+function paintCuts(ctx, xe, ye, s, W, H, map){
+  const M = map || ((x, y) => ({ x, y }));
   const cut = cssVar("--danger");
   const mmW = W / s, mmH = H / s;
   ctx.save();
   ctx.font = '700 12px -apple-system, "PingFang SC", sans-serif';
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
   const pill = (cx, cy, txt) => {
+    const p = M(cx, cy);
     const w = ctx.measureText(txt).width + 10;
     ctx.fillStyle = "rgba(255,255,255,0.92)";
-    ctx.fillRect(cx - w/2, cy - 10, w, 20);
+    ctx.fillRect(p.x - w/2, p.y - 10, w, 20);
     ctx.fillStyle = cut;
-    ctx.fillText(txt, cx, cy);
+    ctx.fillText(txt, p.x, p.y);
   };
   // 横向裁砖条：标出该条宽度（mm）
   xe.segments.forEach((xs) => {
@@ -1178,31 +1185,10 @@ function paintFloorNet(ctx, card, scene, s, W, H){
   ctx.fillStyle = cssVar("--joint"); ctx.fillRect(0, 0, W, H);
   paintTiles(ctx, f.x, f.y, s, W, H);
 
-  const accent = cssVar("--accent");
-  const badge = (text, cx, cy) => {
-    const bw = 30, bh = 22, r = 6;
-    ctx.save();
-    ctx.fillStyle = accent;
-    ctx.beginPath();
-    if (ctx.roundRect) ctx.roundRect(cx - bw/2, cy - bh/2, bw, bh, r);
-    else ctx.rect(cx - bw/2, cy - bh/2, bw, bh);
-    ctx.fill();
-    ctx.fillStyle = "#fff";
-    ctx.font = '700 13px -apple-system, "PingFang SC", sans-serif';
-    ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText(text, cx, cy + 0.5);
-    ctx.restore();
-  };
-  const inset = 18;
-  const mid = { top:[W/2, inset], bottom:[W/2, H - inset], left:[inset * 1.2, H/2], right:[W - inset * 1.2, H/2] };
-  for (const [name, diagramEdge] of Object.entries(f.edges)) {
-    const [cx, cy] = mid[diagramEdge];
-    badge(EDGE_NAMES[name], cx, cy);
-  }
-  paintCuts(ctx, f.x, f.y, s, W, H);
+  paintCuts(ctx, f.x, f.y, s, W, H); // 彩砖尺寸
 }
 
-function paintWallNet(ctx, card, entry, s, W, H, noText){
+function paintWallNet(ctx, card, entry, s, W, H, skipCuts){
   if (!entry || !entry.x || !entry.y) return;
   ctx.fillStyle = cssVar("--joint"); ctx.fillRect(0, 0, W, H);
   paintTiles(ctx, entry.x, entry.y, s, W, H);
@@ -1213,31 +1199,20 @@ function paintWallNet(ctx, card, entry, s, W, H, noText){
     const x = d.left * s, y = (card.h - d.height) * s, w = d.width * s, h = d.height * s;
     ctx.fillStyle = cssVar("--open"); ctx.fillRect(x, y, w, h);
     dashedRect(ctx, x, y, w, h, soft);
-    if (!noText) labelText(ctx, "门", x + w/2, y + h/2, soft);
   }
   if (winValid(card)) {
     const n = card.win;
     const x = n.left * s, y = (card.h - n.sill - n.height) * s, w = n.width * s, h = n.height * s;
     ctx.fillStyle = cssVar("--open"); ctx.fillRect(x, y, w, h);
     dashedRect(ctx, x, y, w, h, soft);
-    if (!noText) labelText(ctx, "窗", x + w/2, y + h/2, soft);
   }
-  card.cols.forEach((c, i) => {
+  card.cols.forEach((c) => {
     if (!colValid(c, card)) return;
     const x = effLeft(c, card) * s, w = c.width * s, h = card.h * s;
     ctx.fillStyle = cssVar("--column"); ctx.fillRect(x, 0, w, h);
     dashedRect(ctx, x, 0, w, h, soft);
-    if (!noText) {
-      ctx.save();
-      ctx.fillStyle = cssVar("--ink");
-      ctx.font = '700 12px -apple-system, "PingFang SC", sans-serif';
-      ctx.textAlign = "center"; ctx.textBaseline = "middle";
-      const tx = x + w/2, ty = h/2 - 20;
-      `立柱${i+1}`.split("").forEach((ch, k) => ctx.fillText(ch, tx, ty + k * 15));
-      ctx.restore();
-    }
   });
-  paintCuts(ctx, entry.x, entry.y, s, W, H);
+  if (!skipCuts) paintCuts(ctx, entry.x, entry.y, s, W, H); // 彩砖尺寸（后墙在 net 里翻正重画）
 }
 
 function renderRoomNet(scene){
@@ -1279,7 +1254,7 @@ function renderRoomNet(scene){
     const tmp = document.createElement("canvas");
     tmp.width = Wn; tmp.height = Hn;
     const tctx = tmp.getContext("2d");
-    // 后墙经竖翻(scale 1,-1)合成，墙内文字会被镜像，故跳过文字、仅保留门/窗/立柱色块
+    // 后墙经竖翻(scale 1,-1)合成，墙内文字会被镜像；故 tmp 里跳过裁砖尺寸，画完翻转图后翻正重画
     paintWallNet(tctx, card, entry, s, Wn, Hn, wr.side === "back");
 
     ctx.save();
@@ -1297,18 +1272,26 @@ function renderRoomNet(scene){
     // front：不旋转也不翻转，墙根天然贴地面前缘
     ctx.drawImage(tmp, 0, 0, Wn, Hn);
     ctx.restore();
+
+    // 后墙裁砖尺寸：tmp 里的被竖翻成了镜像字，这里在正常视角下重画（位置做同样的竖翻映射）
+    if (wr.side === "back") {
+      paintCuts(ctx, entry.x, entry.y, s, Wn, Hn,
+        (lx, ly) => ({ x: wr.x + lx, y: wr.y + wr.h - ly }));
+    }
   });
 
-  // 3) 每面墙标名字（让平面图一眼看懂）
+  // 3) 每面墙标名字（A/B/C/D），其余字样不显示
   net.walls.forEach(wr => {
     const card = state.cards.find(c => c.id === wr.id);
     if (!card) return;
+    const m = /墙\s*([A-Da-d])/.exec(card.name || "");
+    const name = m ? (m[1].toUpperCase() + "墙") : (card.name || "");
     let cx, cy;
     if (wr.side === "front")      { cx = wr.x + wr.w/2; cy = wr.y - 12; }
     else if (wr.side === "back")  { cx = wr.x + wr.w/2; cy = wr.y + wr.h + 14; }
     else if (wr.side === "left")  { cx = wr.x - 12;     cy = wr.y + wr.h/2; }
     else /* right */              { cx = wr.x + wr.w + 12; cy = wr.y + wr.h/2; }
-    labelText(ctx, card.name, cx, cy, cssVar("--ink"));
+    labelText(ctx, name, cx, cy, cssVar("--ink"));
   });
 }
 

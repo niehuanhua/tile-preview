@@ -137,7 +137,7 @@ test("验收14 · 通缝与 1/3 冲突：优先保通缝", () => {
   check("相位仍锁定为地面相位（保通缝、不挪动）", near(entry.x.phase, scene.floor.x.phase, 0.001));
 });
 
-test("通缝·左右边 · 墙选地面的左边/右边 → 用地面 y 方向相位", () => {
+test("通缝·左右边 · 墙选地面的左边/右边 → 相位镜像对齐（砖缝真正对上，非照搬地面相位）", () => {
   const st = mkState();
   st.settings.wallTile = { preset: "300×600", w: 300, h: 600 };
   st.settings.floorTile = { preset: "300×300", w: 300, h: 300 };
@@ -147,7 +147,20 @@ test("通缝·左右边 · 墙选地面的左边/右边 → 用地面 y 方向�
   wall.w = 1500; wall.h = 2400; wall.alignEdge = "left";
   const scene = E.computeScene(st);
   const entry = scene.walls.w1;
-  check("选左边 → 对齐地面 y 相位", near(entry.x.phase, scene.floor.y.phase, 0.001), `墙 ${entry.x.phase} vs 地面y ${scene.floor.y.phase}`);
+  check("通缝锁定成功", entry.align && entry.align.ok);
+  // 左/右墙在展开图转 90°，墙 x 方向与地面竖边反向，墙缝 sx 对应地面缝 (wall.w − sx)。
+  // 正确判据：每条“墙缝”都能对上一条“地面缝”（墙砖坐在地面网格上，2:1 砖型下地面中间缝本就无墙缝，属正常）。
+  // 揪出“照搬相位→整面墙缝翻到另一端”的 Bug（旧 Bug 会让所有墙缝整体偏移≈一个相位）。
+  const floorSeams = scene.floor.y.segments.flatMap(s => [s.start, s.start + s.width]);
+  const wallSeams = entry.x.segments.flatMap(s => [s.start, s.start + s.width]);
+  const tol = 12; // 缝宽导致模块不完全公约时的固有限位，非 Bug
+  let worst = 0;
+  for (const sx of wallSeams) {
+    const want = wall.w - sx;                        // 该墙缝对应的地面缝位置（镜像）
+    const best = Math.min(...floorSeams.map(mf => Math.abs(mf - want)));
+    worst = Math.max(worst, best);
+  }
+  check("每条墙缝都落在地面网格上（无整体错位）", worst <= tol, `最大偏差 ${worst.toFixed(2)}mm（旧 Bug 为约 150mm）`);
   check("无宽度不一致提示（1500 = 地面左边长度）", !entry.statuses.some(s => s.text.includes("不一致")));
 });
 
