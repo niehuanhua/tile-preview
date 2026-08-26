@@ -16,6 +16,7 @@
   --chip:#ECEAE4;       /* 未选中的选项块 */
   --tile:#DAD6CE;       /* 砖块（图上） */
   --joint:#FFFFFF;      /* 砖缝（图上） */
+  --r3d-joint:#8B8D90;  /* 砖缝（三维图上）：用中性灰，避免低分辨率下出现亮白格子 */
   --column:#C9B8A2;     /* 包管立柱（图上） */
   --open:#F3F1EC;       /* 门窗洞口底色（图上） */
   --accent:#2B5E9B;     /* 操作蓝：墨斗线 */
@@ -30,7 +31,7 @@
 @media (prefers-color-scheme: dark){
   :root:not([data-theme="light"]){
     --paper:#17181B; --card:#202226; --ink:#ECEDEF; --ink-soft:#9CA2AA;
-    --line:#34373D; --chip:#2A2D32; --tile:#4A4E55; --joint:#1B1C20;
+    --line:#34373D; --chip:#2A2D32; --tile:#4A4E55; --joint:#1B1C20; --r3d-joint:#2D3138;
     --column:#6E6050; --open:#1B1C20;
     --accent:#7FA9DC; --accent-soft:#243246;
     --ok:#74C28C; --ok-soft:#1F3327;
@@ -40,7 +41,7 @@
 }
 :root[data-theme="dark"]{
   --paper:#17181B; --card:#202226; --ink:#ECEDEF; --ink-soft:#9CA2AA;
-  --line:#34373D; --chip:#2A2D32; --tile:#4A4E55; --joint:#1B1C20;
+  --line:#34373D; --chip:#2A2D32; --tile:#4A4E55; --joint:#1B1C20; --r3d-joint:#2D3138;
   --column:#6E6050; --open:#1B1C20;
   --accent:#7FA9DC; --accent-soft:#243246;
   --ok:#74C28C; --ok-soft:#1F3327;
@@ -73,7 +74,7 @@ button{cursor:pointer; touch-action:manipulation}
 .legend i{font-style:normal; display:inline-flex; align-items:center; justify-content:center; border-radius:5px; box-sizing:border-box}
 .sw-cut{background:#fff; color:var(--danger); border:1px solid var(--danger); font-weight:700; font-size:11px; min-width:28px; height:18px; padding:0 4px}
 .sw-edge{background:var(--accent); color:#fff; font-weight:700; font-size:11px; width:20px; height:18px}
-.sw-col{width:16px; height:14px; background:var(--column); border:1px solid var(--line)}
+.sw-col{width:16px; height:14px; background:linear-gradient(90deg, rgba(0,0,0,.22), rgba(0,0,0,0) 32%, rgba(0,0,0,0) 68%, rgba(0,0,0,.22)), var(--column); border:1px solid var(--line)}
 .sw-open{width:16px; height:14px; background:var(--open); border:1px dashed var(--ink-soft)}
 
 /* ---------- 顶部设置区（吸顶、可收起） ---------- */
@@ -182,7 +183,7 @@ button{cursor:pointer; touch-action:manipulation}
   <div class="legend">
     <span class="lg"><i class="sw-cut">120</i> 裁砖（非整砖）实测尺寸</span>
     <span class="lg"><i class="sw-edge">前</i> 方位（前/后/左/右）</span>
-    <span class="lg"><i class="sw-col"></i> 包管立柱</span>
+    <span class="lg"><i class="sw-col"></i> 包管立柱（往外凸）</span>
     <span class="lg"><i class="sw-open"></i> 门 / 窗</span>
   </div>
 
@@ -609,6 +610,7 @@ function validateCard(card){
       }
     }
     card.cols.forEach((c, i) => {
+      if (c.width == null && c.depth == null) return; // 刚添加还没填：先不报错，图上也不画
       const L = effLeft(c, card);
       const needLeft = !c.corner;                 // 贴角时离左自动算，不要求手填
       const nums = needLeft ? [c.left, c.width, c.depth] : [c.width, c.depth];
@@ -805,13 +807,11 @@ function featBlock(card){
   col.appendChild(cs);
   const cbBody = el("div", "feat-body");
   const rows = el("div"); rows.style.display = "flex"; rows.style.flexDirection = "column"; rows.style.gap = "8px";
-  const addBtn = el("button", "mini-add", "＋ 添加立柱（宽,深 → 默认贴左角）");
+  const addBtn = el("button", "mini-add", "＋ 添加立柱（默认贴左角，添加后直接填尺寸）");
   addBtn.onclick = () => {
-    const raw = window.prompt("输入这根包管立柱的尺寸（毫米），用逗号或空格分隔：\n宽, 深\n例如：200, 200\n（默认贴左墙角，添加后可在下方改成贴右角或自由）", "");
-    if (raw == null) return;
-    const nums = raw.split(/[,，\s]+/).map(s => parseMM(s)).filter(v => v > 0);
-    if (nums.length !== 2) { window.alert("要填两个正整数（宽,深），已取消添加"); return; }
-    card.cols.push({ corner:"left", left:0, width: nums[0], depth: nums[1] });
+    // 不用 window.prompt 弹窗：手机浏览器（尤其 iPhone Safari）不支持它，点了会没反应。
+    // 直接加一根空立柱，下方立刻出现"宽/深"输入框，手机上也能正常填。
+    card.cols.push({ corner:"left", left:0, width:null, depth:null });
     save(); renderCards(); update();
   };
   cbBody.appendChild(rows); cbBody.appendChild(addBtn); col.appendChild(cbBody);
@@ -843,7 +843,8 @@ function featBlock(card){
       const eff = effLeft(c, card);
       [["left","离左边"],["width","宽"],["depth","深"]].forEach(([k,label]) => {
         const f = el("label", "field mini"); f.appendChild(el("span", null, label));
-        const inp = el("input"); inp.type = "text"; inp.inputMode = "numeric"; inp.placeholder = "mm";
+        const inp = el("input"); inp.type = "text"; inp.inputMode = "numeric";
+        inp.placeholder = (k === "left") ? "mm" : "如 200";
         const snap = (k === "left") && !!c.corner;
         inp.value = snap ? (eff != null ? eff : "") : (c[k] != null ? c[k] : "");
         if (snap) inp.disabled = true; // 贴角时离左自动算，不可改
@@ -965,7 +966,12 @@ function update(){
 
     const entry = card.type === "wall" ? scene.walls[card.id] : null;
     if (card.type === "wall" && entry) entry.statuses.forEach(st => msgs.push(st));
-    if (card.type === "floor" && scene.floor) scene.floor.statuses.forEach(st => msgs.push(st));
+    if (card.type === "floor" && scene.floor) {
+      scene.floor.statuses.forEach(st => msgs.push(st));
+      if (columnFootprints(scene, state).length) {
+        msgs.push({ kind:"info", text:"立柱压在地面上：与柱脚相叠的地砖要裁切，图上红字是剩余块实测尺寸" });
+      }
+    }
 
     // 尺寸本身的合法性
     let sizeOk = card.w > 0 && card.h > 0;
@@ -1039,15 +1045,23 @@ function setupCanvas(canvas, wMM, hMM){
   return { ctx, s, cssW, cssH };
 }
 
-function paintTiles(ctx, xe, ye, s, W, H){
+function paintTiles(ctx, xe, ye, s, W, H, minG){
   ctx.fillStyle = cssVar("--tile");
   if (xe.segments.dense || ye.segments.dense) { // 砖太小、数量太多：整体示意
     ctx.fillRect(0, 0, W || 0, H || 0);
     return;
   }
+  // minG>0 时：砖缝在贴图里的像素宽小于 minG 会把每块砖四边内缩 minG/2，
+  // 让砖缝至少 minG 像素，肉眼能看出砖的尺寸（仅 3D 传 >0，2D 不受影响）。
+  const pad = (minG && minG > 0) ? minG / 2 : 0;
   for (const ys of ye.segments) {
     for (const xs of xe.segments) {
-      ctx.fillRect(xs.start * s, ys.start * s, xs.width * s, ys.width * s);
+      const wpx = xs.width * s, hpx = ys.width * s;
+      if (pad > 0 && pad * 2 < Math.min(wpx, hpx)) {
+        ctx.fillRect(xs.start * s + pad, ys.start * s + pad, wpx - 2 * pad, hpx - 2 * pad);
+      } else {
+        ctx.fillRect(xs.start * s, ys.start * s, wpx, hpx);
+      }
     }
   }
 }
@@ -1179,6 +1193,142 @@ function effLeft(c, card){
 }
 const colValid = (c, card) => { const L = effLeft(c, card); return L >= 0 && c.width > 0 && c.depth > 0 && L + c.width <= (card.w || 0); };
 
+/* 立柱在地面上的"脚印"（俯视矩形，毫米）：立柱压在地面上，地砖要围着它裁。
+ * side 分配与镜像约定和三维图完全一致（地面阴影必须和柱子盒子对上）。 */
+function columnFootprints(scene, state){
+  const f = scene && scene.floor;
+  if (!f || !f.card || !(f.card.w > 0) || !(f.card.h > 0)) return [];
+  const FW = f.card.w, FH = f.card.h;
+  const used = new Set(); const order = ["front", "back", "left", "right"];
+  const out = [];
+  for (const card of state.cards) {
+    if (card.type !== "wall") continue;
+    if (!(card.w > 0) || !(card.h > 0)) continue;
+    let side = null;
+    if (card.alignEdge && card.alignEdge !== "none" && !used.has(card.alignEdge)) { used.add(card.alignEdge); side = card.alignEdge; }
+    else { for (const s of order) if (!used.has(s)) { used.add(s); side = s; break; } }
+    if (!side) continue;
+    const flip = !!(card.door && card.door.on);
+    const across = (side === "front" || side === "back") ? FH : FW;
+    card.cols.forEach((c) => {
+      if (!colValid(c, card)) return;
+      const L = effLeft(c, card);
+      const t0 = flip ? Math.max(0, card.w - L - c.width) : L;
+      const d = Math.min(c.depth, across * 0.9);
+      if (side === "front")      out.push({ x:(FW - card.w) / 2 + t0, y:0,      w:c.width, h:d });
+      else if (side === "back")  out.push({ x:(FW - card.w) / 2 + t0, y:FH - d, w:c.width, h:d });
+      else if (side === "left")  out.push({ x:0,      y:(FH - card.w) / 2 + t0, w:d, h:c.width });
+      else                       out.push({ x:FW - d, y:(FH - card.w) / 2 + t0, w:d, h:c.width });
+    });
+  }
+  return out;
+}
+
+/* 地面图上的柱脚色块（俯视）：柱色填充 + 实线框 */
+function paintFootprint(ctx, r, s, label){
+  const x = r.x * s, y = r.y * s, w = r.w * s, h = r.h * s;
+  ctx.fillStyle = cssVar("--column");
+  ctx.fillRect(x, y, w, h);
+  ctx.save();
+  ctx.strokeStyle = cssVar("--ink-soft"); ctx.lineWidth = 1.5;
+  ctx.strokeRect(x + 0.75, y + 0.75, w - 1.5, h - 1.5);
+  ctx.restore();
+  if (label && w > 20 && h > 20) labelText(ctx, label, x + w / 2, y + h / 2, cssVar("--ink"));
+}
+
+/* 柱脚压到的砖要裁切：红字标出"砖缝到柱边"剩下那块的实测尺寸，现场照着下料。
+ * 只对真正被柱边穿过的砖格标（柱边恰好落在缝上 = 不用裁，不标）。 */
+function paintFootprintCuts(ctx, r, xe, ye, s, W, H){
+  if (!xe || !ye || xe.segments.dense || ye.segments.dense) return;
+  const cut = cssVar("--danger");
+  const pad = 14;
+  const X0 = r.x, X1 = r.x + r.w, Y0 = r.y, Y1 = r.y + r.h;
+  const FWmm = W / s, FHmm = H / s;
+  ctx.save();
+  ctx.font = '700 12px -apple-system, "PingFang SC", sans-serif';
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  const pillW = (t) => ctx.measureText(t).width + 10;
+  const marks = [];
+  xe.segments.forEach((seg) => {
+    const s0 = seg.start, s1 = seg.start + seg.width;
+    if (s0 < X0 - 0.5 && s1 > X0 + 0.5) marks.push({ axis:"h", a:s0, b:X0, v:X0 - s0 });
+    if (s0 < X1 - 0.5 && s1 > X1 + 0.5) marks.push({ axis:"h", a:X1, b:s1, v:s1 - X1 });
+  });
+  ye.segments.forEach((seg) => {
+    const s0 = seg.start, s1 = seg.start + seg.width;
+    if (s0 < Y0 - 0.5 && s1 > Y0 + 0.5) marks.push({ axis:"v", a:s0, b:Y0, v:Y0 - s0 });
+    if (s0 < Y1 - 0.5 && s1 > Y1 + 0.5) marks.push({ axis:"v", a:Y1, b:s1, v:s1 - Y1 });
+  });
+  // 每个标签的默认落点（尺寸线 + 数字一起记，方便整体挪动）
+  marks.forEach((mk) => {
+    mk.txt = String(Math.round(mk.v));
+    mk.w = pillW(mk.txt); mk.h = 20;
+    if (mk.axis === "h") {
+      const ly = (Y1 < FHmm - 1) ? Y1 * s + pad : Y0 * s - pad;  // 贴下边时改画在柱脚上方
+      mk.x0 = mk.a * s; mk.x1 = mk.b * s; mk.y0 = mk.y1 = ly; mk.cx = (mk.x0 + mk.x1) / 2; mk.cy = ly;
+    } else {
+      const lx = (X1 < FWmm - 1) ? X1 * s + pad : X0 * s - pad;  // 贴右边时改画在柱脚左方
+      mk.y0 = mk.a * s; mk.y1 = mk.b * s; mk.x0 = mk.x1 = lx; mk.cx = lx; mk.cy = (mk.y0 + mk.y1) / 2;
+    }
+  });
+  // 避让：两个标签矩形相叠时，沿各自方向推开（横标上下走、竖标左右走，
+  // 混合相叠时横标往远离柱脚的上/下推、竖标往远离柱脚的左/右推），尺寸线跟着走，多轮直到分开
+  const hit = (a, b) =>
+    Math.abs(a.cx - b.cx) * 2 < a.w + b.w && Math.abs(a.cy - b.cy) * 2 < a.h + b.h;
+  for (let pass = 0; pass < 6; pass++) {
+    let any = false;
+    for (let i = 0; i < marks.length; i++) for (let j = i + 1; j < marks.length; j++) {
+      const a = marks[i], b = marks[j];
+      if (!hit(a, b)) continue;
+      any = true;
+      const dy = (a.h + b.h) / 2 - Math.abs(a.cy - b.cy) + 4;
+      const dx = (a.w + b.w) / 2 - Math.abs(a.cx - b.cx) + 4;
+      const shift = (m, amt) => {
+        if (m.axis === "h") { m.cy += amt; m.y0 += amt; m.y1 += amt; }
+        else { m.cx += amt; m.x0 += amt; m.x1 += amt; }
+      };
+      if (a.axis === "h" && b.axis === "h") { const d = a.cy <= b.cy ? -1 : 1; shift(a, d * dy / 2); shift(b, -d * dy / 2); }
+      else if (a.axis === "v" && b.axis === "v") { const d = a.cx <= b.cx ? -1 : 1; shift(a, d * dx / 2); shift(b, -d * dx / 2); }
+      else {
+        const hM = a.axis === "h" ? a : b, vM = a.axis === "h" ? b : a;
+        shift(hM, (Y1 < FHmm - 1 ? 1 : -1) * dy / 2);   // 横标往柱脚外侧（下/上）推
+        shift(vM, (X1 < FWmm - 1 ? 1 : -1) * dx / 2);   // 竖标往柱脚外侧（右/左）推
+      }
+    }
+    if (!any) break;
+  }
+  marks.forEach((mk) => {
+    mk.cx = Math.max(mk.w / 2 + 2, Math.min(W - mk.w / 2 - 2, mk.cx));
+    mk.cy = Math.max(12, Math.min(H - 12, mk.cy));
+    ctx.strokeStyle = cut; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(mk.x0, mk.y0); ctx.lineTo(mk.x1, mk.y1);
+    if (mk.axis === "h") { ctx.moveTo(mk.x0, mk.y0 - 5); ctx.lineTo(mk.x0, mk.y0 + 5); ctx.moveTo(mk.x1, mk.y1 - 5); ctx.lineTo(mk.x1, mk.y1 + 5); }
+    else { ctx.moveTo(mk.x0 - 5, mk.y0); ctx.lineTo(mk.x0 + 5, mk.y0); ctx.moveTo(mk.x1 - 5, mk.y1); ctx.lineTo(mk.x1 + 5, mk.y1); }
+    ctx.stroke();
+    ctx.fillStyle = "rgba(255,255,255,0.92)"; ctx.fillRect(mk.cx - mk.w / 2, mk.cy - 10, mk.w, 20);
+    ctx.fillStyle = cut; ctx.fillText(mk.txt, mk.cx, mk.cy);
+  });
+  ctx.restore();
+}
+
+/* 画"往外凸"的立柱色带：中间受光提亮、两侧转折面压暗、实线框。
+ * 门/窗用虚线框表示"凹进去的洞口"；立柱用实线框 + 明暗表示"凸出来的墩"。 */
+function paintColumnBand(ctx, x, w, h){
+  ctx.fillStyle = cssVar("--column");
+  ctx.fillRect(x, 0, w, h);
+  const edge = Math.max(2, Math.min(8, w * 0.16));
+  ctx.fillStyle = "rgba(255,255,255,0.14)";            // 正面中间提亮
+  ctx.fillRect(x + edge, 0, w - edge * 2, h);
+  ctx.fillStyle = "rgba(0,0,0,0.18)";                  // 左右两侧压暗，显出凸出的转折
+  ctx.fillRect(x, 0, edge, h);
+  ctx.fillRect(x + w - edge, 0, edge, h);
+  ctx.save();
+  ctx.strokeStyle = cssVar("--ink-soft"); ctx.lineWidth = 1.5;
+  ctx.strokeRect(x + 0.75, 0.75, w - 1.5, h - 1.5);
+  ctx.restore();
+}
+
 /* 墙面的门/窗/立柱（色块 + 虚线框 + 文字）。drawWall 与 3D 离屏渲染共用，
  * 这样 3D 墙面上也能看到门、窗、立柱的位置。 */
 function paintWallFeatures(ctx, card, s){
@@ -1199,12 +1349,11 @@ function paintWallFeatures(ctx, card, s){
     dashedRect(ctx, x, y, w, h, soft);
     labelText(ctx, "窗", x + w/2, y + h/2, soft);
   }
-  // 包管立柱（通顶色带）
+  // 包管立柱（通顶、往外凸的墩）
   card.cols.forEach((c, i) => {
     if (!colValid(c, card)) return;
     const x = effLeft(c, card) * s, w = c.width * s, h = card.h * s;
-    ctx.fillStyle = cssVar("--column"); ctx.fillRect(x, 0, w, h);
-    dashedRect(ctx, x, 0, w, h, soft);
+    paintColumnBand(ctx, x, w, h);
     ctx.save();
     ctx.fillStyle = cssVar("--ink");
     ctx.font = '700 12px -apple-system, "PingFang SC", sans-serif';
@@ -1234,6 +1383,9 @@ function drawFloor(canvas, card, scene){
   ctx.fillStyle = cssVar("--joint"); ctx.fillRect(0, 0, cssW, cssH);
   paintTiles(ctx, f.x, f.y, s, cssW, cssH);
 
+  // 柱脚压在地面上：色块盖住下面的地砖（方位徽标仍画在最上层）
+  columnFootprints(scene, state).forEach(r => paintFootprint(ctx, r, s, "柱"));
+
   // 四条边中点标 前/后/左/右
   const accent = cssVar("--accent");
   const badge = (text, cx, cy) => {
@@ -1262,15 +1414,18 @@ function drawFloor(canvas, card, scene){
     badge(EDGE_NAMES[name], cx, cy);
   }
   paintCuts(ctx, f.x, f.y, s, cssW, cssH);
+
+  // 被柱脚裁到的地砖：红字标"缝到柱边"剩余块实测尺寸
+  columnFootprints(scene, state).forEach(r => paintFootprintCuts(ctx, r, f.x, f.y, s, cssW, cssH));
 }
 
 /* ---- 整屋展开图：在“一张画布”上合成地面 + 四面墙 ----
  * 直接复用底层绘图原语（paintTiles/paintCuts/dashedRect/labelText），都吃显式 scale，
  * 不依赖 setupCanvas，因此和“每面墙单独预览”互不干扰。 */
-function paintFloorNet(ctx, card, scene, s, W, H){
+function paintFloorNet(ctx, card, scene, s, W, H, minG, joint){
   const f = scene.floor;
-  ctx.fillStyle = cssVar("--joint"); ctx.fillRect(0, 0, W, H);
-  paintTiles(ctx, f.x, f.y, s, W, H);
+  ctx.fillStyle = cssVar(joint || "--joint"); ctx.fillRect(0, 0, W, H);
+  paintTiles(ctx, f.x, f.y, s, W, H, minG);
 }
 
 function paintWallNet(ctx, card, entry, s, W, H){
@@ -1294,8 +1449,7 @@ function paintWallNet(ctx, card, entry, s, W, H){
   card.cols.forEach((c) => {
     if (!colValid(c, card)) return;
     const x = effLeft(c, card) * s, w = c.width * s, h = card.h * s;
-    ctx.fillStyle = cssVar("--column"); ctx.fillRect(x, 0, w, h);
-    dashedRect(ctx, x, 0, w, h, soft);
+    paintColumnBand(ctx, x, w, h);
   });
 }
 
@@ -1323,10 +1477,11 @@ function renderRoomNet(scene){
   ctx.clearRect(0, 0, net.canvas.w, net.canvas.h);
 
   const s = net.scale;
-  // 1) 地面
+  // 1) 地面（含柱脚色块；展开图不标红字，保持干净）
   ctx.save();
   ctx.translate(net.floor.x, net.floor.y);
   paintFloorNet(ctx, f.card, scene, s, Math.round(net.floor.w), Math.round(net.floor.h));
+  columnFootprints(scene, state).forEach(r => paintFootprint(ctx, r, s, null));
   ctx.restore();
 
   // 2) 四面墙（左/右墙转 90° 合成；推导见注释，保证墙根贴地、不串位）
@@ -1381,6 +1536,7 @@ function renderRoomNet(scene){
  *   - 鼠标拖动旋转、滚轮缩放
  * ============================================================ */
 const R3D_FOV = 45 * Math.PI / 180;
+const R3D_MIN_GROUT = 2;   // 3D 贴图里砖缝的最小像素宽：缝太窄(亚像素)时把砖内缩，保证肉眼可见
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 let R3D = { model: null, cam: null };
 
@@ -1391,22 +1547,50 @@ function buildRoomModel(scene, state){
   const FW = f.card.w, FH = f.card.h;
   const ts = Math.min(0.7, 700 / Math.max(FW, FH, 1));   // px / mm
 
-  // 地面贴图
+  // 四面墙 side 分配（alignEdge 优先，否则按空位补）：先算，地面阴影和墙都要用
+  const used = new Set(); const order = ["front", "back", "left", "right"];
+  const sideMap = new Map();
+  for (const card of state.cards) {
+    if (card.type !== "wall" || !(card.w > 0) || !(card.h > 0)) continue;
+    let s = null;
+    if (card.alignEdge && card.alignEdge !== "none" && !used.has(card.alignEdge)) { used.add(card.alignEdge); s = card.alignEdge; }
+    else { for (const q of order) if (!used.has(q)) { used.add(q); s = q; break; } }
+    if (s) sideMap.set(card.id, s);
+  }
+
+  // 柱盒落地矩形（角点对齐：和墙上柱色带、柱盒严格同位）→ 地面阴影按它画，
+  // 保证任何数据下"柱子坐在阴影里"；2D 地面图/展开图另用居中约定（columnFootprints）
+  const shadows = [];
+  for (const card of state.cards) {
+    if (card.type !== "wall") continue;
+    const side = sideMap.get(card.id); if (!side) continue;
+    const flip = !!(card.door && card.door.on);
+    const across = (side === "front" || side === "back") ? FH : FW;
+    card.cols.forEach((c) => {
+      if (!colValid(c, card)) return;
+      const L = effLeft(c, card);
+      const t0 = flip ? Math.max(0, card.w - L - c.width) : L;
+      const d = Math.min(c.depth, across * 0.9);
+      if (side === "front")      shadows.push({ x:t0, y:0,      w:c.width, h:d });
+      else if (side === "back")  shadows.push({ x:t0, y:FH - d, w:c.width, h:d });
+      else if (side === "left")  shadows.push({ x:0,      y:t0, w:d, h:c.width });
+      else                       shadows.push({ x:FW - d, y:t0, w:d, h:c.width });
+    });
+  }
+
+  // 地面贴图（柱脚在地面上投一圈落地阴影，比柱脚略大；3D 柱子盒子正好坐在阴影里）
   const floorTex = (() => {
     const Wn = Math.max(1, Math.round(FW * ts)), Hn = Math.max(1, Math.round(FH * ts));
     const c = document.createElement("canvas"); c.width = Wn; c.height = Hn;
     const x = c.getContext("2d");
-    paintFloorNet(x, f.card, scene, ts, Wn, Hn);
+    paintFloorNet(x, f.card, scene, ts, Wn, Hn, R3D_MIN_GROUT, "--r3d-joint");
+    shadows.forEach(r => {
+      // 阴影与柱脚面积完全重合（不外扩），俯视即柱脚占地
+      x.fillStyle = "rgba(0,0,0,0.22)";
+      x.fillRect(r.x * ts, r.y * ts, r.w * ts, r.h * ts);
+    });
     return c;
   })();
-
-  // 四面墙：side 分配复用展开图的逻辑（alignEdge 优先，否则按空位补）
-  const used = new Set(); const order = ["front", "back", "left", "right"];
-  const sideOf = (card) => {
-    if (card.alignEdge && card.alignEdge !== "none" && !used.has(card.alignEdge)) { used.add(card.alignEdge); return card.alignEdge; }
-    for (const s of order) if (!used.has(s)) { used.add(s); return s; }
-    return null;
-  };
 
   // 通缝：把每面墙“贴地面的那条边”的水平相位锁到地面对应边，3D 里墙地砖才对缝
   const st = state.settings;
@@ -1421,7 +1605,7 @@ function buildRoomModel(scene, state){
     if (card.type !== "wall") continue;
     const e = scene.walls && scene.walls[card.id];
     if (!e || !(card.w > 0) || !(card.h > 0)) continue;
-    const side = sideOf(card); if (!side) continue;
+    const side = sideMap.get(card.id); if (!side) continue;
     const isDoor = !!(card.door && card.door.on);   // 有门那面墙：与整屋展开图一致，左右镜像
     // 水平相位：前/后墙贴地面“宽”边(floorX)，左/右墙贴“深”边(floorY)
     // 门墙用 (墙长 − 地面相位) 镜像相位，配合纹理水平翻转后墙地砖仍对缝
@@ -1439,13 +1623,16 @@ function buildRoomModel(scene, state){
       const Wn = Math.max(1, Math.round(card.w * ts)), Hn = Math.max(1, Math.round(card.h * ts));
       const c = document.createElement("canvas"); c.width = Wn; c.height = Hn;
       const x = c.getContext("2d");
-      x.fillStyle = cssVar("--joint"); x.fillRect(0, 0, Wn, Hn);
-      if (xLayout && e.y) paintTiles(x, xLayout, e.y, ts, Wn, Hn);
+      x.fillStyle = cssVar("--r3d-joint"); x.fillRect(0, 0, Wn, Hn);
+      if (xLayout && e.y) paintTiles(x, xLayout, e.y, ts, Wn, Hn, R3D_MIN_GROUT);
       paintWallFeatures(x, card, ts);
       return c;
     })();
     maxH = Math.max(maxH, card.h);
-    walls.push({ id: card.id, name: card.name, side, tex, w: card.w, h: card.h, flip: isDoor });
+    // 有效立柱带给 3D：L = 离墙左缘毫米（镜像墙在贴图/几何时统一按 flip 处理）
+    const cols = card.cols.filter(c => colValid(c, card))
+      .map(c => ({ L: effLeft(c, card), width: c.width, depth: c.depth }));
+    walls.push({ id: card.id, name: card.name, side, tex, w: card.w, h: card.h, flip: isDoor, cols });
   }
   if (!walls.length) return null;
   return { FW, FH, ts, floorTex, walls, maxH, dim: Math.max(FW, FH) };
@@ -1535,6 +1722,58 @@ function makeWallFace(wll, model, project){
   return { kind: "wall", tex, tw, th, screen: [sTL, sTR, sBR, sBL], center, normal, depth, bright, labelPt, name: wll.name, flip: wll.flip };
 }
 
+/* 墙的坐标系：o = 墙左下角(贴地、纹理起点)，u = 墙水平延伸方向，inn = 朝屋内的法线（立柱凸出方向） */
+function wallFrame(wll, model){
+  const FW = model.FW, FH = model.FH;
+  if (wll.side === "front") return { o:{ x:-FW/2, y:0, z:-FH/2 }, u:{ x:1, y:0, z:0 }, inn:{ x:0, y:0, z:1 } };
+  if (wll.side === "back")  return { o:{ x:-FW/2, y:0, z: FH/2 }, u:{ x:1, y:0, z:0 }, inn:{ x:0, y:0, z:-1 } };
+  if (wll.side === "left")  return { o:{ x:-FW/2, y:0, z:-FH/2 }, u:{ x:0, y:0, z:1 }, inn:{ x:1, y:0, z:0 } };
+  return /* right */        { o:{ x: FW/2, y:0, z:-FH/2 }, u:{ x:0, y:0, z:1 }, inn:{ x:-1, y:0, z:0 } };
+}
+
+/* 把 #RRGGBB 颜色按亮度系数 f 缩放（<1 变暗），给 3D 柱体的面分明明暗 */
+function shadeColor(hex, f){
+  const m = /^#([0-9a-f]{6})$/i.exec(hex || "");
+  if (!m) return hex || "#999";
+  const n = parseInt(m[1], 16);
+  const ch = (v) => Math.round(clamp(v * f, 0, 255));
+  return `rgb(${ch((n >> 16) & 255)},${ch((n >> 8) & 255)},${ch(n & 255)})`;
+}
+
+/* 包管立柱是"往外凸"的实体盒子：从墙面朝屋里凸出 depth 毫米、通顶。
+ * 每根柱子生成 3 个面（正面 + 两个侧面），各带朝屋内的法线，
+ * 交给统一的"背向剔除 + 远→近排序"，和墙面一起正确叠放。 */
+function makeColumnFaces(wll, model, project){
+  const cols = wll.cols;
+  if (!cols || !cols.length) return [];
+  const fr = wallFrame(wll, model);
+  const across = (wll.side === "front" || wll.side === "back") ? model.FH : model.FW;
+  const faces = [];
+  const h = wll.h;
+  cols.forEach((c) => {
+    // 镜像墙（门墙）左右翻转：测量的"离左"对应几何上从墙右端算的位置
+    const t0 = wll.flip ? Math.max(0, wll.w - c.L - c.width) : c.L;
+    const t1 = t0 + c.width;
+    const d = Math.min(c.depth, across * 0.9);   // 深不超过房间进深的 90%，防止穿到对面墙外
+    const P = (t, y, dd) => ({ x: fr.o.x + fr.u.x * t + fr.inn.x * dd, y, z: fr.o.z + fr.u.z * t + fr.inn.z * dd });
+    const mkFace = (pts, rn, k) => {
+      const sp = pts.map(project);
+      if (!sp.every(p => p.valid)) return;
+      const cx = pts.reduce((a, p) => a + p.x, 0) / pts.length;
+      const cy = pts.reduce((a, p) => a + p.y, 0) / pts.length;
+      const czm = pts.reduce((a, p) => a + p.z, 0) / pts.length;
+      const depth = sp.reduce((a, p) => a + p.cz, 0) / sp.length;
+      const bright = clamp(0.66 + 0.34 * Math.max(0, rn.x * 0.3 + rn.y + rn.z * 0.35), 0.5, 1) * k;
+      faces.push({ kind:"col", screen:sp, center:{ x:cx, y:cy, z:czm },
+        normal:{ x:-rn.x, y:-rn.y, z:-rn.z }, depth, bright });
+    };
+    mkFace([P(t0,h,d), P(t1,h,d), P(t1,0,d), P(t0,0,d)], fr.inn, 1);                       // 正面（朝屋里）
+    mkFace([P(t0,h,0), P(t0,h,d), P(t0,0,d), P(t0,0,0)], { x:-fr.u.x, y:0, z:-fr.u.z }, 0.82); // 侧面（靠墙左端）
+    mkFace([P(t1,h,d), P(t1,h,0), P(t1,0,0), P(t1,0,d)], { x: fr.u.x, y:0, z: fr.u.z }, 0.82); // 侧面（靠墙右端）
+  });
+  return faces;
+}
+
 function renderRoom3D(scene){
   const wrap = $("#room3dWrap"); if (!wrap) return;
   R3D.model = buildRoomModel(scene, state);
@@ -1584,7 +1823,16 @@ function renderRoom3DDraw(){
 
   const faces = [];
   const ff = makeFloorFace(model, project); if (ff) faces.push(ff);
-  model.walls.forEach(wll => { const fc = makeWallFace(wll, model, project); if (fc) faces.push(fc); });
+  const WALL_OUT = { front:{x:0,y:0,z:-1}, back:{x:0,y:0,z:1}, left:{x:-1,y:0,z:0}, right:{x:1,y:0,z:0} };
+  model.walls.forEach(wll => {
+    const fc = makeWallFace(wll, model, project); if (fc) faces.push(fc);
+    // 立柱跟着所属墙走：镜头在这面墙外侧（墙被隐藏）时立柱也一起藏起来，不悬空挡视线
+    const fr = wallFrame(wll, model);
+    const wc = { x: fr.o.x + fr.u.x * wll.w / 2, y: wll.h / 2, z: fr.o.z + fr.u.z * wll.w / 2 };
+    const wn = WALL_OUT[wll.side];
+    const facing = wn.x * (camPos.x - wc.x) + wn.y * (camPos.y - wc.y) + wn.z * (camPos.z - wc.z) < 0;
+    if (facing) makeColumnFaces(wll, model, project).forEach(cf => faces.push(cf));
+  });
 
   // 近墙（外法线朝向镜头）隐藏，露出屋内——一次主要看 2 面墙，拖动可换角度
   const visible = faces.filter(fc => {
@@ -1595,6 +1843,17 @@ function renderRoom3DDraw(){
   visible.sort((a, b) => b.depth - a.depth);  // 远→近
 
   visible.forEach(fc => {
+    if (fc.kind === "col") {
+      // 立柱的三个面：纯色 + 明暗区分（正面亮、侧面暗），描边显出凸出的棱
+      ctx.beginPath(); ctx.moveTo(fc.screen[0].x, fc.screen[0].y);
+      for (let i = 1; i < 4; i++) ctx.lineTo(fc.screen[i].x, fc.screen[i].y);
+      ctx.closePath();
+      ctx.fillStyle = shadeColor(cssVar("--column"), fc.bright);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(0,0,0,0.25)"; ctx.lineWidth = 1;
+      ctx.stroke();
+      return;
+    }
     drawTexturedQuad(ctx, fc.tex, fc.screen, fc.tw, fc.th, fc.bright, fc.flip);
     ctx.save();
     ctx.strokeStyle = "rgba(0,0,0,0.18)"; ctx.lineWidth = Math.max(1, dpr);
