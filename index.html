@@ -1663,13 +1663,17 @@ function buildRoomModel(scene, state){
     const isDoor = !!(card.door && card.door.on);   // 有门那面墙：与整屋展开图一致，左右镜像
     // 水平相位：前/后墙贴地面“宽”边(floorX)，左/右墙贴“深”边(floorY)
     // 门墙用 (墙长 − 地面相位) 镜像相位，配合纹理水平翻转后墙地砖仍对缝
+    // 水平相位：未选“不通缝”(alignEdge==="none") 时，锁到地面对应边相位，使墙地砖对缝；
+    // 选了“不通缝”则直接用 computeScene 算好的自由排版 e.x，与整屋展开图保持一致。
     let xLayout = e.x;
-    if (wDims && fDims && floorX && floorY) {
+    if (wDims && fDims && floorX && floorY && card.alignEdge && card.alignEdge !== "none") {
       const map = (side === "left" || side === "right")
         ? { axis: floorY, dim: fDims.y }
         : { axis: floorX, dim: fDims.x };
       if (Engine.compatible(wDims.x, map.dim)) {
-        const po = isDoor ? (card.w - map.axis.phase) : map.axis.phase;
+        // 与 computeScene 对齐：左/后墙(贴边反向)镜像相位，前/右方向一致
+        const mirror = (card.alignEdge === "left" || card.alignEdge === "back");
+        const po = mirror ? (card.w - map.axis.phase) : map.axis.phase;
         xLayout = Engine.layoutAxis(card.w, wDims.x, g, st.startMode, po);
       }
     }
