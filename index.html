@@ -238,6 +238,13 @@ button{cursor:pointer; touch-action:manipulation}
           </div>
         </div>
 
+        <div class="set-row">
+          <label class="switch-row">
+            <span>墙砖压地砖（最底排贴地整砖，裁砖甩到顶）</span>
+            <input type="checkbox" id="wallOverFloor" class="switch">
+          </label>
+        </div>
+
       </div>
     </div>
   </section>
@@ -391,6 +398,17 @@ const Engine = (() => {
         scene.floor.x = floorX;
         scene.floor.y = floorY;
       }
+      // 规则1：地面两条轴都查 <1/3（受门口锁定的那条轴已由上面专门提示，这里只查另一条）
+      const floorCutWarn = (ax, t, name) => {
+        const m = Math.min(ax.cutLeft != null ? ax.cutLeft : Infinity, ax.cutRight != null ? ax.cutRight : Infinity);
+        if (m < t / 3) scene.floor.statuses.push({ kind:"warn", text:`地面${name}方向边缘裁砖 < 1/3（约 ${Math.round(m)}mm），请现场定夺` });
+      };
+      if (doorLabel) {
+        const isY = (de === "bottom" || de === "top");
+        if (isY) floorCutWarn(floorX, fDims.x, "长"); else floorCutWarn(floorY, fDims.y, "宽");
+      } else {
+        floorCutWarn(floorX, fDims.x, "长"); floorCutWarn(floorY, fDims.y, "宽");
+      }
     }
 
     /* ② 各面墙 */
@@ -399,7 +417,31 @@ const Engine = (() => {
       const entry = { card:wall, x:null, y:null, statuses:[], align:null };
       const hasSize = wall.w > 0 && wall.h > 0;
       if (hasSize && wDims) {
-        entry.y = layoutAxis(wall.h, wDims.y, g, s.startMode); // 竖直方向永远可调
+        // —— 规则5 墙砖压地砖：墙面竖向（.y）底排整砖、裁到顶 ——
+        const wof = s.wallOverFloor !== false;
+        let yPhase = null;
+        // —— 规则6 门/窗洞口对齐整砖边界（尽力版）——
+        // 门：从地面起，规则5 底排整砖天然覆盖门区；窗：竖向相位对齐到窗顶边，使窗上下砖落在整砖边界。
+        const win = wall.win;
+        const winOk = !!(win && win.on && win.left > 0 && win.width > 0 && win.sill > 0 && win.height > 0 && (win.left + win.width) <= wall.w);
+        if (wof && winOk) {
+          const p = wDims.y + g;
+          const winTop = wall.h - (win.sill || 0) - (win.height || 0); // 窗顶边（从顶算 mm）
+          const cand = ((winTop % p) + p) % p;
+          const bottomCut = ((wall.h - cand) % p + p) % p; // 0 表示底排整砖，否则为墙底裁砖宽
+          if (bottomCut === 0 || bottomCut >= wDims.y / 3) yPhase = cand; // 对齐窗顶且墙底不出现极窄条才采用
+        }
+        if (yPhase == null && wof) {
+          const p = wDims.y + g;
+          yPhase = ((wall.h - wDims.y) % p + p) % p; // 底排整砖；裁砖甩到顶部（被吊顶/吊柜遮住）
+        }
+        entry.y = yPhase != null
+          ? layoutAxis(wall.h, wDims.y, g, s.startMode, yPhase)
+          : layoutAxis(wall.h, wDims.y, g, s.startMode);
+
+        // 规则4：统计墙高方向裁砖排数（底排整砖时仅顶部1排，不会误报）
+        const cutY = entry.y.segments.filter(seg => seg.cut).length;
+
         let locked = false;
         if (wall.alignEdge && wall.alignEdge !== "none" && scene.floor) {
           const diagramEdge = scene.floor.edges[wall.alignEdge];
@@ -429,7 +471,16 @@ const Engine = (() => {
         } else if (wall.alignEdge && wall.alignEdge !== "none") {
           entry.statuses.push({ kind:"info", text:"地面尺寸和地砖规格填好后，才能自动对通缝" });
         }
-        if (!locked) entry.x = layoutAxis(wall.w, wDims.x, g, s.startMode);
+        if (!locked) {
+          entry.x = layoutAxis(wall.w, wDims.x, g, s.startMode);
+          // 规则1：墙宽方向（未锁通缝）边缘裁砖 < 1/3 提醒
+          const minX = Math.min(entry.x.cutLeft != null ? entry.x.cutLeft : Infinity, entry.x.cutRight != null ? entry.x.cutRight : Infinity);
+          if (minX < wDims.x / 3) entry.statuses.push({ kind:"warn", text:`墙宽方向边缘裁砖 < 1/3（约 ${Math.round(minX)}mm），请现场定夺` });
+        }
+        // 规则4：墙宽方向裁砖列数
+        const cutX = entry.x.segments.filter(seg => seg.cut).length;
+        if (cutX > 2) entry.statuses.push({ kind:"warn", text:"墙宽方向裁砖超过 2 列，建议调整砖规格或起铺" });
+        if (cutY > 2) entry.statuses.push({ kind:"warn", text:"墙高方向裁砖超过 2 排，建议调整砖规格或起铺" });
       }
       scene.walls[wall.id] = entry;
     }
@@ -549,6 +600,7 @@ const defaultState = () => ({
   settings: {
     wallTile:null, floorTile:null,           // {preset:"300×600"|"custom", w, h}
     direction:"horizontal", startMode:"center", grout:2,
+    wallOverFloor:true,                   // 墙砖压地砖：墙面最底排贴地整砖，裁砖甩到顶
   },
   doorEdge:"bottom",
   seq:5,
@@ -666,6 +718,7 @@ function renderSettings(){
   $$("#dirSeg button").forEach(b => b.classList.toggle("on", b.dataset.v === s.direction));
   $$("#startSeg button").forEach(b => b.classList.toggle("on", b.dataset.v === s.startMode));
   $$("#groutSeg button").forEach(b => b.classList.toggle("on", parseFloat(b.dataset.v) === s.grout));
+  $("#wallOverFloor").checked = (s.wallOverFloor !== false);
 
   // 摘要行
   const wt = s.wallTile ? (s.wallTile.preset === "custom"
@@ -698,6 +751,7 @@ function bindSettings(){
   $$("#dirSeg button").forEach(b => b.onclick = () => { state.settings.direction = b.dataset.v; save(); renderSettings(); update(); });
   $$("#startSeg button").forEach(b => b.onclick = () => { state.settings.startMode = b.dataset.v; save(); renderSettings(); update(); });
   $$("#groutSeg button").forEach(b => b.onclick = () => { state.settings.grout = parseFloat(b.dataset.v); save(); renderSettings(); update(); });
+  $("#wallOverFloor").onchange = () => { state.settings.wallOverFloor = $("#wallOverFloor").checked; save(); renderSettings(); update(); };
 }
 
 /* ============================================================
