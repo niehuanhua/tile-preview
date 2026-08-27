@@ -1279,6 +1279,52 @@ function effLeft(c, card){
 }
 const colValid = (c, card) => { const L = effLeft(c, card); return L >= 0 && c.width > 0 && c.depth > 0 && L + c.width <= (card.w || 0); };
 
+/* 每面墙的物理方位（front/back/left/right），与整屋展开图/三维一致 */
+function wallSideMap(st){
+  const map = new Map();
+  const used = new Set(); const order = ["front","back","left","right"];
+  for (const card of st.cards) {
+    if (card.type !== "wall" || !(card.w > 0) || !(card.h > 0)) continue;
+    let s = null;
+    if (card.alignEdge && card.alignEdge !== "none" && !used.has(card.alignEdge)) { used.add(card.alignEdge); s = card.alignEdge; }
+    else { for (const q of order) if (!used.has(q)) { used.add(q); s = q; break; } }
+    if (s) map.set(card.id, s);
+  }
+  return map;
+}
+
+/* 公共（角部）立柱：贴在墙角的立柱同时属于相邻那面墙。
+ * 例如 A墙（front）贴左 与 C墙（left）贴右 是同一个角柱，应当两面墙都画。
+ * 下表给出“(墙方位, 贴左/右) → 共享它的相邻墙(方位, 贴左/右)”，互为对称。 */
+const SIDE_MIRROR = {
+  "front-left":["left","right"],  "front-right":["right","left"],
+  "back-left":["right","right"],   "back-right":["left","left"],
+  "left-left":["back","right"],    "left-right":["front","left"],
+  "right-left":["front","right"],  "right-right":["back","left"],
+};
+/* 该墙在“墙面显示”时应画的全部立柱：自有 + 相邻墙角部立柱镜像过来的（去重）。
+ * 俯视脚印/地面阴影仍由各墙自有立柱负责，避免出现两份重叠的柱脚。 */
+function publicColsFor(card, st){
+  st = st || state;
+  const map = wallSideMap(st);
+  const my = map.get(card.id);
+  if (!my) return card.cols.slice();
+  const out = card.cols.slice();
+  for (const other of st.cards) {
+    if (other.id === card.id || other.type !== "wall") continue;
+    const os = map.get(other.id); if (!os) continue;
+    for (const c of other.cols) {
+      if (c.corner !== "left" && c.corner !== "right") continue;   // 只有贴角立柱才算公共立柱
+      const m = SIDE_MIRROR[os + "-" + c.corner];
+      if (m && m[0] === my) {
+        const dup = out.some(rc => rc.corner === m[1] && rc.width === c.width && rc.depth === c.depth);
+        if (!dup) out.push({ corner:m[1], width:c.width, depth:c.depth, shared:true });
+      }
+    }
+  }
+  return out;
+}
+
 /* 立柱在地面上的"脚印"（俯视矩形，毫米）：立柱压在地面上，地砖要围着它裁。
  * side 分配与镜像约定和三维图完全一致（地面阴影必须和柱子盒子对上）。 */
 function columnFootprints(scene, state){
@@ -1435,8 +1481,8 @@ function paintWallFeatures(ctx, card, s){
     dashedRect(ctx, x, y, w, h, soft);
     labelText(ctx, "窗", x + w/2, y + h/2, soft);
   }
-  // 包管立柱（通顶、往外凸的墩）
-  card.cols.forEach((c, i) => {
+  // 包管立柱（通顶、往外凸的墩）——含相邻墙共享的角部立柱
+  publicColsFor(card).forEach((c, i) => {
     if (!colValid(c, card)) return;
     const x = effLeft(c, card) * s, w = c.width * s, h = card.h * s;
     paintColumnBand(ctx, x, w, h);
@@ -1532,7 +1578,7 @@ function paintWallNet(ctx, card, entry, s, W, H){
     ctx.fillStyle = cssVar("--open"); ctx.fillRect(x, y, w, h);
     dashedRect(ctx, x, y, w, h, soft);
   }
-  card.cols.forEach((c) => {
+  publicColsFor(card).forEach((c) => {
     if (!colValid(c, card)) return;
     const x = effLeft(c, card) * s, w = c.width * s, h = card.h * s;
     paintColumnBand(ctx, x, w, h);
@@ -1719,8 +1765,8 @@ function buildRoomModel(scene, state){
       return c;
     })();
     maxH = Math.max(maxH, card.h);
-    // 有效立柱带给 3D：L = 离墙左缘毫米（镜像墙在贴图/几何时统一按 flip 处理）
-    const cols = card.cols.filter(c => colValid(c, card))
+    // 有效立柱带给 3D：L = 离墙左缘毫米（镜像墙在贴图/几何时统一按 flip 处理）；含相邻墙共享角柱
+    const cols = publicColsFor(card).filter(c => colValid(c, card))
       .map(c => ({ L: effLeft(c, card), width: c.width, depth: c.depth }));
     walls.push({ id: card.id, name: card.name, side, tex, w: card.w, h: card.h, flip: isDoor, cols });
   }
