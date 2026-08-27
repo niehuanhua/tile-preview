@@ -1696,7 +1696,9 @@ function buildRoomModel(scene, state){
   for (const card of state.cards) {
     if (card.type !== "wall") continue;
     const side = sideMap.get(card.id); if (!side) continue;
-    const flip = !!(card.door && card.door.on) || side === "left" || side === "right";
+    // 仅左墙镜像（与整屋展开图一致）；右墙在展开图里是 rotate(+90°)，本身已把“离左=0”转到前端，
+    // 与三维（贴图 u=0 在前端角）方向一致，不能再翻，否则砖缝/立柱相对展开图镜像错位。
+    const flip = !!(card.door && card.door.on) || side === "left";
     const across = (side === "front" || side === "back") ? FH : FW;
     card.cols.forEach((c) => {
       if (!colValid(c, card)) return;
@@ -1768,9 +1770,12 @@ function buildRoomModel(scene, state){
     // 有效立柱带给 3D：L = 离墙左缘毫米（镜像墙在贴图/几何时统一按 flip 处理）；含相邻墙共享角柱
     const cols = publicColsFor(card).filter(c => colValid(c, card))
       .map(c => ({ L: effLeft(c, card), width: c.width, depth: c.depth }));
-    // 水平翻转（纹理/立柱/阴影都按 flip 镜像）：门墙(后)在整屋图里左右镜像；
-    // 左/右墙的 3D 朝向与 2D 立面相反（2D 把“离左=0”画在后端），同样需要 flip 才能对上。
-    const flip3d = isDoor || side === "left" || side === "right";
+    // 水平翻转（纹理/立柱/阴影都按 flip 镜像）：
+    //  - 门墙(后)在整屋图里左右镜像，需 flip 与展开图一致；
+    //  - 左墙在展开图里 rotate(-90°) 把“离左=0”转到后端，也需 flip；
+    //  - 右墙在展开图里 rotate(+90°) 把“离左=0”转到前端，与三维(u=0 在 front 角)方向一致，
+    //    不能再翻，否则砖缝、立柱会相对整屋展开图镜像错位（D墙缝对不上）。
+    const flip3d = isDoor || side === "left";
     walls.push({ id: card.id, name: card.name, side, tex, w: card.w, h: card.h, flip: flip3d, cols });
   }
   if (!walls.length) return null;
