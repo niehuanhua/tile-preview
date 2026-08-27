@@ -368,6 +368,19 @@ const Engine = (() => {
     const fDims = s.floorTile ? laidDims(s.floorTile, s.direction) : null;
     const scene = { floor:null, walls:{} };
 
+    // 四面墙 side 分配（与整屋展开图/三维一致）：不通缝时也据此决定对齐到地面哪条轴
+    const sideMap = new Map();
+    {
+      const used = new Set(); const order = ["front", "back", "left", "right"];
+      for (const card of state.cards) {
+        if (card.type !== "wall" || !(card.w > 0) || !(card.h > 0)) continue;
+        let s = null;
+        if (card.alignEdge && card.alignEdge !== "none" && !used.has(card.alignEdge)) { used.add(card.alignEdge); s = card.alignEdge; }
+        else { for (const q of order) if (!used.has(q)) { used.add(q); s = q; break; } }
+        if (s) sideMap.set(card.id, s);
+      }
+    }
+
     /* ① 先算地面 */
     let floorX = null, floorY = null;
     if (floorCard && floorCard.w > 0 && floorCard.h > 0 && fDims) {
@@ -472,10 +485,29 @@ const Engine = (() => {
           entry.statuses.push({ kind:"info", text:"地面尺寸和地砖规格填好后，才能自动对通缝" });
         }
         if (!locked) {
-          entry.x = layoutAxis(wall.w, wDims.x, g, s.startMode);
+          // 规则7：不通缝时也优先与地砖“错缝”——对齐到地面砖缝的“另一条”（半砖偏移），
+          // 让墙砖缝与地面砖缝错开，不直上直下；仅当错缝导致边缘裁砖 < 1/3 时才回退到自由居中。
+          let chosen = null, usedOffset = false;
+          if (scene.floor) {
+            const side = sideMap.get(wall.id);
+            const lr = (side === "left" || side === "right");           // 左/右墙水平方向沿地面“深”边
+            const map = lr ? { axis: floorY, dim: fDims.y } : { axis: floorX, dim: fDims.x };
+            if (map.axis && compatible(wDims.x, map.dim)) {
+              const p = wDims.x + g;
+              const mirror = (side === "left" || side === "back");       // 左/后墙在展开图里左右镜像
+              const base = mirror ? (wall.w - map.axis.phase) : map.axis.phase;
+              const off = (((base + p / 2) % p) + p) % p;                // 半砖偏移 = 地面“另一条缝”
+              const cand = layoutAxis(wall.w, wDims.x, g, s.startMode, off);
+              const minCut = Math.min(cand.cutLeft != null ? cand.cutLeft : Infinity, cand.cutRight != null ? cand.cutRight : Infinity);
+              if (minCut >= wDims.x / 3) { chosen = cand; usedOffset = true; }
+            }
+          }
+          if (!chosen) chosen = layoutAxis(wall.w, wDims.x, g, s.startMode); // 兜底：保持原自由居中
+          entry.x = chosen;
           // 规则1：墙宽方向（未锁通缝）边缘裁砖 < 1/3 提醒
           const minX = Math.min(entry.x.cutLeft != null ? entry.x.cutLeft : Infinity, entry.x.cutRight != null ? entry.x.cutRight : Infinity);
           if (minX < wDims.x / 3) entry.statuses.push({ kind:"warn", text:`墙宽方向边缘裁砖 < 1/3（约 ${Math.round(minX)}mm），请现场定夺` });
+          else if (usedOffset) entry.statuses.push({ kind:"ok", text:"已与地砖错缝对齐（半砖偏移，墙地缝错开）" });
         }
         // 规则4：墙宽方向裁砖列数
         const cutX = entry.x.segments.filter(seg => seg.cut).length;
