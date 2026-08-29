@@ -856,7 +856,9 @@ const Engine = (() => {
       // ⑤ 骑线：地面中间不动锯子
       const lineName = d.kind === "linear" ? "分区线" : "十字分水线";
       if (plan.ride.count > 0)
-        items.push({ kind:"info", text:`有 ${plan.ride.count} 块砖骑在${lineName}上，不用切，底下最多垫 ${plan.ride.max.toFixed(1)}mm 灰` });
+        items.push({ kind:"info", text: plan.ride.max >= 0.1
+          ? `有 ${plan.ride.count} 块砖骑在${lineName}上，不用切，底下最多垫 ${plan.ride.max.toFixed(1)}mm 灰`
+          : `有 ${plan.ride.count} 块砖骑在${lineName}上，但高差不到 0.1mm，照常铺、不用管` });
       else
         items.push({ kind:"ok", text:`${lineName}已压在砖缝上，地面中间一块砖都不用管` });
       if (plan.scrapCount > 0)
@@ -1970,6 +1972,26 @@ function labelText(ctx, text, cx, cy, color){
   ctx.restore();
 }
 
+/* 带底色的标签（给"垫灰 0.5""凹槽底 ▼0""+17.5"这类浮在砖上的字用）：
+ *  ① 先垫一块底 —— 字压在深浅不一的砖面上会看不清；
+ *  ② 位置夹回画布内 —— 靠边的砖，字有一半会跑到画布外被裁掉（"显示不全"就是这么来的）。
+ * 底色用 --paper、字用传进来的主题色，浅色/深色模式下对比度都够。 */
+function chipText(ctx, text, cx, cy, color, W, H){
+  ctx.save();
+  ctx.font = '700 12px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  const w = ctx.measureText(text).width + 10, h = 18;
+  const x = Math.max(w / 2 + 2, Math.min(W - w / 2 - 2, cx));
+  const y = Math.max(h / 2 + 2, Math.min(H - h / 2 - 2, cy));
+  ctx.fillStyle = cssVar("--paper");
+  ctx.fillRect(x - w / 2, y - h / 2, w, h);
+  ctx.strokeStyle = cssVar("--line"); ctx.lineWidth = 1;
+  ctx.strokeRect(x - w / 2, y - h / 2, w, h);
+  ctx.fillStyle = color;
+  ctx.fillText(text, x, y + 0.5);
+  ctx.restore();
+}
+
 /* ============================================================
  * 找坡绘制原语（方案第 5 节）
  * 五个都只吃显式 scale(s)，2D 平面图 / 整屋展开图 / 三维地面贴图通用；
@@ -2019,11 +2041,13 @@ function paintTilesSloped(ctx, slope, s, W, H, minG){
 
 /* 地漏本体：四种造型各画各的样子，洞口按"挖掉"画（不填砖色）。
  * opts.labels：要不要标字（整屋展开图和三维贴图太密，关掉） */
-function paintDrain(ctx, shape, s, opts){
+function paintDrain(ctx, shape, card, s, opts){
   if (!shape) return;
   const o = shape.open || Engine.drainOpening(shape);
   if (!(o.w > 0) || !(o.h > 0)) return;
   const x = o.x * s, y = o.y * s, w = o.w * s, h = o.h * s;
+  const W = (card && card.w > 0) ? card.w * s : 1e9;
+  const H = (card && card.h > 0) ? card.h * s : 1e9;
   const dark = cssVar("--ink"), paper = cssVar("--paper");
   ctx.save();
   ctx.fillStyle = dark;
@@ -2069,11 +2093,11 @@ function paintDrain(ctx, shape, s, opts){
       const txt = shape.seg
         ? `${Math.round(Math.abs(shape.seg.bx - shape.seg.ax) || 0)}×${Math.round(shape.wide)}`
         : "";
-      if (txt) labelText(ctx, txt, x + w/2, y - 12, ink);
-      labelText(ctx, "▼0", x - 12, y + h/2, ink);
-      labelText(ctx, "▼0", x + w + 12, y + h/2, ink);
+      if (txt) chipText(ctx, txt, x + w/2, y - 12, ink, W, H);
+      chipText(ctx, "▼0", x - 12, y + h/2, ink, W, H);
+      chipText(ctx, "▼0", x + w + 12, y + h/2, ink, W, H);
     } else {
-      labelText(ctx, "地漏 ▼0", x + w + 8, y - 12, ink);
+      chipText(ctx, "地漏 ▼0", x + w + 8, y - 12, ink, W, H);
     }
   }
   ctx.restore();
@@ -2095,18 +2119,17 @@ function paintRidges(ctx, slope, card, s, opts){
     ctx.stroke();
   }
   ctx.setLineDash([]);
-  if (opts && opts.labels) {
+  if (opts && opts.labels && card && card.w > 0 && card.h > 0) {
     const ink = cssVar("--ink-soft");
+    const W = card.w * s, H = card.h * s;
     for (const l of lines) {                              // 每条线靠近中点标一次，避开四角标高
-      labelText(ctx, "凹槽底 ▼0", (l.x1 + l.x2) / 2 * s + 34, (l.y1 + l.y2) / 2 * s - 12, accent);
+      chipText(ctx, "凹槽底 ▼0", (l.x1 + l.x2) / 2 * s + 34, (l.y1 + l.y2) / 2 * s - 12, accent, W, H);
     }
-    if (card && card.w > 0 && card.h > 0) {               // 四角：最高点（师傅据此定门槛高度）
-      const P = [[16, 22], [card.w - 16, 22], [16, card.h - 22], [card.w - 16, card.h - 22]];
-      const C = [[0, 0], [card.w, 0], [0, card.h], [card.w, card.h]];
-      for (let i = 0; i < 4; i++) {
-        const h = Engine.slopeHeightAt(slope.zones, C[i][0], C[i][1]);
-        labelText(ctx, `+${h.toFixed(1)}`, P[i][0] * s, P[i][1] * s, ink);
-      }
+    const P = [[16, 22], [card.w - 16, 22], [16, card.h - 22], [card.w - 16, card.h - 22]];
+    const C = [[0, 0], [card.w, 0], [0, card.h], [card.w, card.h]];
+    for (let i = 0; i < 4; i++) {                         // 四角：最高点（师傅据此定门槛高度）
+      const h = Engine.slopeHeightAt(slope.zones, C[i][0], C[i][1]);
+      chipText(ctx, `+${h.toFixed(1)}`, P[i][0] * s, P[i][1] * s, ink, W, H);
     }
   }
   ctx.restore();
@@ -2114,10 +2137,13 @@ function paintRidges(ctx, slope, card, s, opts){
 
 /* 下料清单：**红线 = 要动锯子**，细灰虚线 = 骑线（不锯，垫灰）。
  * 两种线必须一眼分得开——师傅照着红线去锯，别把垫灰的也锯了。 */
-function paintDrainPlan(ctx, slope, s, opts){
+function paintDrainPlan(ctx, slope, card, s, opts){
   const plan = slope && slope.plan;
   if (!plan) return;
   const cut = cssVar("--danger"), soft = cssVar("--ink-soft");
+  const W = (card && card.w > 0) ? card.w * s : 1e9;
+  const H = (card && card.h > 0) ? card.h * s : 1e9;
+  const at = (t) => [(t.x + t.w / 2) * s, (t.y + t.h / 2) * s];
   ctx.save();
   ctx.strokeStyle = cut; ctx.lineWidth = 2;
   for (const t of plan.tiles) {
@@ -2126,18 +2152,23 @@ function paintDrainPlan(ctx, slope, s, opts){
       const txt = plan.cutStyle === "corner" ? "切角 45°"
                 : plan.cutStyle === "hole"   ? (t.abcd ? "开孔" : "套割")
                 : plan.cutStyle === "strip"  ? "整排直切" : "切 2 块";
-      labelText(ctx, txt, (t.x + t.w / 2) * s, (t.y + t.h / 2) * s, cut);
+      chipText(ctx, txt, at(t)[0], at(t)[1], cut, W, H);
     }
   }
-  // 骑线的砖：只描边，不标字（最多给最严重的那一块标一下垫多厚）
+  // 骑线的砖：全部描边，但**只标一块**——同一条分水线上每块砖的垫灰量是一样的
+  // （整列同一个数，师傅一次抹灰就处理完），全标出来就是满屏重复字。块数在状态栏里说。
+  // 不足 0.1mm 就整个不画：标出来是"垫灰 0.0"，看着像有事，其实照常铺就行（2.5.1）。
   const worst = plan.ride.max;
+  const showRide = worst >= 0.1;
+  let labeled = false;
   for (const t of slope.tiles) {
-    if (!(t.ride > 0)) continue;
+    if (!(t.ride > 0) || !showRide) continue;
     ctx.strokeStyle = soft; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
     ctx.strokeRect(t.x * s, t.y * s, t.w * s, t.h * s);
     ctx.setLineDash([]);
-    if (opts && opts.labels && Math.abs(t.ride - worst) < 1e-9) {
-      labelText(ctx, `垫灰 ${t.ride.toFixed(1)}`, (t.x + t.w / 2) * s, (t.y + t.h / 2) * s, soft);
+    if (opts && opts.labels && !labeled && Math.abs(t.ride - worst) < 1e-9) {
+      chipText(ctx, `垫灰 ${t.ride.toFixed(1)}`, at(t)[0], at(t)[1], soft, W, H);
+      labeled = true;
     }
   }
   ctx.restore();
@@ -2479,8 +2510,8 @@ function drawFloor(canvas, card, scene){
   // 找坡：分水线（最底）→ 地漏 → 下料清单（最上）
   if (f.slope) {
     paintRidges(ctx, f.slope, card, s, { labels:true });
-    paintDrain(ctx, f.slope.shape, s, { labels:true });
-    paintDrainPlan(ctx, f.slope, s, { labels:true });
+    paintDrain(ctx, f.slope.shape, card, s, { labels:true });
+    paintDrainPlan(ctx, f.slope, card, s, { labels:true });
   }
 
   // 被柱脚裁到的地砖：红字标"缝到柱边"剩余块实测尺寸
@@ -2499,7 +2530,7 @@ function paintFloorNet(ctx, card, scene, s, W, H, minG, joint){
   }
   if (f.slope) {
     paintRidges(ctx, f.slope, card, s, { labels:false });
-    paintDrain(ctx, f.slope.shape, s, { labels:false });
+    paintDrain(ctx, f.slope.shape, card, s, { labels:false });
   }
 }
 
