@@ -2146,13 +2146,21 @@ function paintDrainPlan(ctx, slope, card, s, opts){
   const at = (t) => [(t.x + t.w / 2) * s, (t.y + t.h / 2) * s];
   ctx.save();
   ctx.strokeStyle = cut; ctx.lineWidth = 2;
-  for (const t of plan.tiles) {
-    ctx.strokeRect(t.x * s, t.y * s, t.w * s, t.h * s);
-    if (opts && opts.labels) {
+  for (const t of plan.tiles) ctx.strokeRect(t.x * s, t.y * s, t.w * s, t.h * s);
+  if (opts && opts.labels) {
+    /* 红框每块都画（要动锯子的砖一块都不能漏），但**同类切法只标一次**：
+     * 切出来的块往往只有 100mm 宽，字比砖还宽，每块都标就是一堆字互相压住，
+     * 谁也看不清。文字相同的合成一条写"切角 45°×4"，块数照数下料就行。 */
+    const groups = new Map();
+    for (const t of plan.tiles) {
       const txt = plan.cutStyle === "corner" ? "切角 45°"
                 : plan.cutStyle === "hole"   ? (t.abcd ? "开孔" : "套割")
                 : plan.cutStyle === "strip"  ? "整排直切" : "切 2 块";
-      chipText(ctx, txt, at(t)[0], at(t)[1], cut, W, H);
+      if (!groups.has(txt)) groups.set(txt, []);
+      groups.get(txt).push(t);
+    }
+    for (const [txt, ts] of groups) {
+      chipText(ctx, ts.length > 1 ? `${txt}×${ts.length}` : txt, at(ts[0])[0], at(ts[0])[1], cut, W, H);
     }
   }
   // 骑线的砖：全部描边，但**只标一块**——同一条分水线上每块砖的垫灰量是一样的
