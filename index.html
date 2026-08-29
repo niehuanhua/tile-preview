@@ -359,6 +359,212 @@ const Engine = (() => {
     return { segments, phase, step:p, cutLeft:cuts.left, cutRight:cuts.right, adjusted, narrow:false };
   };
 
+  /* ============================================================
+   * 地漏找坡（方案 2.4 / 4.3）
+   *
+   * 高度模型就一句话：
+   *     h(x, y) = k × 到"最低处"的（横向距离 + 竖向距离）
+   *     k = drop / 1000   —— 横、竖两个方向各自每毫米降多少
+   *
+   * 为什么必须是这个式子，而不是"每个分区朝自己对角方向斜"：
+   *   后者在分水线上两个分区算出来的高度不一样，会出现几毫米的台阶（水就积在那儿）。
+   *   用上面这个式子，沿竖线/横线两侧算出来一模一样，永远不会有台阶。
+   * 代价：分区内最陡方向固定 45°，不是严格指向地漏（方案第 7 节有说明）。
+   * ============================================================ */
+
+  const numOr = (v, d) => (typeof v === "number" && isFinite(v)) ? v : d;
+
+  /* 师傅量的"离左墙 / 离后墙" → 图坐标。
+   * 门换到别的边时，"后墙""左墙"落在图的哪条边会跟着变，必须查 deriveEdges 换算
+   * （方案第 3 节四行对照表）。这里搞反是本项目最容易出的 bug。 */
+  const drainToDiagram = (drain, card, doorEdge) => {
+    const W = numOr(card && card.w, 0), H = numOr(card && card.h, 0);
+    const L = numOr(drain && drain.fromLeft, 0), B = numOr(drain && drain.fromBack, 0);
+    const edges = deriveEdges(doorEdge) || deriveEdges("bottom");
+    // 沿某条图边往里量 dist，落点在哪个轴上
+    const along = (edge, dist) => {
+      if (edge === "top")    return { axis:"y", v: dist };
+      if (edge === "bottom") return { axis:"y", v: H - dist };
+      if (edge === "left")   return { axis:"x", v: dist };
+      return /* right */            { axis:"x", v: W - dist };
+    };
+    const b = along(edges.back, B);   // 后墙 → 离后墙
+    const l = along(edges.left, L);   // 左墙 → 离左墙
+    const at = { x:0, y:0 };
+    if (b.axis === "y") at.y = b.v; else at.x = b.v;
+    if (l.axis === "y") at.y = l.v; else at.x = l.v;
+    return at;
+  };
+
+  /* 四种造型 → 引擎只认的两种"最低处"：点 或 轴对齐线段。
+   * 下游（slopeZones / drainCutLines / 渲染）只看这个结果，
+   * 不认识 square / round / linear 这些词。 */
+  const drainShape = (drain, card, doorEdge) => {
+    const W = numOr(card && card.w, 0), H = numOr(card && card.h, 0);
+    const d = drain || {};
+    const at = drainToDiagram(d, card, doorEdge);
+    const gap = numOr(d.gap, 3);
+    const cw = (v) => Math.max(0, Math.min(W, v));
+    const ch = (v) => Math.max(0, Math.min(H, v));
+    const shape = {
+      kind: d.kind || "square",
+      isLine: d.kind === "linear",
+      point: null,                 // 点状：最低点（图坐标）
+      seg: null,                   // 线状：最低线段（中心线）{ ax, ay, bx, by }
+      wide: 0,                     // 线状：地漏宽度 mm
+      open: null,                  // 洞口（含留缝）轴对齐矩形 { kind, x, y, w, h }
+      drop: numOr(d.drop, 10),
+    };
+    if (!shape.isLine) {
+      const size = numOr(d.size, 100);
+      shape.point = { x: cw(at.x), y: ch(at.y) };
+      const s = size + 2 * gap;
+      shape.open = { kind: d.kind === "round" ? "circle" : "square",
+                     x: cw(at.x - s / 2), y: ch(at.y - s / 2), w: s, h: s };
+      return shape;
+    }
+    // 长条：rot 0 = 沿地面长边（横），90 = 竖；贴边时方向由那条边决定
+    const len = numOr(d.len, 300), wide = numOr(d.wide, 64);
+    shape.wide = wide;
+    let horizontal = Number(d.rot) !== 90;
+    if (d.against) {
+      const edges = deriveEdges(doorEdge) || deriveEdges("bottom");
+      const e = edges[d.against];
+      if (e) horizontal = (e === "top" || e === "bottom");
+    }
+    const half = len / 2;
+    if (horizontal) {
+      const y = ch(at.y);
+      const ax = cw(at.x - half), bx = cw(at.x + half);
+      shape.seg = { ax, ay: y, bx, by: y };
+      shape.open = { kind:"rect", x: cw(ax - gap), y: ch(y - wide / 2 - gap),
+                     w: (bx - ax) + 2 * gap, h: wide + 2 * gap };
+    } else {
+      const x = cw(at.x);
+      const ay = ch(at.y - half), by = ch(at.y + half);
+      shape.seg = { ax: x, ay, bx: x, by };
+      shape.open = { kind:"rect", x: cw(x - wide / 2 - gap), y: ch(ay - gap),
+                     w: wide + 2 * gap, h: (by - ay) + 2 * gap };
+    }
+    return shape;
+  };
+
+  /* 到"最低处"的横竖距离之和（4.3 的核心公式） */
+  const lowDist = (shape, x, y) => {
+    if (shape.isLine && shape.seg) {
+      const s = shape.seg;
+      if (Math.abs(s.ay - s.by) < 1e-9) {            // 水平最低线
+        const dx = (x < s.ax) ? (s.ax - x) : (x > s.bx ? (x - s.bx) : 0);
+        return dx + Math.abs(y - s.ay);
+      }
+      const dy = (y < s.ay) ? (s.ay - y) : (y > s.by ? (y - s.by) : 0);
+      return Math.abs(x - s.ax) + dy;
+    }
+    const p = shape.point || { x:0, y:0 };
+    return Math.abs(x - p.x) + Math.abs(y - p.y);
+  };
+
+  /* 分区：用"过最低处每个端点、且平行于墙的线"把地面切成轴对齐矩形。
+   *   点状 → 一横一竖 2 条线 → 4 块
+   *   长条 → 两端各一条垂线 + 自身那条线 → 至多 6 块（贴死墙时退化成 3 块）
+   * 零宽/零高的退化块直接丢掉。每个分区存"矩形 + 四角高度"，
+   * 因为 h 在分区内是线性函数，四角必然共面，双线性插值就是精确值。 */
+  const slopeZones = (card, shape, drop) => {
+    const W = numOr(card && card.w, 0), H = numOr(card && card.h, 0);
+    if (!(W > 0) || !(H > 0) || !shape) return [];
+    const k = (typeof drop === "number" && isFinite(drop)
+      ? drop : numOr(shape.drop, 10)) / 1000;
+    let xs = [], ys = [];
+    if (shape.isLine && shape.seg) {
+      const s = shape.seg;
+      if (Math.abs(s.ay - s.by) < 1e-9) { xs = [s.ax, s.bx]; ys = [s.ay]; }
+      else                              { xs = [s.ax]; ys = [s.ay, s.by]; }
+    } else {
+      const p = shape.point || { x:0, y:0 };
+      xs = [p.x]; ys = [p.y];
+    }
+    // 把 [0, hi] 按 cut 切成若干段，丢掉零长段
+    const strip = (cuts, hi) => {
+      const out = [];
+      let last = 0;
+      cuts.map((v) => Math.max(0, Math.min(hi, v)))
+          .filter((v) => isFinite(v))
+          .sort((a, b) => a - b)
+          .forEach((c) => { if (c > last + 1e-9) out.push([last, c]); last = c; });
+      if (hi > last + 1e-9) out.push([last, hi]);
+      return out;
+    };
+    const xb = strip(xs, W), yb = strip(ys, H);
+    const zones = [];
+    for (const [x0, x1] of xb) for (const [y0, y1] of yb) {
+      zones.push({
+        x: x0, y: y0, w: x1 - x0, h: y1 - y0,  // 矩形分区
+        hc: [                                   // 四角高度：左上 / 右上 / 左下 / 右下
+          k * lowDist(shape, x0, y0),
+          k * lowDist(shape, x1, y0),
+          k * lowDist(shape, x0, y1),
+          k * lowDist(shape, x1, y1),
+        ],
+      });
+    }
+    return zones;
+  };
+
+  /* 查高度（mm）。分区内 h 是线性函数 → 四角共面 → 双线性插值就是精确值。
+   * 点正好落在分区边界上时，任取一侧都一样（模型保证连续）。 */
+  const slopeHeightAt = (zones, x, y) => {
+    if (!zones || !zones.length) return 0;
+    let best = null, bestD = Infinity;
+    for (const z of zones) {
+      if (x >= z.x - 1e-9 && x <= z.x + z.w + 1e-9 &&
+          y >= z.y - 1e-9 && y <= z.y + z.h + 1e-9) { best = z; break; }
+      const dx = Math.max(z.x - x, 0, x - (z.x + z.w));   // 落在分区外时取最近的一块
+      const dy = Math.max(z.y - y, 0, y - (z.y + z.h));
+      const d2 = dx * dx + dy * dy;
+      if (d2 < bestD) { bestD = d2; best = z; }
+    }
+    if (!best) return 0;
+    const u = best.w > 1e-9 ? Math.min(1, Math.max(0, (x - best.x) / best.w)) : 0;
+    const v = best.h > 1e-9 ? Math.min(1, Math.max(0, (y - best.y) / best.h)) : 0;
+    const c = best.hc;
+    return c[0] * (1 - u) * (1 - v) + c[1] * u * (1 - v)
+         + c[2] * (1 - u) * v       + c[3] * u * v;
+  };
+
+  /* ---- 整砖"骑线"：分水线穿过整砖时，不许锯开 ----
+   *
+   * 现实里从来没有人沿着分水线锯砖——地面中间的整砖一律整块铺过去，
+   * 让砖"骑"在分水线上，砖底下用砂浆垫实。
+   *
+   * 骑线会让砖底出现一点悬空：砖跨 [x0, x1]、折线在 a 处时，
+   * 表面是个 V（两端高 k·dL、k·dR），最佳平面拟合的最大偏差是
+   *     gap = k × dL × dR / (dL + dR)
+   * 最坏情况（折线正过砖心）= k × 砖宽 / 4。
+   *   300 砖 @1% → 0.75mm    600 砖 @1% → 1.5mm   ← 砂浆直接吸收，不用管
+   *   800 砖 @2% → 4.0mm                          ← 这个才真要处理
+   */
+  const rideGap = (k, t, dL) => {
+    const dR = t - dL;
+    if (!(dL > 0) || !(dR > 0)) return 0;    // 折线在砖外 → 整块在一个平面上，不悬空
+    return k * dL * dR / t;
+  };
+
+  /* 一条轴上，分水线穿过哪些砖、最大悬空量多少。
+   * axis 是 layoutAxis 的结果，fold 是分水线在这条轴上的位置。
+   * 返回 { max, worst:{start,width,dL,gap}, count } —— count 是骑线的砖数。 */
+  const rideReport = (k, axis, fold) => {
+    const out = { max: 0, worst: null, count: 0 };
+    if (!axis || !axis.segments) return out;
+    for (const s of axis.segments) {
+      const dL = fold - s.start;
+      if (dL <= 1e-9 || dL >= s.width - 1e-9) continue;   // 折线不在这块砖里
+      const g = rideGap(k, s.width, dL);
+      out.count++;
+      if (g > out.max) { out.max = g; out.worst = { start: s.start, width: s.width, dL, gap: g }; }
+    }
+    return out;
+  };
+
   /* 计算整个场景：先地面（定型），再各墙（竖直自由、水平可被通缝锁定） */
   const computeScene = (state) => {
     const s = state.settings;
@@ -615,7 +821,10 @@ const Engine = (() => {
     };
   };
 
-  return { deriveEdges, laidDims, compatible, layoutAxis, computeScene, nameOfEdge, computeRoomNet };
+  return { deriveEdges, laidDims, compatible, layoutAxis, computeScene, nameOfEdge, computeRoomNet,
+           /* 地漏找坡（方案 2.4 / 4.3）：已实现 4 个，其余待实现见方案 4.2 */
+           drainToDiagram, drainShape, lowDist, slopeZones, slopeHeightAt,
+           rideGap, rideReport };
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = Engine;
 /*ENGINE-END*/
