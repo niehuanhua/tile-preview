@@ -890,6 +890,7 @@ const Engine = (() => {
         if (s) sideMap.set(card.id, s);
       }
     }
+    scene.sideOf = sideMap;      // 渲染侧要知道"每面墙站在地面哪条边"（画墙根坡线用）
 
     /* ① 先算地面 */
     let floorX = null, floorY = null;
@@ -961,6 +962,15 @@ const Engine = (() => {
         scene.floor.x = floorX; scene.floor.y = floorY;
 
         const plan = drainCutPlan(dr, floorCard, { x:floorX, y:floorY, tx:tX, ty:tY, g }, shape);
+        // 墙根是"V 形"还是"等高"：决定底排砖要不要处理（默认做法 B：按最高点起 + 踢脚线盖缝）
+        if (shape.isLine && shape.seg) {
+          // 只说"长条正对着的那一段"等高：走出长条两端的角区照样会变高，别说满
+          scene.floor.statuses.push({ kind:"info",
+            text:"长条正对着的那段墙根等高（底排砖不用处理）；走出长条两端的角区会变高，那几列按墙角最高点起砖，底下那道缝用踢脚线盖住" });
+        } else {
+          scene.floor.statuses.push({ kind:"info",
+            text:"四面墙根都是 V 形（两端高、中间最低，中间那个点不是 0）：底排砖按墙角最高点起，底下那道缝用踢脚线盖住" });
+        }
         const advice = drainAdvice(dr, floorCard, fDims, { shape, zones, plan });
         scene.floor.slope = {
           drain: dr, shape, zones, plan, advice,
@@ -1195,9 +1205,30 @@ const defaultState = () => ({
     { id:"w2", type:"wall", name:"墙 B", w:null, h:null, door:{on:false,left:null,width:null,height:null}, win:{on:false,left:null,sill:null,width:null,height:null}, cols:[], alignEdge:"none" },
     { id:"w3", type:"wall", name:"墙 C", w:null, h:null, door:{on:false,left:null,width:null,height:null}, win:{on:false,left:null,sill:null,width:null,height:null}, cols:[], alignEdge:"none" },
     { id:"w4", type:"wall", name:"墙 D", w:null, h:null, door:{on:false,left:null,width:null,height:null}, win:{on:false,left:null,sill:null,width:null,height:null}, cols:[], alignEdge:"none" },
-    { id:"floor", type:"floor", name:"地面", w:null, h:null },
+    { id:"floor", type:"floor", name:"地面", w:null, h:null, drain:defaultDrain() },
   ],
 });
+
+/* 地面卡片的"地漏与找坡"默认值（方案第 3 节；缺任一字段都有兜底，老存档零影响） */
+function defaultDrain(){
+  return {
+    on:false,             // 总开关：不做找坡时下面全都不参与计算
+    kind:"square",        // square 方形 | round 圆形 | concealed 回字/隐形 | linear 长条
+    fromLeft:null,        // 地漏中心 离"左墙" mm（师傅拿卷尺量的两个数）
+    fromBack:null,        // 地漏中心 离"后墙" mm
+    rot:0,                // 长条专用：0 横放 / 90 竖放
+    size:100,             // 点状：边长或直径（方形 100×100 最常见）
+    len:300, wide:64,     // 长条：面板长 / 宽
+    gap:3,                // 套割留缝：方 3、圆 5、回字 3、长条 3
+    against:null,         // 长条贴哪条边：null 房间中间（双坡）
+    shower:"hand",        // 长条校核用：hand 手持 12 / rain 大顶喷 25 / both 顶喷+手持 40
+    drop:10,              // 坡度：每 1000mm 降几 mm（7~14 → 合成 1%~2%）
+    cutStyle:"auto",      // auto | hole 单砖套割 | corner 回字对角切
+    fitRidges:true,       // 点状：微调起铺点，让十字分水线压在砖缝上
+    fitEdges:true,        // 长条：微调起铺点，让长条边缘压在砖缝上
+    minPiece:50,          // 切出来的块最短边不得小于它
+  };
+}
 
 let state = load() || defaultState();
 
@@ -1253,8 +1284,36 @@ function validateCard(card){
       const needLeft = !c.corner;                 // 贴角时离左自动算，不要求手填
       const nums = needLeft ? [c.left, c.width, c.depth] : [c.width, c.depth];
       if (nums.some(v => !(v > 0))) errs.push(`立柱 ${i+1} ${needLeft ? "三个数" : "宽和深"}都要填正整数（毫米）`);
-      else if (W > 0 && L + c.width > W) errs.push(`立柱 ${i+1} 离左距离 + 宽度超过了墙宽`);
+      else       if (W > 0 && L + c.width > W) errs.push(`立柱 ${i+1} 离左距离 + 宽度超过了墙宽`);
     });
+  }
+  if (card.type === "floor" && card.drain && card.drain.on) {
+    const d = card.drain, W = card.w, H = card.h;
+    if (!(d.drop >= 5 && d.drop <= 21)) errs.push("坡度填 5~21（每米降几毫米；低于 5 排水太慢，高于 21 站不住脚）");
+    if (!(d.fromLeft > 0) || !(d.fromBack > 0)) errs.push("地漏位置两个都要填：离左墙、离后墙（毫米）");
+    if (d.kind === "linear") {
+      if (!(d.len >= 200 && d.len <= 2000)) errs.push("长条长度填 200~2000 毫米");
+      if (!(d.wide >= 20 && d.wide <= 200)) errs.push("长条宽度填 20~200 毫米");
+      if (d.len > 0 && d.wide > 0 && !(d.len > d.wide)) errs.push("长条长度要大于宽度");
+      if (d.against) {   // 槽体要有地方放：中心线到墙 ≥ 宽/2 + 20
+        const dist = { back:d.fromBack, front:(H - d.fromBack), left:d.fromLeft, right:(W - d.fromLeft) }[d.against];
+        const need = (d.wide || 64) / 2 + 20;
+        if (dist != null && W > 0 && H > 0 && dist < need)
+          errs.push(`长条离墙只有 ${Math.round(dist)}mm，槽体至少要 ${Math.round(need)}mm，装不下`);
+      }
+    } else if (!(d.size >= 50 && d.size <= 300)) {
+      errs.push("地漏边长/直径填 50~300 毫米");
+    }
+    // 洞口（含留缝）必须完整落在地面内，且离最近的墙 ≥ gap+20（方案第 3 节）
+    if (W > 0 && H > 0 && d.fromLeft > 0 && d.fromBack > 0) {
+      const o = (() => {
+        const sh = Engine.drainShape(d, card, state.doorEdge);
+        return Engine.drainOpening(sh);
+      })();
+      const clear = Math.min(o.x, o.y, W - (o.x + o.w), H - (o.y + o.h));
+      if (clear < (d.gap || 3) + 20)
+        errs.push(`地漏离最近的墙只有 ${Math.round(clear)}mm，至少要留出 ${Math.round((d.gap || 3) + 20)}mm（装不下、也切不了）`);
+    }
   }
   return errs;
 }
@@ -1502,6 +1561,84 @@ function featBlock(card){
   return { node:wrap, sync:() => { door._sync(); win._sync(); col._sync(); } };
 }
 
+/* 地面卡片的"地漏与找坡"折叠块（照 featBlock 的写法：details + _sync 回显）
+ * 顺序：开关 → 造型四选一 → 只显示该造型要填的字段 → 离左 / 离后 / 每米降几毫米 */
+function drainBlock(card){
+  const d = card.drain;
+  const box = el("details", "feat");
+  const sm = el("summary"); sm.appendChild(el("span", "feat-name", "地漏与找坡"));
+  const dv = el("span", "feat-val"); dv.dataset.fv = "drain"; sm.appendChild(dv);
+  box.appendChild(sm);
+
+  const body = el("div", "feat-body");
+  const sw = el("label", "switch-row");
+  sw.appendChild(el("span", null, "这间地面要找坡（整间往地漏斜）"));
+  const cb = el("input", "switch"); cb.type = "checkbox"; cb.checked = !!d.on;
+  cb.addEventListener("change", () => { d.on = cb.checked; save(); renderCards(); update(); });
+  sw.appendChild(cb); body.appendChild(sw);
+
+  const inputs = el("div", "feat-inputs" + (d.on ? " show" : ""));
+
+  const segRow = (label, items, cur, onPick, mini) => {
+    const row = el("div", "align-row");
+    row.appendChild(el("span", "set-label", label));
+    const seg = el("div", mini ? "seg mini" : "seg");
+    items.forEach(([v, t]) => {
+      const b = el("button", cur === v ? "on" : "", t);
+      b.onclick = () => { onPick(v); save(); renderCards(); update(); };
+      seg.appendChild(b);
+    });
+    row.appendChild(seg); inputs.appendChild(row);
+  };
+  // 造型四选一（改造型要重排字段 → renderCards）
+  segRow("地漏造型", [["square","方形"],["round","圆形"],["concealed","回字"],["linear","长条"]],
+    d.kind, (v) => { d.kind = v; });
+  if (d.kind === "linear") {
+    segRow("长条装在哪", [["back","贴后墙"],["front","贴前墙"],["left","贴左墙"],["right","贴右墙"],["","房间中间"]],
+      d.against || "", (v) => { d.against = v || null; }, true);
+    segRow("花洒（校核排水量）", [["hand","手持"],["rain","大顶喷"],["both","顶喷+手持"]],
+      d.shower, (v) => { d.shower = v; }, true);
+  }
+
+  const fields = d.kind === "linear"
+    ? [["len","长条长度（mm）","如 300~1524"], ["wide","长条宽度（mm）","如 64"], ["gap","留缝（mm）","如 3"]]
+    : [["size","边长 / 直径（mm）","如 100"], ["gap","套割留缝（mm）","如 3"]];
+  fields.push(["fromLeft","离左墙（mm）","如 1000"], ["fromBack","离后墙（mm）","如 750"],
+              ["drop","每米降几毫米（mm/m）","7~14 常见"]);
+  fields.forEach(([k, label, ph]) => {
+    const f = el("label", "field"); f.appendChild(el("span", null, label));
+    const inp = el("input"); inp.type = "text"; inp.inputMode = "numeric"; inp.placeholder = ph;
+    inp.value = d[k] != null ? d[k] : "";
+    inp.addEventListener("input", () => { d[k] = parseMM(inp.value); save(); update(); });
+    f.appendChild(inp); inputs.appendChild(f);
+  });
+
+  // 让分水线 / 长条边缘压在砖缝上（默认开；压上就一块砖都不用管）
+  const fitRow = el("label", "switch-row");
+  fitRow.appendChild(el("span", null, d.kind === "linear" ? "微调起铺点，让长条边缘压在砖缝上"
+                                                          : "微调起铺点，让分水线压在砖缝上"));
+  const fcb = el("input", "switch"); fcb.type = "checkbox";
+  fcb.checked = d.kind === "linear" ? d.fitEdges !== false : d.fitRidges !== false;
+  fcb.addEventListener("change", () => {
+    if (d.kind === "linear") d.fitEdges = fcb.checked; else d.fitRidges = fcb.checked;
+    save(); update();
+  });
+  fitRow.appendChild(fcb); inputs.appendChild(fitRow);
+
+  body.appendChild(inputs); box.appendChild(body);
+
+  box._sync = () => {
+    inputs.classList.toggle("show", !!d.on);
+    const name = { square:"方形", round:"圆形", concealed:"回字", linear:"长条" }[d.kind] || "方形";
+    const bits = [d.kind === "linear" ? `${name} ${d.len || "?"}×${d.wide || "?"}` : `${name} ${d.size || "?"}`];
+    if (d.fromLeft > 0 && d.fromBack > 0) bits.push(`离左 ${d.fromLeft} / 离后 ${d.fromBack}`);
+    if (d.drop > 0) bits.push(`每米降 ${d.drop}mm`);
+    dv.textContent = d.on ? bits.join("，") : "无";
+    dv.classList.toggle("lit", !!d.on);
+  };
+  return { node:box, sync:box._sync };
+}
+
 function alignRow(card){
   const row = el("div", "align-row");
   row.appendChild(el("span", "set-label", "墙地通缝：这面墙压着地面哪条边"));
@@ -1537,6 +1674,11 @@ function buildFloorCard(card){
   box.appendChild(cardHead(card, true));
   const sub = el("p", "card-sub"); sub.dataset.sub = "1"; box.appendChild(sub);
   box.appendChild(dimFields(card, ["地面长（mm）","地面宽（mm）"]));
+  card.drain = Object.assign(defaultDrain(), card.drain || {});   // 老存档没有这个字段，补上
+  const drain = drainBlock(card);
+  box.appendChild(drain.node);
+  drain.sync();
+  box._drainSync = drain.sync;
   const row = el("div", "align-row");
   row.appendChild(el("span", "set-label", "门在图的哪条边（用来定前后左右）"));
   const seg = el("div", "seg");
@@ -1608,6 +1750,8 @@ function update(){
     if (card.type === "wall" && entry) entry.statuses.forEach(st => msgs.push(st));
     if (card.type === "floor" && scene.floor) {
       scene.floor.statuses.forEach(st => msgs.push(st));
+      const slp = scene.floor.slope;                       // 找坡的选型/校核提示（不改排版，只提示）
+      if (slp && slp.advice && slp.advice.items) slp.advice.items.forEach(it => msgs.push(it));
       if (columnFootprints(scene, state).length) {
         msgs.push({ kind:"info", text:"立柱压在地面上：与柱脚相叠的地砖要裁切，图上红字是剩余块实测尺寸" });
       }
@@ -1630,7 +1774,7 @@ function update(){
       empty.style.display = "none";
       canvas.style.display = "block";
       if (card.type === "floor") drawFloor(canvas, card, scene);
-      else drawWall(canvas, card, entry);
+      else drawWall(canvas, card, entry, scene);
     } else {
       canvas.style.display = "none";
       empty.style.display = "block";
@@ -1647,7 +1791,12 @@ function update(){
 function hookFeatSync(){
   $$(".card").forEach(box => {
     const card = state.cards.find(c => c.id === box.dataset.id);
-    if (!card || card.type !== "wall") return;
+    if (!card) return;
+    if (card.type === "floor") {          // 地面：只有"地漏与找坡"一个折叠块要回显
+      if (box._drainSync) box._drainSync();
+      return;
+    }
+    if (card.type !== "wall") return;
     // 重新生成摘要（直接按数据算，简单可靠）
     const dv = $("[data-fv='door']", box), wv = $("[data-fv='win']", box), cv = $("[data-fv='cols']", box);
     if (dv) {
@@ -1819,6 +1968,222 @@ function labelText(ctx, text, cx, cy, color){
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
   ctx.fillText(text, cx, cy);
   ctx.restore();
+}
+
+/* ============================================================
+ * 找坡绘制原语（方案第 5 节）
+ * 五个都只吃显式 scale(s)，2D 平面图 / 整屋展开图 / 三维地面贴图通用；
+ * 全部沿用现成的 shadeColor / dashedRect / labelText，不新增样式体系。
+ * ============================================================ */
+
+/* 顶点数组 → {x,y,w,h}（切块都是轴对齐矩形，外接矩形就是它自己） */
+function polyBBox(pts){
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const p of pts) {
+    x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y);
+    x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y);
+  }
+  return { x:x0, y:y0, w:x1 - x0, h:y1 - y0 };
+}
+
+/* 砖面：按"这块砖比地漏高多少"做明暗（低处暗、高处亮）。
+ * 因子只给 0.89~1.11 —— 要能一眼看出四面往中间歪，但不能看成两种砖。
+ * 洞口已经被切掉了（polys 里没有那块），所以地漏处自然是空的。 */
+function paintTilesSloped(ctx, slope, s, W, H, minG){
+  const tiles = slope && slope.tiles;
+  if (!tiles || !tiles.length) return false;
+  if (tiles.length > 6000) {                       // 砖太密：整体示意，别把手机画卡
+    ctx.fillStyle = cssVar("--tile"); ctx.fillRect(0, 0, W || 0, H || 0);
+    return true;
+  }
+  const base = cssVar("--tile");
+  let maxH = 0;
+  for (const z of slope.zones) for (const v of z.hc) if (v > maxH) maxH = v;
+  const pad = (minG && minG > 0) ? minG / 2 : 0;
+  for (const t of tiles) {
+    const h = Engine.slopeHeightAt(slope.zones, t.x + t.w / 2, t.y + t.h / 2);
+    const f = maxH > 1e-6 ? 1 + (h / maxH - 0.5) * 0.22 : 1;
+    ctx.fillStyle = shadeColor(base, f);
+    for (const p of t.polys) {
+      const b = polyBBox(p.pts);
+      const wpx = b.w * s, hpx = b.h * s;
+      if (pad > 0 && pad * 2 < Math.min(wpx, hpx)) {
+        ctx.fillRect(b.x * s + pad, b.y * s + pad, wpx - 2 * pad, hpx - 2 * pad);
+      } else {
+        ctx.fillRect(b.x * s, b.y * s, wpx, hpx);
+      }
+    }
+  }
+  return true;
+}
+
+/* 地漏本体：四种造型各画各的样子，洞口按"挖掉"画（不填砖色）。
+ * opts.labels：要不要标字（整屋展开图和三维贴图太密，关掉） */
+function paintDrain(ctx, shape, s, opts){
+  if (!shape) return;
+  const o = shape.open || Engine.drainOpening(shape);
+  if (!(o.w > 0) || !(o.h > 0)) return;
+  const x = o.x * s, y = o.y * s, w = o.w * s, h = o.h * s;
+  const dark = cssVar("--ink"), paper = cssVar("--paper");
+  ctx.save();
+  ctx.fillStyle = dark;
+  if (shape.kind === "round") {
+    ctx.beginPath(); ctx.ellipse(x + w/2, y + h/2, w/2, h/2, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = paper; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
+    ctx.beginPath(); ctx.ellipse(x + w/2, y + h/2, w/2 * 0.62, h/2 * 0.62, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath(); ctx.arc(x + w/2, y + h/2, 2, 0, Math.PI * 2); ctx.fill();
+  } else if (shape.kind === "concealed") {
+    ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = cssVar("--tile");                     // 中间那块"同款嵌砖"→ 一眼看出隐形
+    ctx.fillRect(x + w * 0.18, y + h * 0.18, w * 0.64, h * 0.64);
+    ctx.strokeStyle = paper; ctx.lineWidth = 1.5;
+    ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
+    ctx.setLineDash([4, 3]);
+    ctx.strokeRect(x + w * 0.18, y + h * 0.18, w * 0.64, h * 0.64);
+    ctx.setLineDash([]);
+  } else if (shape.isLine) {
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = paper; ctx.lineWidth = 1;           // 格栅：几条平行短线
+    const horiz = w >= h, span = horiz ? w : h;
+    const n = Math.max(3, Math.round(span / 14));
+    for (let i = 1; i < n; i++) {
+      const t = i / n;
+      ctx.beginPath();
+      if (horiz) { const px = x + w * t; ctx.moveTo(px, y + h * 0.18); ctx.lineTo(px, y + h * 0.82); }
+      else       { const py = y + h * t; ctx.moveTo(x + w * 0.18, py); ctx.lineTo(x + w * 0.82, py); }
+      ctx.stroke();
+    }
+  } else {
+    ctx.fillRect(x, y, w, h);
+    dashedRect(ctx, x + w * 0.16, y + h * 0.16, w * 0.68, h * 0.68, paper);
+    ctx.strokeStyle = paper; ctx.lineWidth = 1.5;         // 中心小十字
+    ctx.beginPath();
+    ctx.moveTo(x + w/2 - 5, y + h/2); ctx.lineTo(x + w/2 + 5, y + h/2);
+    ctx.moveTo(x + w/2, y + h/2 - 5); ctx.lineTo(x + w/2, y + h/2 + 5);
+    ctx.stroke();
+  }
+  if (opts && opts.labels) {
+    const ink = cssVar("--ink");
+    if (shape.isLine) {
+      const txt = shape.seg
+        ? `${Math.round(Math.abs(shape.seg.bx - shape.seg.ax) || 0)}×${Math.round(shape.wide)}`
+        : "";
+      if (txt) labelText(ctx, txt, x + w/2, y - 12, ink);
+      labelText(ctx, "▼0", x - 12, y + h/2, ink);
+      labelText(ctx, "▼0", x + w + 12, y + h/2, ink);
+    } else {
+      labelText(ctx, "地漏 ▼0", x + w + 8, y - 12, ink);
+    }
+  }
+  ctx.restore();
+}
+
+/* 分水线：就 2 条（点状一横一竖 / 长条两端垂线），虚线、比砖缝粗。
+ * 线和现场墨斗弹的一模一样，师傅能直接对着图弹线。
+ * opts.labels：线端标"凹槽底 ▼0"、四角标高。 */
+function paintRidges(ctx, slope, card, s, opts){
+  const lines = slope && slope.lines;
+  if (!lines || !lines.length) return;
+  const accent = cssVar("--accent");
+  ctx.save();
+  ctx.strokeStyle = accent; ctx.lineWidth = Math.max(1.4, s * 5);
+  ctx.setLineDash([9, 6]);
+  for (const l of lines) {
+    ctx.beginPath();
+    ctx.moveTo(l.x1 * s, l.y1 * s); ctx.lineTo(l.x2 * s, l.y2 * s);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  if (opts && opts.labels) {
+    const ink = cssVar("--ink-soft");
+    for (const l of lines) {                              // 每条线靠近中点标一次，避开四角标高
+      labelText(ctx, "凹槽底 ▼0", (l.x1 + l.x2) / 2 * s + 34, (l.y1 + l.y2) / 2 * s - 12, accent);
+    }
+    if (card && card.w > 0 && card.h > 0) {               // 四角：最高点（师傅据此定门槛高度）
+      const P = [[16, 22], [card.w - 16, 22], [16, card.h - 22], [card.w - 16, card.h - 22]];
+      const C = [[0, 0], [card.w, 0], [0, card.h], [card.w, card.h]];
+      for (let i = 0; i < 4; i++) {
+        const h = Engine.slopeHeightAt(slope.zones, C[i][0], C[i][1]);
+        labelText(ctx, `+${h.toFixed(1)}`, P[i][0] * s, P[i][1] * s, ink);
+      }
+    }
+  }
+  ctx.restore();
+}
+
+/* 下料清单：**红线 = 要动锯子**，细灰虚线 = 骑线（不锯，垫灰）。
+ * 两种线必须一眼分得开——师傅照着红线去锯，别把垫灰的也锯了。 */
+function paintDrainPlan(ctx, slope, s, opts){
+  const plan = slope && slope.plan;
+  if (!plan) return;
+  const cut = cssVar("--danger"), soft = cssVar("--ink-soft");
+  ctx.save();
+  ctx.strokeStyle = cut; ctx.lineWidth = 2;
+  for (const t of plan.tiles) {
+    ctx.strokeRect(t.x * s, t.y * s, t.w * s, t.h * s);
+    if (opts && opts.labels) {
+      const txt = plan.cutStyle === "corner" ? "切角 45°"
+                : plan.cutStyle === "hole"   ? (t.abcd ? "开孔" : "套割")
+                : plan.cutStyle === "strip"  ? "整排直切" : "切 2 块";
+      labelText(ctx, txt, (t.x + t.w / 2) * s, (t.y + t.h / 2) * s, cut);
+    }
+  }
+  // 骑线的砖：只描边，不标字（最多给最严重的那一块标一下垫多厚）
+  const worst = plan.ride.max;
+  for (const t of slope.tiles) {
+    if (!(t.ride > 0)) continue;
+    ctx.strokeStyle = soft; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+    ctx.strokeRect(t.x * s, t.y * s, t.w * s, t.h * s);
+    ctx.setLineDash([]);
+    if (opts && opts.labels && Math.abs(t.ride - worst) < 1e-9) {
+      labelText(ctx, `垫灰 ${t.ride.toFixed(1)}`, (t.x + t.w / 2) * s, (t.y + t.h / 2) * s, soft);
+    }
+  }
+  ctx.restore();
+}
+
+/* 墙根坡线（单墙立面图用）：沿这面墙的墙根画一条真实的高度折线。
+ * 点状地漏 → V 形（两端高、中间最低，且最低点**不是 0**）；
+ * 长条平行于本墙 → 处处等高，这条线是平的，直接不画。
+ * 高度按真实比例画（不夸张），数字标在三个点上——图上看不清时看数。 */
+function paintSlopeFootLine(ctx, slope, floorCard, fEdges, side, s, W, H){
+  if (!slope || !fEdges || !side || !floorCard) return null;
+  const edge = fEdges[side];                              // 这面墙压着地面的哪条图边
+  if (!edge) return null;
+  const FW = floorCard.w, FH = floorCard.h;
+  const along = (edge === "top" || edge === "bottom") ? FW : FH;   // 沿墙方向的长度
+  const N = 40, hs = [];
+  for (let i = 0; i <= N; i++) {
+    const t = (along * i) / N;
+    const at = (edge === "top")    ? { x:t, y:0 }
+             : (edge === "bottom") ? { x:t, y:FH }
+             : (edge === "left")   ? { x:0, y:t }
+             :                       { x:FW, y:t };
+    hs.push(Engine.slopeHeightAt(slope.zones, at.x, at.y));
+  }
+  const spread = Math.max(...hs) - Math.min(...hs);
+  if (spread < 0.01) return { flat:true };                // 等高：底排砖不用处理
+  const maxH = Math.max(...hs);
+  ctx.save();
+  // 按最高点起砖的基准（虚线）
+  ctx.strokeStyle = cssVar("--ink-soft"); ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
+  ctx.beginPath(); ctx.moveTo(0, H - maxH * s); ctx.lineTo(W, H - maxH * s); ctx.stroke();
+  ctx.setLineDash([]);
+  // 墙根真实坡线
+  ctx.strokeStyle = cssVar("--accent"); ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let i = 0; i <= N; i++) {
+    const px = (W * i) / N, py = H - hs[i] * s;
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.stroke();
+  // 三点标高
+  const ink = cssVar("--ink-soft"), up = 14;
+  const mark = (i, px) => labelText(ctx, `+${hs[i].toFixed(1)}`, px, Math.max(10, H - hs[i] * s - up), ink);
+  mark(0, 26); mark(N / 2, W / 2); mark(N, W - 26);
+  ctx.restore();
+  return { flat:false, min:Math.min(...hs), max:maxH };
 }
 
 const doorValid = (card) => card.door.on && card.door.left > 0 && card.door.width > 0 && card.door.height > 0
@@ -2051,7 +2416,7 @@ function paintWallFeatures(ctx, card, s){
   });
 }
 
-function drawWall(canvas, card, entry){
+function drawWall(canvas, card, entry, scene){
   if (!entry || !entry.x || !entry.y) return;
   const { ctx, s, cssW, cssH } = setupCanvas(canvas, card.w, card.h);
   ctx.fillStyle = cssVar("--joint");
@@ -2060,6 +2425,13 @@ function drawWall(canvas, card, entry){
 
   paintWallFeatures(ctx, card, s);
   paintCuts(ctx, entry.x, entry.y, s, cssW, cssH, null, { skipHeight: true });
+
+  // 找坡：沿墙根画真实高度折线（长条平行于本墙时处处等高，函数内部自己跳过）
+  const sl = scene && scene.floor && scene.floor.slope;
+  if (sl) {
+    const side = scene.sideOf && scene.sideOf.get(card.id);
+    paintSlopeFootLine(ctx, sl, scene.floor.card, scene.floor.edges, side, s, cssW, cssH);
+  }
 }
 
 function drawFloor(canvas, card, scene){
@@ -2067,7 +2439,10 @@ function drawFloor(canvas, card, scene){
   if (!f) return;
   const { ctx, s, cssW, cssH } = setupCanvas(canvas, card.w, card.h);
   ctx.fillStyle = cssVar("--joint"); ctx.fillRect(0, 0, cssW, cssH);
-  paintTiles(ctx, f.x, f.y, s, cssW, cssH);
+  // 找坡开着时走"坡面砖"画法（明暗 + 洞口已挖掉），否则照旧
+  if (!(f.slope && paintTilesSloped(ctx, f.slope, s, cssW, cssH))) {
+    paintTiles(ctx, f.x, f.y, s, cssW, cssH);
+  }
 
   // 柱脚压在地面上：色块盖住下面的地砖（方位徽标仍画在最上层）
   columnFootprints(scene, state).forEach(r => paintFootprint(ctx, r, s, "柱"));
@@ -2101,6 +2476,13 @@ function drawFloor(canvas, card, scene){
   }
   paintCuts(ctx, f.x, f.y, s, cssW, cssH);
 
+  // 找坡：分水线（最底）→ 地漏 → 下料清单（最上）
+  if (f.slope) {
+    paintRidges(ctx, f.slope, card, s, { labels:true });
+    paintDrain(ctx, f.slope.shape, s, { labels:true });
+    paintDrainPlan(ctx, f.slope, s, { labels:true });
+  }
+
   // 被柱脚裁到的地砖：红字标"缝到柱边"剩余块实测尺寸
   columnFootprints(scene, state).forEach(r => paintFootprintCuts(ctx, r, f.x, f.y, s, cssW, cssH));
 }
@@ -2111,7 +2493,14 @@ function drawFloor(canvas, card, scene){
 function paintFloorNet(ctx, card, scene, s, W, H, minG, joint){
   const f = scene.floor;
   ctx.fillStyle = cssVar(joint || "--joint"); ctx.fillRect(0, 0, W, H);
-  paintTiles(ctx, f.x, f.y, s, W, H, minG);
+  // 展开图（含三维地面贴图）也走坡面画法，但不标字——手机上太乱
+  if (!(f.slope && paintTilesSloped(ctx, f.slope, s, W, H, minG))) {
+    paintTiles(ctx, f.x, f.y, s, W, H, minG);
+  }
+  if (f.slope) {
+    paintRidges(ctx, f.slope, card, s, { labels:false });
+    paintDrain(ctx, f.slope.shape, s, { labels:false });
+  }
 }
 
 function paintWallNet(ctx, card, entry, s, W, H){
