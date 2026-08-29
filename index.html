@@ -565,6 +565,310 @@ const Engine = (() => {
     return out;
   };
 
+  /* ---- 分水线：只用来弹墨线、算骑线，不再产生任何切割（方案 2.5）----
+   * 点状 → 过地漏的一横一竖；长条 → 过长条两端的两条垂线。全部轴对齐。
+   * （名字里曾带 cut，是"沿线锯开"初稿的遗留；现场从来没有沿分水线锯砖的。） */
+  const drainRidgeLines = (card, shape) => {
+    const W = numOr(card && card.w, 0), H = numOr(card && card.h, 0);
+    if (!shape) return [];
+    if (shape.isLine && shape.seg) {
+      const s = shape.seg;
+      if (Math.abs(s.ay - s.by) < 1e-9)          // 横放 → 两端各一条竖线
+        return [{ x1:s.ax, y1:0, x2:s.ax, y2:H }, { x1:s.bx, y1:0, x2:s.bx, y2:H }];
+      return [{ x1:0, y1:s.ay, x2:W, y2:s.ay }, { x1:0, y1:s.by, x2:W, y2:s.by }];
+    }
+    const p = shape.point || { x:0, y:0 };
+    return [{ x1:p.x, y1:0, x2:p.x, y2:H }, { x1:0, y1:p.y, x2:W, y2:p.y }];
+  };
+
+  /* 洞口（含留缝）：要挖掉的就是这一块矩形。切砖和面积守恒都按它算。 */
+  const drainOpening = (shape) => {
+    const o = shape && shape.open;
+    return o ? { kind:o.kind, x:o.x, y:o.y, w:o.w, h:o.h }
+             : { kind:"none", x:0, y:0, w:0, h:0 };
+  };
+
+  const mod = (v, m) => ((v % m) + m) % m;
+  const rectPts = (r) => [
+    { x:r.x, y:r.y }, { x:r.x + r.w, y:r.y },
+    { x:r.x + r.w, y:r.y + r.h }, { x:r.x, y:r.y + r.h },
+  ];
+  const bboxOf = (pts) => {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const p of pts) {
+      x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y);
+      x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y);
+    }
+    return { x:x0, y:y0, w:x1 - x0, h:y1 - y0 };
+  };
+  const rectHit = (a, b) =>
+    a.x < b.x + b.w - 1e-9 && b.x < a.x + a.w - 1e-9 &&
+    a.y < b.y + b.h - 1e-9 && b.y < a.y + a.h - 1e-9;
+  const polyAreaOf = (pts) => {
+    let s = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      s += a.x * b.y - b.x * a.y;
+    }
+    return Math.abs(s) / 2;
+  };
+
+  /* 半平面裁剪：拿一条轴对齐直线切多边形，只留一侧（Sutherland–Hodgman）。
+   * 交点是一元一次方程，无迭代、无库。 */
+  const clipHalf = (pts, vertical, c, side) => {
+    const f = (p) => ((vertical ? p.x : p.y) - c) * side;
+    const out = [];
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      const da = f(a), db = f(b);
+      if (da >= -1e-9) out.push(a);
+      if ((da > 1e-9 && db < -1e-9) || (da < -1e-9 && db > 1e-9)) {
+        const t = da / (da - db);
+        out.push(vertical ? { x:c, y:a.y + (b.y - a.y) * t }
+                          : { x:a.x + (b.x - a.x) * t, y:c });
+      }
+    }
+    return out;
+  };
+
+  /* 一块矩形砖被若干条直线切成几个凸多边形（每条线的两侧都留，依次切）。
+   * 2.5 之后不再喂分水线给它——分水线穿过整砖一律不锯（走 rideGap/rideReport），
+   * 它只服务"长条本体的直切"和靠墙收边这类真要下刀的地方。 */
+  const cutRectByLines = (rect, lines) => {
+    const r = rect.pts ? bboxOf(rect.pts) : rect;
+    let parts = [rectPts(r)];
+    for (const ln of (lines || [])) {
+      const vertical = Math.abs(ln.x1 - ln.x2) < 1e-9;
+      const c = vertical ? ln.x1 : ln.y1;
+      const next = [];
+      for (const poly of parts) {
+        for (const sd of [1, -1]) {
+          const cut = clipHalf(poly, vertical, c, sd);
+          if (cut.length >= 3 && polyAreaOf(cut) > 1e-6) next.push(cut);
+        }
+      }
+      parts = next;
+    }
+    return parts.map((pts) => ({ pts }));
+  };
+
+  /* 一块矩形砖被洞口挖掉后剩什么：拆成 ≤ 4 个轴对齐矩形，**面积精确守恒**。
+   * 师傅手上的"回字对角切 / 套割"是切法与标注（paintDrainPlan 画），
+   * 几何上仍是这几块矩形——这样切块永远能过"是不是直刀"的断言。 */
+  const cutRectByHole = (rect, hole) => {
+    const r = rect.pts ? bboxOf(rect.pts) : rect;
+    if (!hole || !(hole.w > 0) || !(hole.h > 0) || !rectHit(r, hole)) return [{ pts: rectPts(r) }];
+    const ix0 = Math.max(r.x, hole.x), iy0 = Math.max(r.y, hole.y);
+    const ix1 = Math.min(r.x + r.w, hole.x + hole.w), iy1 = Math.min(r.y + r.h, hole.y + hole.h);
+    const out = [];
+    const add = (x, y, w, h) => { if (w > 1e-9 && h > 1e-9) out.push({ pts: rectPts({ x, y, w, h }) }); };
+    add(r.x, r.y, r.w, iy0 - r.y);                 // 上
+    add(r.x, iy1, r.w, r.y + r.h - iy1);           // 下
+    add(r.x, iy0, ix0 - r.x, iy1 - iy0);           // 左中
+    add(ix1, iy0, r.x + r.w - ix1, iy1 - iy0);     // 右中
+    return out;
+  };
+
+  /* 选一个让"目标线正好压在砖缝上"的起铺相位（方案 4.4）。
+   *   闭式一步：ideal = X0 mod p —— 砖从 ideal 起铺，X0 就落在某块砖的左边缘上
+   *   若 ideal 破坏 1/3 老规矩 → 在合法相位里取离 ideal 最近的（退化成一次小扫描） */
+  const pickCrossPhase = (L, t, g, mode, X0, minPiece) => {
+    const p = t + g, minP = numOr(minPiece, 0);
+    const legal = (ax) => [ax.cutLeft, ax.cutRight].every(
+      (c) => c == null || (c >= t / 3 - 1e-9 && c >= minP - 1e-9));
+    const ideal = mod(X0, p);
+    if (X0 == null || !isFinite(ideal)) return { phase: layoutAxis(L, t, g, mode).phase, zeroCut: false, fallback: false };
+    if (legal(layoutAxis(L, t, g, mode, ideal))) return { phase: ideal, zeroCut: true, fallback: false };
+    let best = null, bestD = Infinity;
+    for (let ph = 0; ph < p; ph += 1) {
+      if (!legal(layoutAxis(L, t, g, mode, ph))) continue;
+      const raw = Math.abs(ph - ideal);
+      const d = Math.min(raw, p - raw);            // 相位是个环，取环形距离
+      if (d < bestD - 1e-9) { bestD = d; best = ph; }
+    }
+    if (best == null) return { phase: layoutAxis(L, t, g, mode).phase, zeroCut: false, fallback: true };
+    return { phase: best, zeroCut: false, fallback: true };
+  };
+
+  /* 下料清单 + 三笔账（方案 7.15）：
+   *   drainCuts  地漏周围要切的砖（套割 / 回字对角切 / 长条整排直切）—— 永远 ≥ 1
+   *   edgeCuts   靠墙收边（1/3 老规矩，与找坡无关，单独报，不计入 cutCount）
+   *   ride       分水线穿过的砖 → **骑线，不切**，只报底下垫多少灰
+   *   ridgeCuts  恒为 0：分水线永不切砖（留着给断言看，见 8b）          */
+  const drainCutPlan = (drain, card, layout, shape) => {
+    const d = drain || {};
+    const sh = shape || drainShape(d, card);
+    const hole = drainOpening(sh);
+    const k = numOr(d.drop, 10) / 1000;
+    const minPiece = numOr(d.minPiece, 50);
+    const gap = numOr(d.gap, 3);
+    const ax = layout.x, ay = layout.y;
+    const gg = numOr(layout.g, 0);
+    const tX = numOr(layout.tx, ax.step - gg), tY = numOr(layout.ty, ay.step - gg);
+    const W = numOr(card && card.w, 0), H = numOr(card && card.h, 0);
+    const lines = drainRidgeLines(card, sh);
+    const vFolds = lines.filter((l) => Math.abs(l.x1 - l.x2) < 1e-9).map((l) => l.x1);
+    const hFolds = lines.filter((l) => Math.abs(l.y1 - l.y2) < 1e-9).map((l) => l.y1);
+    // 折线落在这块砖里才算骑线（落在砖缝上 → 0，压缝就是这么来的）
+    const segRide = (seg, fold) => {
+      const dL = fold - seg.start;
+      if (!(dL > 1e-9) || !(dL < seg.width - 1e-9)) return 0;
+      return rideGap(k, seg.width, dL);
+    };
+
+    const grid = [], drainTiles = [];
+    let edgeCuts = 0, scrap = 0, minStrip = Infinity, rideCount = 0, rideMax = 0;
+    for (const sy of ay.segments) for (const sx of ax.segments) {
+      const r = { x:sx.start, y:sy.start, w:sx.width, h:sy.width };
+      const holed = rectHit(r, hole);
+      const cut = !!(sx.cut || sy.cut);
+      const polys = holed ? cutRectByHole(r, hole) : [{ pts: rectPts(r) }];
+      const ride = holed ? 0 : Math.max(
+        vFolds.reduce((m, v) => Math.max(m, segRide(sx, v)), 0),
+        hFolds.reduce((m, v) => Math.max(m, segRide(sy, v)), 0));
+      const tile = {
+        rect: rectPts(r), x:r.x, y:r.y, w:r.w, h:r.h,
+        polys, ride,
+        cut: cut || holed,
+        hole: holed ? hole : null,
+        reason: holed ? "drain" : (cut ? "edge" : null),
+      };
+      if (ride > 0) { rideCount++; rideMax = Math.max(rideMax, ride); }
+      if (tile.cut) {
+        for (const p of polys) {
+          const bb = bboxOf(p.pts), m = Math.min(bb.w, bb.h);
+          if (m >= minPiece) { if (m < minStrip) minStrip = m; } else scrap++;
+        }
+      }
+      if (holed) drainTiles.push(tile); else if (cut) edgeCuts++;
+      grid.push(tile);
+    }
+
+    /* 点状：落点判定 → 切法（2.4.3 第二步表） */
+    let cutStyle = "strip", clearance = null;
+    if (!sh.isLine) {
+      const p = ax.step, phX = ax.phase, phY = ay.phase;
+      const c = sh.point || { x:0, y:0 };
+      const halfW = hole.w / 2, halfH = hole.h / 2;
+      // 洞口四边到最近砖缝的距离；若有砖缝从洞口中间穿过 → 0（骑缝）
+      const clearanceOf = (lo, hi, ph, t, L) => {
+        let best = Infinity;
+        for (let e = mod(ph, p) - p; e <= L + p; e += p) {
+          for (const seam of [e, e + t]) {
+            if (seam <= lo + 1e-9) best = Math.min(best, lo - seam);
+            else if (seam >= hi - 1e-9) best = Math.min(best, seam - hi);
+            else return 0;
+          }
+        }
+        return best;
+      };
+      const clearX = clearanceOf(c.x - halfW, c.x + halfW, phX, tX, W);
+      const clearY = clearanceOf(c.y - halfH, c.y + halfH, phY, tY, H);
+      clearance = Math.min(clearX, clearY);
+      const a = mod(c.x - phX, p), b = mod(c.y - phY, p);
+      const distX = a <= tX ? Math.min(a, tX - a) : 0;      // 到最近砖缝的距离
+      const distY = b <= tY ? Math.min(b, tY - b) : 0;
+      const tol = Math.min(25, tX / 6);
+      cutStyle = (distX <= tol && distY <= tol) ? "corner"                        // 四砖交角
+               : (clearX < gap + 20 || clearY < gap + 20) ? "seam"                // 骑缝
+               : "hole";                                                          // 砖心套割
+      if (d.cutStyle === "hole" || d.cutStyle === "corner") cutStyle = d.cutStyle; // 师傅指定
+      if (cutStyle === "hole") {
+        const sx = ax.segments.find((s) => c.x >= s.start - 1e-9 && c.x <= s.start + s.width + 1e-9);
+        const sy = ay.segments.find((s) => c.y >= s.start - 1e-9 && c.y <= s.start + s.width + 1e-9);
+        const host = sx && sy && grid.find(
+          (t) => Math.abs(t.x - sx.start) < 1e-9 && Math.abs(t.y - sy.start) < 1e-9);
+        if (host) {
+          host.abcd = {                                     // 孔中心到砖四边：师傅开孔就靠这四个数
+            a: c.x - sx.start, b: sx.start + sx.width - c.x,
+            c: c.y - sy.start, d: sy.start + sy.width - c.y,
+          };
+        }
+      }
+    } else {
+      // 长条：洞口离最近的墙多远（槽体要有地方装）
+      clearance = Math.min(hole.x, hole.y, W - (hole.x + hole.w), H - (hole.y + hole.h));
+    }
+
+    return {
+      cutStyle, clearance,
+      drainCuts: drainTiles.length,
+      edgeCuts,
+      ridgeCuts: 0,                        // 分水线永不切砖（2.5）
+      cutCount: drainTiles.length,         // 地漏/找坡这边的账；靠墙收边另算
+      minStrip: isFinite(minStrip) ? minStrip : null,
+      scrapCount: scrap,
+      ride: { count: rideCount, max: rideMax },
+      tiles: drainTiles,                   // 下料清单（只有地漏相关的）
+      grid,                                // 整片砖网（渲染用）
+      hole,
+    };
+  };
+
+  /* 选型与校核建议（纯提示，不改排版）。约定：{ items:[{ kind, text }] } */
+  const DRAIN_CAP = [[300, 35], [500, 45], [600, 55]];        // 长条长度 → 排水量 L/min
+  const SHOWER_NEED = { hand: 12, rain: 25, both: 40 };
+  const drainAdvice = (drain, card, dims, info) => {
+    const d = drain || {}, it = info || {};
+    const zones = it.zones || [], plan = it.plan || null;
+    const W = numOr(card && card.w, 0), H = numOr(card && card.h, 0);
+    const items = [];
+
+    // ① 最远角抬高量（>30mm 报警：门槛石、门扇、过门石全得跟着抬）
+    if (zones.length && W > 0 && H > 0) {
+      let rise = 0;
+      for (const c of [[0, 0], [W, 0], [0, H], [W, H]]) rise = Math.max(rise, slopeHeightAt(zones, c[0], c[1]));
+      const drop = numOr(d.drop, 10);
+      items.push(rise > 30
+        ? { kind:"error", text:`最远墙角要抬高 ${Math.round(rise)}mm，超过 30mm，门槛石、门扇、过门石都得跟着抬` }
+        : { kind:"info", text:`最远墙角抬高 ${rise.toFixed(1)}mm（沿墙每米降 ${drop}mm，朝地漏 45° 方向实际 ${(drop * 1.414).toFixed(1)}mm/m）` });
+    }
+    // ② 长条贴边：槽体要有地方放
+    if (d.kind === "linear" && d.against) {
+      const dist = { back: numOr(d.fromBack, 0), front: H - numOr(d.fromBack, 0),
+                     left: numOr(d.fromLeft, 0), right: W - numOr(d.fromLeft, 0) }[d.against];
+      const need = numOr(d.wide, 64) / 2 + 20;
+      if (dist != null && dist < need)
+        items.push({ kind:"error", text:`长条离墙只有 ${Math.round(dist)}mm，槽体至少要 ${Math.round(need)}mm，装不下` });
+    }
+    // ③ 长条排水量 vs 花洒流量（产品分档卖，取最接近的一档，不插值）
+    if (d.kind === "linear") {
+      const len = numOr(d.len, 300);
+      let cap = DRAIN_CAP[0][1], bestD = Infinity;
+      for (const [L, c] of DRAIN_CAP) {
+        const dd = Math.abs(len - L);
+        if (dd < bestD) { bestD = dd; cap = c; }
+      }
+      const need = SHOWER_NEED[d.shower] != null ? SHOWER_NEED[d.shower] : 12;
+      if (cap < need)
+        items.push({ kind:"warn", text:`${Math.round(len)}mm 长条只够 ${cap} L/min，这个花洒要 ${need} L/min，建议换长一号` });
+    }
+    // ④ 落点 → 切法（人话）
+    if (plan) {
+      if (plan.cutStyle === "corner")
+        items.push({ kind:"info", text:`地漏落在四砖交角：周围 ${plan.drainCuts} 块砖各切一个 45° 角（回字对角切），最省料` });
+      else if (plan.cutStyle === "hole")
+        items.push({ kind:"ok", text:`地漏落在砖心：只切 ${plan.drainCuts} 块，中间开孔（孔中心到砖四边 ${abcdText(plan)}）` });
+      else if (plan.cutStyle === "seam")
+        items.push({ kind:"warn", text:`洞口骑在砖缝上（离最近砖缝 ${Math.round(plan.clearance)}mm，要留出 ${Math.round(numOr(d.gap, 3) + 20)}mm），毛边会外露，建议挪到砖心或四砖交角` });
+      else if (plan.cutStyle === "strip")
+        items.push({ kind:"info", text:`长条压住 ${plan.drainCuts} 块砖，沿两条长边直切，切下的条最窄 ${Math.round(plan.minStrip || 0)}mm` });
+      // ⑤ 骑线：地面中间不动锯子
+      const lineName = d.kind === "linear" ? "分区线" : "十字分水线";
+      if (plan.ride.count > 0)
+        items.push({ kind:"info", text:`有 ${plan.ride.count} 块砖骑在${lineName}上，不用切，底下最多垫 ${plan.ride.max.toFixed(1)}mm 灰` });
+      else
+        items.push({ kind:"ok", text:`${lineName}已压在砖缝上，地面中间一块砖都不用管` });
+      if (plan.scrapCount > 0)
+        items.push({ kind:"info", text:`另有 ${plan.scrapCount} 块碎料窄于 ${Math.round(numOr(d.minPiece, 50))}mm（多是洞口留缝处的边角），现场直接勾缝填掉` });
+    }
+    return { items };
+  };
+  const abcdText = (plan) => {
+    const t = plan.tiles && plan.tiles[0] && plan.tiles[0].abcd;
+    return t ? `${Math.round(t.a)} / ${Math.round(t.b)} / ${Math.round(t.c)} / ${Math.round(t.d)}` : "—";
+  };
+
   /* 计算整个场景：先地面（定型），再各墙（竖直自由、水平可被通缝锁定） */
   const computeScene = (state) => {
     const s = state.settings;
@@ -627,6 +931,45 @@ const Engine = (() => {
         if (isY) floorCutWarn(floorX, fDims.x, "长"); else floorCutWarn(floorY, fDims.y, "宽");
       } else {
         floorCutWarn(floorX, fDims.x, "长"); floorCutWarn(floorY, fDims.y, "宽");
+      }
+
+      /* 地漏找坡：算坡面 → 调相位（让分水线压在砖缝上）→ 逐砖算骑线与开孔（方案 4.6） */
+      const dr = floorCard.drain && floorCard.drain.on ? floorCard.drain : null;
+      if (dr) {
+        const shape = drainShape(dr, floorCard, state.doorEdge);
+        const zones = slopeZones(floorCard, shape, dr.drop);
+        const tX = fDims.x, tY = fDims.y;
+        const minP = numOr(dr.minPiece, 50);
+        const locked = doorLabel ? ((de === "bottom" || de === "top") ? "y" : "x") : null;
+        // 要压到砖缝上的目标线：点状 = 过地漏的一横一竖；
+        // 长条 = 两端垂线（沿长条那条轴）+ 靠上一侧的长边（另一条轴）
+        let targetX = null, targetY = null;
+        if (shape.isLine && shape.seg) {
+          const s = shape.seg, halfW = shape.wide / 2 + numOr(dr.gap, 3);
+          if (Math.abs(s.ay - s.by) < 1e-9) { targetX = Math.min(s.ax, s.bx); targetY = Math.min(s.ay, s.by) - halfW; }
+          else                              { targetY = Math.min(s.ay, s.by); targetX = Math.min(s.ax, s.bx) - halfW; }
+        } else if (shape.point) {
+          targetX = shape.point.x; targetY = shape.point.y;
+        }
+        const wantFit = (x) => (shape.isLine ? dr.fitEdges !== false : dr.fitRidges !== false) && x != null;
+        let phX = floorX.phase, phY = floorY.phase;
+        // 被门口锁住的那条轴不许动相位（方案第 6 节：门口整砖赢）
+        if (wantFit(targetX) && locked !== "x") phX = pickCrossPhase(floorCard.w, tX, g, s.startMode, targetX, minP).phase;
+        if (wantFit(targetY) && locked !== "y") phY = pickCrossPhase(floorCard.h, tY, g, s.startMode, targetY, minP).phase;
+        if (Math.abs(phX - floorX.phase) > 1e-9) floorX = layoutAxis(floorCard.w, tX, g, s.startMode, phX);
+        if (Math.abs(phY - floorY.phase) > 1e-9) floorY = layoutAxis(floorCard.h, tY, g, s.startMode, phY);
+        scene.floor.x = floorX; scene.floor.y = floorY;
+
+        const plan = drainCutPlan(dr, floorCard, { x:floorX, y:floorY, tx:tX, ty:tY, g }, shape);
+        const advice = drainAdvice(dr, floorCard, fDims, { shape, zones, plan });
+        scene.floor.slope = {
+          drain: dr, shape, zones, plan, advice,
+          lines: drainRidgeLines(floorCard, shape),
+          hole: plan.hole,
+          tiles: plan.grid,
+          phase: { x: phX, y: phY },
+          ride: plan.ride,
+        };
       }
     }
 
@@ -824,7 +1167,9 @@ const Engine = (() => {
   return { deriveEdges, laidDims, compatible, layoutAxis, computeScene, nameOfEdge, computeRoomNet,
            /* 地漏找坡（方案 2.4 / 4.3）：已实现 4 个，其余待实现见方案 4.2 */
            drainToDiagram, drainShape, lowDist, slopeZones, slopeHeightAt,
-           rideGap, rideReport };
+           rideGap, rideReport,
+           drainRidgeLines, drainOpening, cutRectByLines, cutRectByHole,
+           pickCrossPhase, drainCutPlan, drainAdvice };
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = Engine;
 /*ENGINE-END*/

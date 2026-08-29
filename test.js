@@ -705,6 +705,12 @@ const isAxisRect = (pts) =>
     return Math.abs(p.x - q.x) < 1e-6 || Math.abs(p.y - q.y) < 1e-6;
   });
 const finitePts = (pts) => pts.every((p) => isFinite(p.x) && isFinite(p.y));
+// 顶点数组 → {x, y, w, h}（本组只用来算矩形砖与洞口的重叠面积）
+const bbox = (pts) => {
+  const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
+  const x0 = Math.min(...xs), y0 = Math.min(...ys);
+  return { x:x0, y:y0, w:Math.max(...xs) - x0, h:Math.max(...ys) - y0 };
+};
 // advice 约定：{ items:[{ kind:"ok"|"info"|"warn"|"error", text }] }
 const hasLevel = (advice, kind) =>
   !!advice && Array.isArray(advice.items) && advice.items.some((it) => it.kind === kind);
@@ -759,8 +765,9 @@ slopeTest("造型13 · 四种造型都能跑通，坡面数符合 4.5 收敛表"
       zones.every((z) => [z.x, z.y, z.w, z.h].every(isFinite) && z.w >= 0 && z.h >= 0));
     check(`${c.name}：每个分区 4 个角都有高度、都不是 NaN`,
       zones.every((z) => z.hc.length === 4 && z.hc.every(isFinite)));
+    // 注意字段名：h 是分区矩形本身的高度（数字），四角高度是 hc（数组）
     check(`${c.name}：没有负高度（地漏才是最低点）`,
-      zones.every((z) => z.h.every((v) => v >= -1e-9)));
+      zones.every((z) => z.hc.every((v) => v >= -1e-9)));
     const sl = slopeOf(st);
     check(`${c.name}：scene.floor.slope 已生成且砖块非空`, !!sl && sl.tiles.length > 0);
     check(`${c.name}：切块顶点无 NaN`,
@@ -788,17 +795,27 @@ slopeTest("造型14 · 长条只切直刀、切得极少（与点状对照）", 
     cutTiles.every((t) => t.polys.every((p) => isAxisRect(p.pts))),
     "存在非矩形的切块 → 说明切成了斜的");
 
-  // 对照：点状如果不调相位（十字线没压缝），分区线要切一整排，明显多于长条
+  // 对照：点状不调相位（十字线没压缝）→ 一整列砖都得骑线；长条压上缝 → 一块都不用管
+  // 注意：分区线**永不切砖**（2.5），这里比的是"骑线砖数"，不是切砖数
   const sqPlan = slopeOf(drainState({ drain: { kind: "square", fitRidges: false } })).plan;
-  check("对照：点状不调相位时分区线切砖数明显多于长条",
-    sqPlan.ridgeCuts > plan.ridgeCuts, `点状 ${sqPlan.ridgeCuts} vs 长条 ${plan.ridgeCuts}`);
-  // 顺带一条守恒：切块总面积 = 砖总面积 − 洞口面积（沿用第 8 节断言 6 的思路）
+  check("对照：点状不调相位时骑线的砖明显多于长条",
+    sqPlan.ride.count > plan.ride.count, `点状 ${sqPlan.ride.count} vs 长条 ${plan.ride.count}`);
+  // 守恒：每块砖的面积 = 它所有切块面积之和 + 被洞口挖掉的那部分
+  // （不能直接减 o.w×o.h —— 洞口有一小部分压在砖缝上，那不是砖的面积）
+  const o = E.drainOpening(sl.shape);
+  let removed = 0;
+  for (const t of sl.tiles) {
+    if (!t.hole) continue;
+    const r = bbox(t.rect);
+    const iw = Math.max(0, Math.min(r.x + r.w, o.x + o.w) - Math.max(r.x, o.x));
+    const ih = Math.max(0, Math.min(r.y + r.h, o.y + o.h) - Math.max(r.y, o.y));
+    removed += iw * ih;
+  }
   const tileArea = sl.tiles.reduce((n, t) => n + polyArea(t.rect), 0);
   const polySum = sl.tiles.reduce((n, t) => n + t.polys.reduce((m, p) => m + polyArea(p.pts), 0), 0);
-  const o = E.drainOpening(sl.shape);
-  check("切块面积守恒（总面积 − 洞口面积，相对误差 < 1e-6）",
-    Math.abs(polySum - (tileArea - o.w * o.h)) <= 1e-6 * tileArea,
-    `切块 ${polySum} vs 期望 ${tileArea - o.w * o.h}`);
+  check("切块面积守恒（砖总面积 − 实际挖掉的面积，相对误差 < 1e-6）",
+    Math.abs(polySum - (tileArea - removed)) <= 1e-6 * tileArea,
+    `切块 ${polySum} vs 期望 ${tileArea - removed}`);
 });
 
 slopeTest("造型14b · 反向断言：长条本体压住的砖必切（防止把话说满）", () => {
@@ -1100,8 +1117,11 @@ slopeTest("命门26 · 骑线砖的悬空量报得对（师傅照这个数抹灰
 });
 
 slopeTest("命门7 · 十字线压缝 → 点状分水线零切砖（但洞口仍要切 4 块）", () => {
-  // 算例见上面"三"那组：地面 3020×1510、地漏 (1510,755)、理论相位 X=0 / Y=151
-  const st = drainState({ w: 3020, h: 1510, drain: { kind: "square", fromLeft: 1510, fromBack: 755 } });
+  // 算例见上面"三"那组：地面 3020×1510、砖距 302 → 理论相位 X = 1510 mod 302 = 0（可压缝）
+  // Y 轴被"门口发整砖"锁死在 phase 2（方案第 6 节：门口整砖赢，这条轴不许动相位），
+  // 所以 fromBack 要挑一个正好落在砖边的数：y = 1510 − 602 = 908 = 2 + 3×302 ✓ 也是砖边
+  // → 两条分水线都压在砖缝上（零骑线），地漏落在四砖交角 → 回字对角切 4 块
+  const st = drainState({ w: 3020, h: 1510, drain: { kind: "square", fromLeft: 1510, fromBack: 602 } });
   const sl = slopeOf(st);
   const plan = sl.plan;
   // 两笔账必须分开：ridgeCuts = 因分水线要切；drainCuts = 因地漏洞口要切
