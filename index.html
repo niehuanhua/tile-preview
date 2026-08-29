@@ -1992,6 +1992,48 @@ function chipText(ctx, text, cx, cy, color, W, H){
   ctx.restore();
 }
 
+/* 一排 chip 的统一排布（chipText 只管单个字块，管不了"好几个挤在一起"）：
+ * 切出来的砖常常只有 100mm 宽、字比砖宽，切法 chip 和垫灰 chip 必然叠在一起互相压住。
+ * 做法：第一个留在砖中心不动，被压住的沿**最短方向**让开，再从砖中心拉一条虚线引线
+ * 指回它——chip 挪了窝，指的仍是那块砖，语义不变。
+ * items：{ txt, color, ax, ay }，ax/ay 是锚点（砖中心，像素）。 */
+function chipRow(ctx, items, W, H){
+  if (!items || !items.length) return;
+  ctx.save();
+  ctx.font = '700 12px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+  const clampX = (c, x) => Math.max(c.w / 2 + 2, Math.min(W - c.w / 2 - 2, x));
+  const clampY = (c, y) => Math.max(c.h / 2 + 2, Math.min(H - c.h / 2 - 2, y));
+  items.forEach((c) => {
+    c.w = ctx.measureText(c.txt).width + 10; c.h = 18;
+    c.x = clampX(c, c.ax); c.y = clampY(c, c.ay);
+  });
+  ctx.restore();
+  const hit = (a, b) =>
+    Math.abs(a.x - b.x) * 2 < a.w + b.w + 6 && Math.abs(a.y - b.y) * 2 < a.h + b.h + 6;
+  for (let pass = 0; pass < 8; pass++) {                    // 多轮推开，直到互不相压
+    let any = false;
+    for (let i = 0; i < items.length; i++) for (let j = i + 1; j < items.length; j++) {
+      const a = items[i], b = items[j];                     // 只推后面的，第一个守住砖中心
+      if (!hit(a, b)) continue;
+      any = true;
+      const dy = (a.h + b.h) / 2 + 8 - Math.abs(a.y - b.y); // 竖向让开要挪多少
+      const dx = (a.w + b.w) / 2 + 8 - Math.abs(a.x - b.x); // 横向让开要挪多少
+      if (dy <= dx) b.y = clampY(b, b.y + (b.y >= a.y ? 1 : -1) * dy);
+      else          b.x = clampX(b, b.x + (b.x >= a.x ? 1 : -1) * dx);
+    }
+    if (!any) break;
+  }
+  for (const c of items) {
+    if (Math.hypot(c.x - c.ax, c.y - c.ay) > 6) {           // 挪过位 → 拉引线指回那块砖
+      ctx.save();
+      ctx.strokeStyle = c.color; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.moveTo(c.ax, c.ay); ctx.lineTo(c.x, c.y); ctx.stroke();
+      ctx.restore();
+    }
+    chipText(ctx, c.txt, c.x, c.y, c.color, W, H);
+  }
+}
+
 /* ============================================================
  * 找坡绘制原语（方案第 5 节）
  * 五个都只吃显式 scale(s)，2D 平面图 / 整屋展开图 / 三维地面贴图通用；
@@ -2144,6 +2186,7 @@ function paintDrainPlan(ctx, slope, card, s, opts){
   const W = (card && card.w > 0) ? card.w * s : 1e9;
   const H = (card && card.h > 0) ? card.h * s : 1e9;
   const at = (t) => [(t.x + t.w / 2) * s, (t.y + t.h / 2) * s];
+  const chips = [];                                         // 字先攒着，最后交给 chipRow 统一排
   ctx.save();
   ctx.strokeStyle = cut; ctx.lineWidth = 2;
   for (const t of plan.tiles) ctx.strokeRect(t.x * s, t.y * s, t.w * s, t.h * s);
@@ -2160,7 +2203,8 @@ function paintDrainPlan(ctx, slope, card, s, opts){
       groups.get(txt).push(t);
     }
     for (const [txt, ts] of groups) {
-      chipText(ctx, ts.length > 1 ? `${txt}×${ts.length}` : txt, at(ts[0])[0], at(ts[0])[1], cut, W, H);
+      const [ax, ay] = at(ts[0]);
+      chips.push({ txt: ts.length > 1 ? `${txt}×${ts.length}` : txt, color: cut, ax, ay });
     }
   }
   // 骑线的砖：全部描边，但**只标一块**——同一条分水线上每块砖的垫灰量是一样的
@@ -2175,11 +2219,13 @@ function paintDrainPlan(ctx, slope, card, s, opts){
     ctx.strokeRect(t.x * s, t.y * s, t.w * s, t.h * s);
     ctx.setLineDash([]);
     if (opts && opts.labels && !labeled && Math.abs(t.ride - worst) < 1e-9) {
-      chipText(ctx, `垫灰 ${t.ride.toFixed(1)}`, at(t)[0], at(t)[1], soft, W, H);
+      const [ax, ay] = at(t);
+      chips.push({ txt: `垫灰 ${t.ride.toFixed(1)}`, color: soft, ax, ay });
       labeled = true;
     }
   }
   ctx.restore();
+  chipRow(ctx, chips, W, H);
 }
 
 /* 墙根坡线（单墙立面图用）：沿这面墙的墙根画一条真实的高度折线。
