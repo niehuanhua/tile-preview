@@ -2010,7 +2010,12 @@ function chipRow(ctx, items, W, H){
   ctx.restore();
   const hit = (a, b) =>
     Math.abs(a.x - b.x) * 2 < a.w + b.w + 6 && Math.abs(a.y - b.y) * 2 < a.h + b.h + 6;
-  for (let pass = 0; pass < 8; pass++) {                    // 多轮推开，直到互不相压
+  const ovl = (a, b) => Math.max(0, (a.w + b.w) / 2 - Math.abs(a.x - b.x))
+                      * Math.max(0, (a.h + b.h) / 2 - Math.abs(a.y - b.y));
+  const freeAt = (b, x, y) => !items.some((o) => o !== b && hit(o, { x, y, w: b.w, h: b.h }));
+  const cost = (b, x, y) => items.reduce((sum, o) =>
+    sum + (o === b ? 0 : ovl(o, { x, y, w: b.w, h: b.h })), 0);
+  for (let pass = 0; pass < 12; pass++) {                   // 多轮推开，直到互不相压
     let any = false;
     for (let i = 0; i < items.length; i++) for (let j = i + 1; j < items.length; j++) {
       const a = items[i], b = items[j];                     // 只推后面的，第一个守住砖中心
@@ -2018,8 +2023,22 @@ function chipRow(ctx, items, W, H){
       any = true;
       const dy = (a.h + b.h) / 2 + 8 - Math.abs(a.y - b.y); // 竖向让开要挪多少
       const dx = (a.w + b.w) / 2 + 8 - Math.abs(a.x - b.x); // 横向让开要挪多少
-      if (dy <= dx) b.y = clampY(b, b.y + (b.y >= a.y ? 1 : -1) * dy);
-      else          b.x = clampX(b, b.x + (b.x >= a.x ? 1 : -1) * dx);
+      const sy = b.y >= a.y ? dy : -dy, sx = b.x >= a.x ? dx : -dx;
+      /* 候选落点：离 a 远的那侧优先、近的那侧兜底，距离 1、2、3 倍，由近到远试，
+       * 取第一个"挪过去谁都不压"的。
+       * 只试最短的那一步不够：挤在墙角时那个方向往往只是一条窄缝（甚至已经顶到
+       * 画布边、想让都让不动），挪过去又撞上别人、下一轮被推回来，来回抖到轮数
+       * 用完还压着——所以反向（绕过 a 到另一侧）也必须试。 */
+      const cands = [];
+      const dirs = dy <= dx ? [[0, sy], [0, -sy], [sx, 0], [-sx, 0]]
+                            : [[sx, 0], [-sx, 0], [0, sy], [0, -sy]];
+      for (const k of [1, 2, 3]) for (const [ox, oy] of dirs)
+        cands.push([clampX(b, b.x + ox * k), clampY(b, b.y + oy * k)]);
+      const free = cands.filter(([nx, ny]) => freeAt(b, nx, ny));
+      const pick = free.length ? free[0]                    // 有空位就用最近的那个
+        : cands.reduce((p, q) =>                            // 都没有：挑压得最轻的
+            cost(b, q[0], q[1]) < cost(b, p[0], p[1]) ? q : p);
+      b.x = pick[0]; b.y = pick[1];
     }
     if (!any) break;
   }
@@ -2032,6 +2051,13 @@ function chipRow(ctx, items, W, H){
     }
     chipText(ctx, c.txt, c.x, c.y, c.color, W, H);
   }
+}
+
+/* 标注统一走这里：给了 sink 就只攒着（交给调用方排完一起画），没给就地画。
+ * 必须攒着是因为几个原语各画各的字会互相压住——只有凑齐了一起排才知道该让谁。 */
+function chipTo(ctx, sink, txt, color, ax, ay, W, H){
+  if (sink) sink.push({ txt, color, ax, ay });
+  else chipText(ctx, txt, ax, ay, color, W, H);
 }
 
 /* ============================================================
@@ -2090,6 +2116,7 @@ function paintDrain(ctx, shape, card, s, opts){
   const x = o.x * s, y = o.y * s, w = o.w * s, h = o.h * s;
   const W = (card && card.w > 0) ? card.w * s : 1e9;
   const H = (card && card.h > 0) ? card.h * s : 1e9;
+  const sink = opts && opts.sink;
   const dark = cssVar("--ink"), paper = cssVar("--paper");
   ctx.save();
   ctx.fillStyle = dark;
@@ -2135,11 +2162,11 @@ function paintDrain(ctx, shape, card, s, opts){
       const txt = shape.seg
         ? `${Math.round(Math.abs(shape.seg.bx - shape.seg.ax) || 0)}×${Math.round(shape.wide)}`
         : "";
-      if (txt) chipText(ctx, txt, x + w/2, y - 12, ink, W, H);
-      chipText(ctx, "▼0", x - 12, y + h/2, ink, W, H);
-      chipText(ctx, "▼0", x + w + 12, y + h/2, ink, W, H);
+      if (txt) chipTo(ctx, sink, txt, ink, x + w/2, y - 12, W, H);
+      chipTo(ctx, sink, "▼0", ink, x - 12, y + h/2, W, H);
+      chipTo(ctx, sink, "▼0", ink, x + w + 12, y + h/2, W, H);
     } else {
-      chipText(ctx, "地漏 ▼0", x + w + 8, y - 12, ink, W, H);
+      chipTo(ctx, sink, "地漏 ▼0", ink, x + w + 8, y - 12, W, H);
     }
   }
   ctx.restore();
@@ -2164,14 +2191,16 @@ function paintRidges(ctx, slope, card, s, opts){
   if (opts && opts.labels && card && card.w > 0 && card.h > 0) {
     const ink = cssVar("--ink-soft");
     const W = card.w * s, H = card.h * s;
-    for (const l of lines) {                              // 每条线靠近中点标一次，避开四角标高
-      chipText(ctx, "凹槽底 ▼0", (l.x1 + l.x2) / 2 * s + 34, (l.y1 + l.y2) / 2 * s - 12, accent, W, H);
-    }
+    /* "凹槽底 ▼0"只标一次：两条线说的都是同一件事（凹槽底是平的、处处 ▼0），
+     * 各标一次就是两个一模一样的字——地漏居中时两个中点重合，直接叠成重影。 */
+    const l0 = lines[0];
+    chipTo(ctx, opts.sink, "凹槽底 ▼0", accent,
+           (l0.x1 + l0.x2) / 2 * s + 34, (l0.y1 + l0.y2) / 2 * s - 12, W, H);
     const P = [[16, 22], [card.w - 16, 22], [16, card.h - 22], [card.w - 16, card.h - 22]];
     const C = [[0, 0], [card.w, 0], [0, card.h], [card.w, card.h]];
     for (let i = 0; i < 4; i++) {                         // 四角：最高点（师傅据此定门槛高度）
       const h = Engine.slopeHeightAt(slope.zones, C[i][0], C[i][1]);
-      chipText(ctx, `+${h.toFixed(1)}`, P[i][0] * s, P[i][1] * s, ink, W, H);
+      chipTo(ctx, opts.sink, `+${h.toFixed(1)}`, ink, P[i][0] * s, P[i][1] * s, W, H);
     }
   }
   ctx.restore();
@@ -2186,7 +2215,7 @@ function paintDrainPlan(ctx, slope, card, s, opts){
   const W = (card && card.w > 0) ? card.w * s : 1e9;
   const H = (card && card.h > 0) ? card.h * s : 1e9;
   const at = (t) => [(t.x + t.w / 2) * s, (t.y + t.h / 2) * s];
-  const chips = [];                                         // 字先攒着，最后交给 chipRow 统一排
+  const sink = opts && opts.sink;                           // 字攒给调用方（drawFloor）统一排
   ctx.save();
   ctx.strokeStyle = cut; ctx.lineWidth = 2;
   for (const t of plan.tiles) ctx.strokeRect(t.x * s, t.y * s, t.w * s, t.h * s);
@@ -2204,7 +2233,7 @@ function paintDrainPlan(ctx, slope, card, s, opts){
     }
     for (const [txt, ts] of groups) {
       const [ax, ay] = at(ts[0]);
-      chips.push({ txt: ts.length > 1 ? `${txt}×${ts.length}` : txt, color: cut, ax, ay });
+      chipTo(ctx, sink, ts.length > 1 ? `${txt}×${ts.length}` : txt, cut, ax, ay, W, H);
     }
   }
   // 骑线的砖：全部描边，但**只标一块**——同一条分水线上每块砖的垫灰量是一样的
@@ -2220,12 +2249,11 @@ function paintDrainPlan(ctx, slope, card, s, opts){
     ctx.setLineDash([]);
     if (opts && opts.labels && !labeled && Math.abs(t.ride - worst) < 1e-9) {
       const [ax, ay] = at(t);
-      chips.push({ txt: `垫灰 ${t.ride.toFixed(1)}`, color: soft, ax, ay });
+      chipTo(ctx, sink, `垫灰 ${t.ride.toFixed(1)}`, soft, ax, ay, W, H);
       labeled = true;
     }
   }
   ctx.restore();
-  chipRow(ctx, chips, W, H);
 }
 
 /* 墙根坡线（单墙立面图用）：沿这面墙的墙根画一条真实的高度折线。
@@ -2561,11 +2589,14 @@ function drawFloor(canvas, card, scene){
   }
   paintCuts(ctx, f.x, f.y, s, cssW, cssH);
 
-  // 找坡：分水线（最底）→ 地漏 → 下料清单（最上）
+  // 找坡：分水线（最底）→ 地漏 → 下料清单（最上）。
+  // 三个原语的字全攒进 chips，画完由 chipRow 统一排一次——各排各的会互相压住。
   if (f.slope) {
-    paintRidges(ctx, f.slope, card, s, { labels:true });
-    paintDrain(ctx, f.slope.shape, card, s, { labels:true });
-    paintDrainPlan(ctx, f.slope, card, s, { labels:true });
+    const chips = [], o = { labels:true, sink: chips };
+    paintRidges(ctx, f.slope, card, s, o);
+    paintDrain(ctx, f.slope.shape, card, s, o);
+    paintDrainPlan(ctx, f.slope, card, s, o);
+    chipRow(ctx, chips, cssW, cssH);
   }
 
   // 被柱脚裁到的地砖：红字标"缝到柱边"剩余块实测尺寸
