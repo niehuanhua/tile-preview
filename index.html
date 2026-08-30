@@ -2378,7 +2378,14 @@ function columnFootprints(scene, state){
     if (card.alignEdge && card.alignEdge !== "none" && !used.has(card.alignEdge)) { used.add(card.alignEdge); side = card.alignEdge; }
     else { for (const s of order) if (!used.has(s)) { used.add(s); side = s; break; } }
     if (!side) continue;
-    const flip = !!(card.door && card.door.on);
+    /* 后墙和左墙要翻：展开图里后墙是 scale(-1,-1) 贴上去的、左墙是 rotate(-90°)
+     * 贴上去的，这两面墙的"离左 L"压着的是地面的 (端点 − L)；只有右墙
+     * rotate(+90°) 才同向。
+     * 原来这里按"有没有门"判（门墙通常就是后墙，所以平时碰巧对上），但门不一定
+     * 开在后墙上，一错开柱脚就画到墙的另一头。改成按方位判，与三维阴影(2766)、
+     * 三维立柱(2843)、通缝相位(2820)、墙根坡线(2274) 四处一致——函数头那句
+     * "镜像约定和三维图完全一致"才真的成立。 */
+    const flip = (side === "back" || side === "left");
     const across = (side === "front" || side === "back") ? FH : FW;
     card.cols.forEach((c) => {
       if (!colValid(c, card)) return;
