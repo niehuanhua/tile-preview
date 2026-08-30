@@ -2266,9 +2266,15 @@ function paintSlopeFootLine(ctx, slope, floorCard, fEdges, side, s, W, H){
   if (!edge) return null;
   const FW = floorCard.w, FH = floorCard.h;
   const along = (edge === "top" || edge === "bottom") ? FW : FH;   // 沿墙方向的长度
+  /* 墙上的"离左"和地面边的走向**不是到处都同向**：整屋展开图里后墙是
+   * scale(-1,-1) 贴上去的、左墙是 rotate(-90°) 贴上去的，这两面墙的"离左 L"
+   * 压着的都是地面的 (端点 − L)，不是 (端点 + L)（右墙 rotate(+90°) 才同向，
+   * 见 renderRoomNet 的注释）。这里不跟着翻，墙根坡线和三个标高就会整个左右
+   * 颠倒——B 墙（后墙）和 C 墙（左墙）的垫灰高度正好反过来。 */
+  const flip = (side === "back" || side === "left");
   const N = 40, hs = [];
   for (let i = 0; i <= N; i++) {
-    const t = (along * i) / N;
+    const t = flip ? along - (along * i) / N : (along * i) / N;
     const at = (edge === "top")    ? { x:t, y:0 }
              : (edge === "bottom") ? { x:t, y:FH }
              : (edge === "left")   ? { x:0, y:t }
