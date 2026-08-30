@@ -2822,8 +2822,11 @@ function buildRoomModel(scene, state){
         ? { axis: floorY, dim: fDims.y }
         : { axis: floorX, dim: fDims.x };
       if (Engine.compatible(wDims.x, map.dim)) {
-        // 与 computeScene 对齐：左/后墙(贴边反向)镜像相位，前/右方向一致
-        const mirror = (card.alignEdge === "left" || card.alignEdge === "back");
+        // 与 computeScene 对齐：左/后墙(贴边反向)镜像相位，前/右方向一致。
+        // 用 side（实际落到的方位）判，不用 card.alignEdge（用户填的意愿）——
+        // 两面墙抢同一个方位时 sideMap 会把后一个顺延到别的方位，这时按 alignEdge
+        // 判就会照着错的方位去镜像。与其余五处同一条规矩（方案 5.2.1）。
+        const mirror = (side === "left" || side === "back");
         const po = mirror ? (card.w - map.axis.phase) : map.axis.phase;
         xLayout = Engine.layoutAxis(card.w, wDims.x, g, st.startMode, po);
       }
