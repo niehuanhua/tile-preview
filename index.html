@@ -672,22 +672,51 @@ const Engine = (() => {
   /* 选一个让"目标线正好压在砖缝上"的起铺相位（方案 4.4）。
    *   闭式一步：ideal = X0 mod p —— 砖从 ideal 起铺，X0 就落在某块砖的左边缘上
    *   若 ideal 破坏 1/3 老规矩 → 在合法相位里取离 ideal 最近的（退化成一次小扫描） */
-  const pickCrossPhase = (L, t, g, mode, X0, minPiece) => {
+  /* 选一个让分水线（或长条边缘）**压在砖缝上**的起铺相位。
+   * 目标不是"地漏正中心"那一个点，而是**穿过地漏口的任意一条砖缝**：现场规矩是
+   * "分水线只要在回字四条边之内就藏得住"，不必死对中心（方案 4.4）。
+   * 所以顺序是：① 现有排版的砖缝已经穿过口 → 一个毫米都不挪（kept）；
+   *            ② 否则挪到**离现有相位最近**的合格相位（少挪砖＝少破坏门口整砖和边缘 1/3）；
+   *            ③ 口内怎么都放不下 → 退回"离中心最近"，尽量缩短露在外的那截折线。
+   * 入参 X0 / X1：可接受区间的左右端；X1 不传（或等�� X0）就是老的点目标（长条走这条）。
+   * 返回 { phase, zeroCut, fallback, kept }。 */
+  const pickCrossPhase = (L, t, g, mode, X0, minPiece, X1) => {
     const p = t + g, minP = numOr(minPiece, 0);
+    const a = numOr(X0, NaN);
+    const b = (X1 == null || !isFinite(X1)) ? a : X1;
     const legal = (ax) => [ax.cutLeft, ax.cutRight].every(
       (c) => c == null || (c >= t / 3 - 1e-9 && c >= minP - 1e-9));
-    const ideal = mod(X0, p);
-    if (X0 == null || !isFinite(ideal)) return { phase: layoutAxis(L, t, g, mode).phase, zeroCut: false, fallback: false };
-    if (legal(layoutAxis(L, t, g, mode, ideal))) return { phase: ideal, zeroCut: true, fallback: false };
+    const cur = layoutAxis(L, t, g, mode).phase;
+    if (!isFinite(a)) return { phase: cur, zeroCut: false, fallback: false, kept: true };
+    const joints = (ph) => {                             // 该相位下所有砖缝的位置
+      const ax = layoutAxis(L, t, g, mode, ph), out = [0];
+      ax.segments.forEach((s) => { out.push(s.start, s.start + s.width); });
+      return out;
+    };
+    const onTarget = (ph) => joints(ph).some((v) => v >= a - 0.5 && v <= b + 0.5);
+    const circ = (u, v) => { const r = Math.abs(u - v); return Math.min(r, p - r); };
+    if (onTarget(cur) && legal(layoutAxis(L, t, g, mode, cur)))
+      return { phase: cur, zeroCut: true, fallback: false, kept: true };   // 本来就合格，不挪
     let best = null, bestD = Infinity;
     for (let ph = 0; ph < p; ph += 1) {
-      if (!legal(layoutAxis(L, t, g, mode, ph))) continue;
-      const raw = Math.abs(ph - ideal);
-      const d = Math.min(raw, p - raw);            // 相位是个环，取环形距离
+      if (!onTarget(ph) || !legal(layoutAxis(L, t, g, mode, ph))) continue;
+      const d = circ(ph, cur);                           // 离现有相位最近 → 挪得最少
       if (d < bestD - 1e-9) { bestD = d; best = ph; }
     }
-    if (best == null) return { phase: layoutAxis(L, t, g, mode).phase, zeroCut: false, fallback: true };
-    return { phase: best, zeroCut: false, fallback: true };
+    if (best != null) return { phase: best, zeroCut: false, fallback: false, kept: false };
+    /* ③ 洞口内怎么都放不下（多半是边缘 1/3 老规矩卡住了）→ 退回"离地漏中心最近的
+     * 合法相位"，尽量缩短露在洞口外面那一截折线。
+     * 注意：走到这一步说明 step② 一无所获，而"正对中心"那个相位必然穿过洞口、
+     * 若它合法早被 step② 挑走了，所以这里不用再试它。 */
+    const ideal = mod((a + b) / 2, p);
+    let fbest = null, fbestD = Infinity;
+    for (let ph = 0; ph < p; ph += 1) {
+      if (!legal(layoutAxis(L, t, g, mode, ph))) continue;
+      const d = circ(ph, ideal);
+      if (d < fbestD - 1e-9) { fbestD = d; fbest = ph; }
+    }
+    if (fbest == null) return { phase: cur, zeroCut: false, fallback: true, kept: true };
+    return { phase: fbest, zeroCut: false, fallback: true, kept: false };
   };
 
   /* 下料清单 + 三笔账（方案 7.15）：
@@ -944,21 +973,29 @@ const Engine = (() => {
         const tX = fDims.x, tY = fDims.y;
         const minP = numOr(dr.minPiece, 50);
         const locked = doorLabel ? ((de === "bottom" || de === "top") ? "y" : "x") : null;
-        // 要压到砖缝上的目标线：点状 = 过地漏的一横一竖；
-        // 长条 = 两端垂线（沿长条那条轴）+ 靠上一侧的长边（另一条轴）
-        let targetX = null, targetY = null;
+        // 可接受区间 [a,b]：区内有任意一条砖缝即可，不要求"正对中心"。
+        // 长条 = 两端垂线 / 靠上一侧的长边，各是一条边 → a === b（行为不变）
+        // 点状 = 整个洞口（含留缝）：分水线只要在回字四条边之内就藏得住（方案 4.4）
+        let fitX = null, fitY = null;
         if (shape.isLine && shape.seg) {
           const s = shape.seg, halfW = shape.wide / 2 + numOr(dr.gap, 3);
-          if (Math.abs(s.ay - s.by) < 1e-9) { targetX = Math.min(s.ax, s.bx); targetY = Math.min(s.ay, s.by) - halfW; }
-          else                              { targetY = Math.min(s.ay, s.by); targetX = Math.min(s.ax, s.bx) - halfW; }
+          if (Math.abs(s.ay - s.by) < 1e-9) {
+            const tx = Math.min(s.ax, s.bx), ty = Math.min(s.ay, s.by) - halfW;
+            fitX = [tx, tx]; fitY = [ty, ty];
+          } else {
+            const ty = Math.min(s.ay, s.by), tx = Math.min(s.ax, s.bx) - halfW;
+            fitX = [tx, tx]; fitY = [ty, ty];
+          }
         } else if (shape.point) {
-          targetX = shape.point.x; targetY = shape.point.y;
+          const o = shape.open;
+          fitX = o ? [o.x, o.x + o.w] : [shape.point.x, shape.point.x];
+          fitY = o ? [o.y, o.y + o.h] : [shape.point.y, shape.point.y];
         }
-        const wantFit = (x) => (shape.isLine ? dr.fitEdges !== false : dr.fitRidges !== false) && x != null;
+        const wantFit = (r) => (shape.isLine ? dr.fitEdges !== false : dr.fitRidges !== false) && r != null;
         let phX = floorX.phase, phY = floorY.phase;
         // 被门口锁住的那条轴不许动相位（方案第 6 节：门口整砖赢）
-        if (wantFit(targetX) && locked !== "x") phX = pickCrossPhase(floorCard.w, tX, g, s.startMode, targetX, minP).phase;
-        if (wantFit(targetY) && locked !== "y") phY = pickCrossPhase(floorCard.h, tY, g, s.startMode, targetY, minP).phase;
+        if (wantFit(fitX) && locked !== "x") phX = pickCrossPhase(floorCard.w, tX, g, s.startMode, fitX[0], minP, fitX[1]).phase;
+        if (wantFit(fitY) && locked !== "y") phY = pickCrossPhase(floorCard.h, tY, g, s.startMode, fitY[0], minP, fitY[1]).phase;
         if (Math.abs(phX - floorX.phase) > 1e-9) floorX = layoutAxis(floorCard.w, tX, g, s.startMode, phX);
         if (Math.abs(phY - floorY.phase) > 1e-9) floorY = layoutAxis(floorCard.h, tY, g, s.startMode, phY);
         scene.floor.x = floorX; scene.floor.y = floorY;
