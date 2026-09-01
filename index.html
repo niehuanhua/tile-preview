@@ -2164,12 +2164,16 @@ function paintDrain(ctx, shape, card, s, opts){
     ctx.setLineDash([]);
     ctx.beginPath(); ctx.arc(x + w/2, y + h/2, 2, 0, Math.PI * 2); ctx.fill();
   } else if (shape.kind === "concealed") {
-    ctx.fillRect(x, y, w, h);
-    ctx.fillStyle = cssVar("--tile");                     // 中间那块"同款嵌砖"→ 一眼看出隐形
+    /* 回字（隐形）：外圈是地漏的框，中间是可揭起来的"同款嵌砖"。
+     * 嵌砖**不能再填 --tile**（那是地砖本色）——填了就跟周围地砖糊成一片，
+     * 地漏边界看不出来，也就看不清周围 4 块砖是怎么切的（方块形没有这问题，
+     * 它是整块深色）。这里把嵌砖压暗一档：还是"砖"，但明显是**另一块**。 */
+    ctx.fillRect(x, y, w, h);                             // 外框＝地漏体（深色）
+    ctx.fillStyle = shadeColor(cssVar("--tile"), 0.8);     // 嵌砖：同款砖，压暗一档
     ctx.fillRect(x + w * 0.18, y + h * 0.18, w * 0.64, h * 0.64);
-    ctx.strokeStyle = paper; ctx.lineWidth = 1.5;
+    ctx.strokeStyle = paper; ctx.lineWidth = 1.5;          // 外框描边（深色底上用纸白）
     ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
-    ctx.setLineDash([4, 3]);
+    ctx.setLineDash([4, 3]);                               // 嵌砖轮廓：虚线＝能揭起来的那块
     ctx.strokeRect(x + w * 0.18, y + h * 0.18, w * 0.64, h * 0.64);
     ctx.setLineDash([]);
   } else if (shape.isLine) {
