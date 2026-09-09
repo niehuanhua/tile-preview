@@ -1911,6 +1911,7 @@ function paintCuts(ctx, xe, ye, s, W, H, map, opts){
   const cut = cssVar("--danger");
   const pad = 14; // 尺寸线离边缘的距离（也顺带避开地面的前/后/左/右徽标）
   const skipHeight = !!(opts && opts.skipHeight);
+  const sink = opts && opts.sink;   // 给了就把标签攒进去交给 chipRow 统一排（地面图），否则就地画白底标签（墙面图）
   ctx.save();
   ctx.font = '700 12px -apple-system, "PingFang SC", sans-serif';
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
@@ -1988,7 +1989,8 @@ function paintCuts(ctx, xe, ye, s, W, H, map, opts){
       ctx.moveTo(m.x1 - 5, m.y1); ctx.lineTo(m.x1 + 5, m.y1);  // 下端刻度
     }
     ctx.stroke();
-    pill(m.cx, m.cy, m.txt);
+    if (sink) { const p = M(m.cx, m.cy); sink.push({ txt: m.txt, color: cut, ax: p.x, ay: p.y }); }
+    else pill(m.cx, m.cy, m.txt);
   });
   ctx.restore();
 }
@@ -2033,7 +2035,9 @@ function chipText(ctx, text, cx, cy, color, W, H){
  * 切出来的砖常常只有 100mm 宽、字比砖宽，切法 chip 和垫灰 chip 必然叠在一起互相压住。
  * 做法：第一个留在砖中心不动，被压住的沿**最短方向**让开，再从砖中心拉一条虚线引线
  * 指回它——chip 挪了窝，指的仍是那块砖，语义不变。
- * items：{ txt, color, ax, ay }，ax/ay 是锚点（砖中心，像素）。 */
+ * items：{ txt, color, ax, ay }，ax/ay 是锚点（砖中心，像素）。
+ * 另有 ghost 项 { ghost:true, x, y, w, h }：不画字也不挪（徽标、柱字），
+ * 纯粹占位，让真标签绕开它。 */
 function chipRow(ctx, items, W, H){
   if (!items || !items.length) return;
   ctx.save();
@@ -2041,6 +2045,7 @@ function chipRow(ctx, items, W, H){
   const clampX = (c, x) => Math.max(c.w / 2 + 2, Math.min(W - c.w / 2 - 2, x));
   const clampY = (c, y) => Math.max(c.h / 2 + 2, Math.min(H - c.h / 2 - 2, y));
   items.forEach((c) => {
+    if (c.ghost) { c.x = clampX(c, c.x); c.y = clampY(c, c.y); return; } // 占位项：不画也不挪（徽标/柱字）
     c.w = ctx.measureText(c.txt).width + 10; c.h = 18;
     c.x = clampX(c, c.ax); c.y = clampY(c, c.ay);
   });
@@ -2056,11 +2061,12 @@ function chipRow(ctx, items, W, H){
     let any = false;
     for (let i = 0; i < items.length; i++) for (let j = i + 1; j < items.length; j++) {
       const a = items[i], b = items[j];                     // 只推后面的，第一个守住砖中心
-      if (!hit(a, b)) continue;
+      if ((a.ghost && b.ghost) || !hit(a, b)) continue;
+      const m = b.ghost ? a : b, o = m === a ? b : a;       // 占位项不挪，只推真标签
       any = true;
-      const dy = (a.h + b.h) / 2 + 8 - Math.abs(a.y - b.y); // 竖向让开要挪多少
-      const dx = (a.w + b.w) / 2 + 8 - Math.abs(a.x - b.x); // 横向让开要挪多少
-      const sy = b.y >= a.y ? dy : -dy, sx = b.x >= a.x ? dx : -dx;
+      const dy = (o.h + m.h) / 2 + 8 - Math.abs(m.y - o.y); // 竖向让开要挪多少
+      const dx = (o.w + m.w) / 2 + 8 - Math.abs(m.x - o.x); // 横向让开要挪多少
+      const sy = m.y >= o.y ? dy : -dy, sx = m.x >= o.x ? dx : -dx;
       /* 候选落点：离 a 远的那侧优先、近的那侧兜底，距离 1、2、3 倍，由近到远试，
        * 取第一个"挪过去谁都不压"的。
        * 只试最短的那一步不够：挤在墙角时那个方向往往只是一条窄缝（甚至已经顶到
@@ -2070,16 +2076,17 @@ function chipRow(ctx, items, W, H){
       const dirs = dy <= dx ? [[0, sy], [0, -sy], [sx, 0], [-sx, 0]]
                             : [[sx, 0], [-sx, 0], [0, sy], [0, -sy]];
       for (const k of [1, 2, 3]) for (const [ox, oy] of dirs)
-        cands.push([clampX(b, b.x + ox * k), clampY(b, b.y + oy * k)]);
-      const free = cands.filter(([nx, ny]) => freeAt(b, nx, ny));
+        cands.push([clampX(m, m.x + ox * k), clampY(m, m.y + oy * k)]);
+      const free = cands.filter(([nx, ny]) => freeAt(m, nx, ny));
       const pick = free.length ? free[0]                    // 有空位就用最近的那个
         : cands.reduce((p, q) =>                            // 都没有：挑压得最轻的
-            cost(b, q[0], q[1]) < cost(b, p[0], p[1]) ? q : p);
-      b.x = pick[0]; b.y = pick[1];
+            cost(m, q[0], q[1]) < cost(m, p[0], p[1]) ? q : p);
+      m.x = pick[0]; m.y = pick[1];
     }
     if (!any) break;
   }
   for (const c of items) {
+    if (c.ghost) continue;
     if (Math.hypot(c.x - c.ax, c.y - c.ay) > 6) {           // 挪过位 → 拉引线指回那块砖
       ctx.save();
       ctx.strokeStyle = c.color; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
@@ -2456,9 +2463,10 @@ function paintFootprint(ctx, r, s, label){
 
 /* 柱脚压到的砖要裁切：红字标出"砖缝到柱边"剩下那块的实测尺寸，现场照着下料。
  * 只对真正被柱边穿过的砖格标（柱边恰好落在缝上 = 不用裁，不标）。 */
-function paintFootprintCuts(ctx, r, xe, ye, s, W, H){
+function paintFootprintCuts(ctx, r, xe, ye, s, W, H, opts){
   if (!xe || !ye || xe.segments.dense || ye.segments.dense) return;
   const cut = cssVar("--danger");
+  const sink = opts && opts.sink;   // 给了就把标签攒进 chipRow 统一排，避免压住找坡标注/徽标
   const pad = 14;
   const X0 = r.x, X1 = r.x + r.w, Y0 = r.y, Y1 = r.y + r.h;
   const FWmm = W / s, FHmm = H / s;
@@ -2524,8 +2532,11 @@ function paintFootprintCuts(ctx, r, xe, ye, s, W, H){
     if (mk.axis === "h") { ctx.moveTo(mk.x0, mk.y0 - 5); ctx.lineTo(mk.x0, mk.y0 + 5); ctx.moveTo(mk.x1, mk.y1 - 5); ctx.lineTo(mk.x1, mk.y1 + 5); }
     else { ctx.moveTo(mk.x0 - 5, mk.y0); ctx.lineTo(mk.x0 + 5, mk.y0); ctx.moveTo(mk.x1 - 5, mk.y1); ctx.lineTo(mk.x1 + 5, mk.y1); }
     ctx.stroke();
-    ctx.fillStyle = "rgba(255,255,255,0.92)"; ctx.fillRect(mk.cx - mk.w / 2, mk.cy - 10, mk.w, 20);
-    ctx.fillStyle = cut; ctx.fillText(mk.txt, mk.cx, mk.cy);
+    if (sink) sink.push({ txt: mk.txt, color: cut, ax: mk.cx, ay: mk.cy });
+    else {
+      ctx.fillStyle = "rgba(255,255,255,0.92)"; ctx.fillRect(mk.cx - mk.w / 2, mk.cy - 10, mk.w, 20);
+      ctx.fillStyle = cut; ctx.fillText(mk.txt, mk.cx, mk.cy);
+    }
   });
   ctx.restore();
 }
@@ -2611,8 +2622,16 @@ function drawFloor(canvas, card, scene){
     paintTiles(ctx, f.x, f.y, s, cssW, cssH);
   }
 
+  // 地面图上所有浮字（裁砖尺寸、柱脚尺寸、找坡标注）攒进 chips，最后由 chipRow
+  // 一次性排开互不相压；ghost 项（徽标、柱字）不画也不挪，纯粹占位供避让。
+  const chips = [];
+
   // 柱脚压在地面上：色块盖住下面的地砖（方位徽标仍画在最上层）
-  columnFootprints(scene, state).forEach(r => paintFootprint(ctx, r, s, "柱"));
+  columnFootprints(scene, state).forEach(r => {
+    paintFootprint(ctx, r, s, "柱");
+    if (r.w * s > 20 && r.h * s > 20)
+      chips.push({ ghost:true, x:(r.x + r.w / 2) * s, y:(r.y + r.h / 2) * s, w:20, h:18 });
+  });
 
   // 四条边中点标 前/后/左/右
   const accent = cssVar("--accent");
@@ -2640,21 +2659,23 @@ function drawFloor(canvas, card, scene){
   for (const [name, diagramEdge] of Object.entries(f.edges)) {
     const [cx, cy] = mid[diagramEdge];
     badge(EDGE_NAMES[name], cx, cy);
+    chips.push({ ghost:true, x:cx, y:cy, w:32, h:24 });
   }
-  paintCuts(ctx, f.x, f.y, s, cssW, cssH);
+  paintCuts(ctx, f.x, f.y, s, cssW, cssH, undefined, { sink: chips });
 
-  // 找坡：分水线（最底）→ 地漏 → 下料清单（最上）。
-  // 三个原语的字全攒进 chips，画完由 chipRow 统一排一次——各排各的会互相压住。
+  // 找坡：分水线（最底）→ 地漏 → 下料清单（最上），字同样攒进 chips。
   if (f.slope) {
-    const chips = [], o = { labels:true, sink: chips };
+    const o = { labels:true, sink: chips };
     paintRidges(ctx, f.slope, card, s, o);
     paintDrain(ctx, f.slope.shape, card, s, o);
     paintDrainPlan(ctx, f.slope, card, s, o);
-    chipRow(ctx, chips, cssW, cssH);
   }
 
-  // 被柱脚裁到的地砖：红字标"缝到柱边"剩余块实测尺寸
-  columnFootprints(scene, state).forEach(r => paintFootprintCuts(ctx, r, f.x, f.y, s, cssW, cssH));
+  // 被柱脚裁到的地砖：红字标"缝到柱边"剩余块实测尺寸（字也进 chips 统一排）
+  columnFootprints(scene, state).forEach(r =>
+    paintFootprintCuts(ctx, r, f.x, f.y, s, cssW, cssH, { sink: chips }));
+
+  chipRow(ctx, chips, cssW, cssH);
 }
 
 /* ---- 整屋展开图：在“一张画布”上合成地面 + 四面墙 ----
