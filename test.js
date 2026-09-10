@@ -1154,6 +1154,160 @@ slopeTest("命门7b · 零切砖让位于 1/3 老规矩", () => {
   check("因此这一例没有强求零切砖", sl.plan.cutCount > 0 || minCut >= 100);
 });
 
+/* ============================================================
+ * 四、底排墙砖：按地面最低点起、高的地方裁掉（全屋共用一个上沿）
+ *
+ * 规矩（用户定）：底排上沿 = 一块砖高 + 全屋墙根最低点 → 四面墙的底排上沿
+ * 在同一条水平线上（墙角横缝对得上）；底排下沿贴着墙根坡线，地面高的地方
+ * 把砖裁掉，每块砖标出左右两端的实际高度。找坡关掉时必须完全退化成老规矩。
+ * ============================================================ */
+
+function footState(over) {
+  over = over || {};
+  const st = mkState();
+  st.settings.wallTile  = { preset: "300×600", w: 300, h: 600 };   // 横铺：水平 600、竖向 300
+  st.settings.floorTile = { preset: "300×300", w: 300, h: 300 };
+  const floor = st.cards.find((c) => c.type === "floor");
+  floor.w = over.w != null ? over.w : 3000;
+  floor.h = over.h != null ? over.h : 2000;
+  floor.drain = Object.assign({
+    on: true, kind: "square", fromLeft: 700, fromBack: 300, rot: 0,
+    size: 100, len: 300, wide: 64, gap: 3, against: null, shower: "hand",
+    drop: 10, cutStyle: "hole", fitRidges: true, fitEdges: true, minPiece: 50,
+  }, over.drain || {});
+  const mkWall = (id, name, w, h) => ({
+    id, type: "wall", name, w, h,
+    door: { on: false, left: null, width: null, height: null },
+    win: { on: false, left: null, sill: null, width: null, height: null },
+    cols: [], alignEdge: "none",
+  });
+  st.cards = [ mkWall("w1", "墙A", 3000, 2600), mkWall("w2", "墙B", 3000, 2600),
+               mkWall("w3", "墙C", 2000, 2600), mkWall("w4", "墙D", 2000, 2600), floor ];
+  return st;
+}
+const WALL_IDS = ["w1", "w2", "w3", "w4"];
+const wallDims = (st) => E.laidDims(st.settings.wallTile, st.settings.direction);
+
+test("底排 · 回归：找坡关掉时，竖向相位还是老规矩（底排整砖、裁砖甩到顶）", () => {
+  const st = footState();
+  floorOf(st).drain.on = false;                              // 不做找坡 = 地面平
+  const sc = E.computeScene(st);
+  const d = wallDims(st), p = d.y + st.settings.grout;
+  check("关坡时基准 = 一块砖高", Math.abs(sc.footDatum - d.y) < 1e-6, `L=${sc.footDatum}`);
+  let ok = true, detail = "";
+  WALL_IDS.forEach((id) => {
+    const w = sc.walls[id], want = ((w.card.h - d.y) % p + p) % p;
+    if (Math.abs(w.y.phase - want) > 1e-6) { ok = false; detail = `${w.card.name} ${w.y.phase} vs ${want}`; }
+  });
+  check("四面墙相位 == ((墙高 − 砖高) mod 砖距)", ok, detail);
+  check("关坡时没有底排数据（foot / bottom 都不生成）",
+        WALL_IDS.every(id => !sc.walls[id].foot && !sc.walls[id].bottom));
+});
+
+test("底排 · 基准线 = 砖高 + 全屋墙根最低点", () => {
+  const st = footState();
+  const sc = E.computeScene(st);
+  const d = wallDims(st);
+  let lo = Infinity;
+  WALL_IDS.forEach((id) => {
+    lo = Math.min(lo, E.footMinOf(sc.floor.slope, sc.floor.card, sc.floor.edges, sc.sideOf.get(id)));
+  });
+  check("L == 砖高 + 全屋墙根最低点（±0.02）",
+        Math.abs(sc.footDatum - (d.y + lo)) < 0.02,
+        `L=${sc.footDatum.toFixed(3)} 期望 ${(d.y + lo).toFixed(3)}`);
+  check("墙根最低点不是 0（地漏没挨着墙）", lo > 0.5, `最低点 ${lo.toFixed(2)}mm`);
+});
+
+test("底排 · 全屋共用一个上沿：四面墙都有一条横缝落在基准线上", () => {
+  const st = footState();
+  const sc = E.computeScene(st);
+  let ok = true, detail = "";
+  WALL_IDS.forEach((id) => {
+    const w = sc.walls[id], want = w.card.h - sc.footDatum;   // 竖向轴线 0 在墙顶
+    const near = w.y.segments.some((sg) =>
+      Math.abs(sg.start - want) < 0.5 || Math.abs(sg.start + sg.width - want) < 0.5);
+    if (!near) { ok = false; detail = `${w.card.name} 找不到落在 ${want.toFixed(1)} 的缝`; }
+  });
+  check("四面墙的底排上沿在同一条水平线上", ok, detail);
+});
+
+test("底排 · 每块砖标的两端尺寸 == 基准线 − 该处地面高度", () => {
+  const st = footState();
+  const sc = E.computeScene(st);
+  let ok = true, worst = 0, detail = "", n = 0;
+  WALL_IDS.forEach((id) => {
+    const w = sc.walls[id], bt = w.bottom, side = sc.sideOf.get(id);
+    if (!bt) return;
+    bt.tiles.forEach((t) => {
+      n++;
+      const eL = sc.footDatum - E.footHeightAt(sc.floor.slope, sc.floor.card, sc.floor.edges, side, t.start);
+      const eR = sc.footDatum - E.footHeightAt(sc.floor.slope, sc.floor.card, sc.floor.edges, side, t.start + t.width);
+      worst = Math.max(worst, Math.abs(t.hL - eL), Math.abs(t.hR - eR));
+      if (Math.abs(t.hL - eL) > 0.5 || Math.abs(t.hR - eR) > 0.5) { ok = false; detail = `${w.card.name} @${t.start}`; }
+    });
+  });
+  check("逐块两端尺寸对得上（误差 < 0.5mm）", ok && n > 0, `${detail} 共 ${n} 块，最大偏差 ${worst.toFixed(3)}mm`);
+});
+
+test("底排 · 最低处正好一块整砖；墙根越高裁得越多", () => {
+  const st = footState();
+  const sc = E.computeScene(st);
+  const d = wallDims(st);
+  let best = null;
+  WALL_IDS.forEach((id) => {
+    const w = sc.walls[id];
+    if (w.bottom && (!best || w.bottom.tallest > best.bottom.tallest)) best = w;
+  });
+  // 最高那块的"最高点"（骑在墙根最低点上那块，中间是折口的顶点）应正好是一块整砖
+  check("全屋最低那面墙，底排最高一块 = 一块整砖（±0.5mm）",
+        !!best && Math.abs(best.bottom.tallest - d.y) < 0.5,
+        best ? `${best.card.name} 最高 ${best.bottom.tallest.toFixed(2)} vs 砖高 ${d.y}` : "无底排");
+  check("其余墙的底排都不高于整砖",
+        WALL_IDS.every(id => { const w = sc.walls[id]; return !w.bottom || w.bottom.tallest <= d.y + 0.5; }));
+  check("四面墙都给了底排计划", WALL_IDS.every(id => !!sc.walls[id].bottom));
+  // 骑在最低点上那块的下沿是折口，必须标出中间高度（否则照两端直裁会缺一块）
+  const vcut = WALL_IDS.some(id => sc.walls[id].bottom.tiles.some(t => t.vCut));
+  check("有一块下沿成折口（骑在墙根最低点上），且给了中间高度",
+        vcut && WALL_IDS.some(id => sc.walls[id].bottom.tiles.some(t => t.vCut && t.hPeak > Math.max(t.hL, t.hR))));
+});
+
+test("底排 · 长条顺着整面墙时墙根等高 → 不裁（flat、没有裁切提示）", () => {
+  // 长条贴后墙、长度盖满整面墙（中心在墙中间）→ 后墙根处处等高（0）
+  const st = footState({ drain: { kind: "linear", fromLeft: 1500, fromBack: 0, len: 3000, wide: 64, against: "bottom" } });
+  const sc = E.computeScene(st);
+  const back = WALL_IDS.map((id) => sc.walls[id]).find((w) => sc.sideOf.get(w.card.id) === "back");
+  check("后墙根等高（平坦）", !!back && !!back.foot && back.foot.flat === true,
+        back && back.foot ? `spread=${(back.foot.max - back.foot.min).toFixed(3)}` : "无剖面");
+  check("后墙底排不用裁（最矮一块仍是整砖）",
+        !!back && !!back.bottom && Math.abs(back.bottom.shortest - wallDims(st).y) < 0.5,
+        back && back.bottom ? `最矮 ${back.bottom.shortest.toFixed(2)}` : "无底排");
+  const cuts = (back && back.statuses || []).filter(s => /裁/.test(s.text));
+  check("没有给它任何裁切提示", cuts.length === 0, cuts.map(s => s.text).join(" | "));
+});
+
+test("底排 · 极端输入：最矮处不足 1/3 会报警；墙太矮会报错且不炸", () => {
+  // 大房间 + 陡坡（2%）：墙根高差很大，最矮的那块底排会不足 1/3 砖高
+  const st = footState({ w: 8000, h: 6000, drain: { fromLeft: 100, fromBack: 100, drop: 20 } });
+  const sc = E.computeScene(st);
+  let warned = 0, nan = 0;
+  WALL_IDS.forEach((id) => {
+    const w = sc.walls[id];
+    if ((w.statuses || []).some(s => s.kind === "warn" || s.kind === "error")) warned++;
+    if (w.bottom) w.bottom.tiles.forEach(t => { if (!isFinite(t.hL) || !isFinite(t.hR)) nan++; });
+  });
+  check("坡陡/房间大时给出了警告或报错（没有静默）", warned > 0, `${warned} 面墙有提示`);
+  check("底排尺寸不出现 NaN", nan === 0, `NaN ${nan} 个`);
+
+  // 墙比基准线还矮
+  const st2 = footState({ w: 8000, h: 6000, drain: { fromLeft: 100, fromBack: 100, drop: 20 } });
+  st2.cards.filter(c => c.type === "wall").forEach(c => { c.h = 250; });
+  const sc2 = E.computeScene(st2);
+  const w2 = sc2.walls.w1;
+  check("墙太矮（墙高 < 基准线）时报错", (w2.statuses || []).some(s => s.kind === "error"),
+        (w2.statuses || []).map(s => s.text).join(" | "));
+  check("墙太矮时不生成底排计划", !w2.bottom);
+});
+
 if (!SLOPE_READY) {
   console.log(`\n⏸  地漏造型组（断言 13~25 + 命门）整组跳过：引擎还缺 ${_missApi.length} 个函数`);
   console.log(`   待实现：${_missApi.join(", ")}`);

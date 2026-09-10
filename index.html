@@ -531,6 +531,114 @@ const Engine = (() => {
          + c[2] * (1 - u) * v       + c[3] * u * v;
   };
 
+  /* ---- 墙根地面剖面 & 底排计划（"底排按地面最低点起、高的地方裁掉"）----
+   *
+   * 墙砖底排是"坐在墙根地面上"的，而墙根的地面高度沿墙是一条折线（点状地漏 → V 形，
+   * 两端高、中间最低；长条正对着的那段 → 等高）——所以底排下沿必须贴着这条线走，
+   * 地面高的地方把砖裁掉。
+   *
+   * 若四面墙各按自己的墙根起排，墙角处的横缝就对不齐。改成**全屋共用一个上沿**
+   * L = 一块砖高 + 全屋墙根最低点（见 computeScene 里的 footBase）：最低的地方
+   * 正好是一块整砖，其余地方按高出的量裁，四面墙的底排上沿因此在同一水平线上。
+   *
+   * 墙上的"离左"和地面边的走向**不是到处都同向**（后墙是 scale(-1,-1)、左墙是
+   * rotate(-90°) 贴到地上的，见 renderRoomNet 的注释），统一由 flip = (back || left)
+   * 处理——与 columnFootprints、三维立柱、通缝相位是同一条规矩。
+   */
+  const footMap = (floorCard, edges, side) => {
+    if (!floorCard || !edges || !side || !(floorCard.w > 0) || !(floorCard.h > 0)) return null;
+    const edge = edges[side];
+    if (!edge) return null;
+    const FW = floorCard.w, FH = floorCard.h;
+    const along = (edge === "top" || edge === "bottom") ? FW : FH;   // 沿墙方向长度
+    return {
+      edge, along,
+      flip: (side === "back" || side === "left"),
+      // 沿墙位置 t（mm）→ 地面图坐标
+      at: (t) => (edge === "top")    ? { x:t, y:0 }
+               : (edge === "bottom") ? { x:t, y:FH }
+               : (edge === "left")   ? { x:0, y:t }
+               :                       { x:FW, y:t },
+    };
+  };
+
+  /* 墙上"离左 t"（mm）那一处的墙根地面高度（mm，0 = 全屋最低点） */
+  const footHeightAt = (slope, floorCard, edges, side, t) => {
+    const m = footMap(floorCard, edges, side);
+    if (!m || !slope) return 0;
+    const p = m.at(m.flip ? m.along - t : t);
+    return slopeHeightAt(slope.zones, p.x, p.y);
+  };
+
+  /* 一面墙的墙根剖面：按**画布 x 顺序**采样 N+1 个点（hs[i] ↔ 墙上离左 along·i/N），
+   * 供绘图侧直接连成折线、也供底排算尺寸。flat=true 表示这条墙根等高（底排不用裁）。 */
+  const footProfile = (slope, floorCard, edges, side, N) => {
+    const m = footMap(floorCard, edges, side);
+    if (!m || !slope) return null;
+    const n = N || 40, hs = [];
+    for (let i = 0; i <= n; i++) hs.push(footHeightAt(slope, floorCard, edges, side, (m.along * i) / n));
+    const min = Math.min(...hs), max = Math.max(...hs);
+    return { edge:m.edge, along:m.along, flip:m.flip, hs, min, max, flat:(max - min) < 0.01 };
+  };
+
+  /* 一面墙墙根的**最低点**：沿墙的高度是凸的（|·| 之和 → 距离函数，凸），
+   * 三分搜索取最小——不受采样密度影响。基准线 L 要拿它算，差 0.2mm 就会让
+   * 最平的那块砖标成"299"而不是"300"。 */
+  const footMinOf = (slope, floorCard, edges, side) => {
+    const m = footMap(floorCard, edges, side);
+    if (!m || !slope) return 0;
+    const h = (t) => footHeightAt(slope, floorCard, edges, side, t);
+    let a = 0, b = m.along;
+    for (let i = 0; i < 60; i++) {
+      const m1 = a + (b - a) / 3, m2 = b - (b - a) / 3;
+      if (h(m1) < h(m2)) b = m2; else a = m1;
+    }
+    return h((a + b) / 2);
+  };
+
+  /* 一面墙墙根的最高点：凸函数在闭区间上的最大值必在端点。 */
+  const footMaxOf = (slope, floorCard, edges, side) => {
+    const m = footMap(floorCard, edges, side);
+    if (!m || !slope) return 0;
+    return Math.max(footHeightAt(slope, floorCard, edges, side, 0),
+                    footHeightAt(slope, floorCard, edges, side, m.along));
+  };
+
+  /* 一块砖区间内墙根高度的**最小值**（h 沿墙是凸的 → 三分搜索）。
+   * 它若落在砖中间，这块砖的下沿就是"人字形"折口：中间高、两头低。 */
+  const footMinBetween = (slope, floorCard, edges, side, a, b) => {
+    const h = (t) => footHeightAt(slope, floorCard, edges, side, t);
+    if (!(b > a)) return h(a);
+    let lo = a, hi = b;
+    for (let i = 0; i < 50; i++) {
+      const m1 = lo + (hi - lo) / 3, m2 = hi - (hi - lo) / 3;
+      if (h(m1) < h(m2)) hi = m2; else lo = m1;
+    }
+    return h((lo + hi) / 2);
+  };
+
+  /* 底排砖计划：上沿统一在 L，下沿贴墙根坡线。
+   * 逐块给出**左右两端的实际高度** hL/hR（现场照两端裁斜口）——图上标的就是这两个数；
+   * 若这块砖正好骑在墙根最低点上（地面在砖中间最低），下沿是折口，再给一个**中间高度**
+   * hPeak（vCut=true），否则师傅照两端直裁会在中间缺一块。 */
+  const bottomRowPlan = (slope, floorCard, edges, side, xAxis, L) => {
+    if (!xAxis || !xAxis.segments || !(L > 0)) return null;
+    const tiles = xAxis.segments.map((seg) => {
+      const hL = L - footHeightAt(slope, floorCard, edges, side, seg.start);
+      const hR = L - footHeightAt(slope, floorCard, edges, side, seg.start + seg.width);
+      const hPeak = L - footMinBetween(slope, floorCard, edges, side, seg.start, seg.start + seg.width);
+      return { start:seg.start, width:seg.width, hL, hR, hPeak,
+               vCut: hPeak > Math.max(hL, hR) + 0.5,        // 下沿成折口（中间高、两头低）
+               min: Math.min(hL, hR), max: hPeak };
+    });
+    if (!tiles.length) return null;
+    return {
+      tiles,
+      shortest: Math.min(...tiles.map(t => t.min)),   // 最矮的一块（在墙根最高处）
+      tallest:  Math.max(...tiles.map(t => t.max)),   // 最高的一块（墙根最低点所在那块）
+    };
+  };
+
   /* ---- 整砖"骑线"：分水线穿过整砖时，不许锯开 ----
    *
    * 现实里从来没有人沿着分水线锯砖——地面中间的整砖一律整块铺过去，
@@ -923,6 +1031,28 @@ const Engine = (() => {
     }
     scene.sideOf = sideMap;      // 渲染侧要知道"每面墙站在地面哪条边"（画墙根坡线用）
 
+    /* 底排基准：全屋墙根最低点 + 一块砖高。
+     * 找坡关掉时最低点是 0 → 基准 = 一块砖高，竖向相位退化成老规矩（底排整砖、裁砖甩到顶）。
+     * 四面墙的墙根高度各不相同，一律取"最低的那一处"当统一基准：最低处正好一块整砖，
+     * 其余地方按高出的量裁，四面墙的底排上沿因此在同一水平线上（墙角横缝对得上）。 */
+    scene.footDatum = wDims ? wDims.y : null;
+    const footBase = () => {
+      if (!wDims) return { datum:null, min:0, max:0 };
+      let lo = null, hi = null;
+      if (scene.floor && scene.floor.slope) {
+        for (const card of state.cards) {
+          if (card.type !== "wall" || !(card.w > 0) || !(card.h > 0)) continue;
+          const side = sideMap.get(card.id);
+          if (!side) continue;
+          const mn = footMinOf(scene.floor.slope, floorCard, scene.floor.edges, side);
+          const mx = footMaxOf(scene.floor.slope, floorCard, scene.floor.edges, side);
+          if (lo == null || mn < lo) lo = mn;
+          if (hi == null || mx > hi) hi = mx;
+        }
+      }
+      return { datum: wDims.y + (lo != null ? lo : 0), min: lo != null ? lo : 0, max: hi != null ? hi : 0 };
+    };
+
     /* ① 先算地面 */
     let floorX = null, floorY = null;
     if (floorCard && floorCard.w > 0 && floorCard.h > 0 && fDims) {
@@ -1001,15 +1131,6 @@ const Engine = (() => {
         scene.floor.x = floorX; scene.floor.y = floorY;
 
         const plan = drainCutPlan(dr, floorCard, { x:floorX, y:floorY, tx:tX, ty:tY, g }, shape);
-        // 墙根是"V 形"还是"等高"：决定底排砖要不要处理（默认做法 B：按最高点起 + 踢脚线盖缝）
-        if (shape.isLine && shape.seg) {
-          // 只说"长条正对着的那一段"等高：走出长条两端的角区照样会变高，别说满
-          scene.floor.statuses.push({ kind:"info",
-            text:"长条正对着的那段墙根等高（底排砖不用处理）；走出长条两端的角区会变高，那几列按墙角最高点起砖，底下那道缝用踢脚线盖住" });
-        } else {
-          scene.floor.statuses.push({ kind:"info",
-            text:"四面墙根都是 V 形（两端高、中间最低，中间那个点不是 0）：底排砖按墙角最高点起，底下那道缝用踢脚线盖住" });
-        }
         const advice = drainAdvice(dr, floorCard, fDims, { shape, zones, plan });
         scene.floor.slope = {
           drain: dr, shape, zones, plan, advice,
@@ -1019,6 +1140,20 @@ const Engine = (() => {
           phase: { x: phX, y: phY },
           ride: plan.ride,
         };
+        // 底排基准要用到 slope，所以放在 slope 挂上之后算
+        const fb = footBase();
+        scene.footDatum = fb.datum;
+        // 墙根是"V 形"还是"等高"：决定底排怎么起、要不要裁（做法 A + 全屋统一上沿）
+        if (shape.isLine && shape.seg) {
+          // 只说"长条正对着的那一段"等高：走出长条两端的角区照样会变高，别说满
+          scene.floor.statuses.push({ kind:"info",
+            text:"长条正对着的那段墙根等高（底排不用裁）；走出长条两端的角区会变高，那几列底排按全屋统一的上沿线裁短" });
+        } else if (fb.max - fb.min < 0.5) {
+          scene.floor.statuses.push({ kind:"info", text:"四面墙根都等高（底排不用裁）" });
+        } else {
+          scene.floor.statuses.push({ kind:"info",
+            text:`底排从全屋墙根最低点起（+${fb.min.toFixed(1)}mm），四面墙的底排上沿对齐同一条水平线；地面高的地方把底排下沿裁掉，最多 ${Math.round(fb.max - fb.min)}mm（图上每块标了尺寸）` });
+        }
       }
     }
 
@@ -1029,22 +1164,32 @@ const Engine = (() => {
       const hasSize = wall.w > 0 && wall.h > 0;
       if (hasSize && wDims) {
         // —— 规则5 墙砖压地砖：墙面竖向（.y）底排整砖、裁到顶 ——
+        // 找坡时底排改成"按墙根坡线裁"，上沿统一落在全屋基准线 datum 上（见 footBase）
         const wof = s.wallOverFloor !== false;
+        const slopeOn = !!(scene.floor && scene.floor.slope);
+        const datum = scene.footDatum != null ? scene.footDatum : wDims.y;
+        const p = wDims.y + g;
         let yPhase = null;
         // —— 规则6 门/窗洞口对齐整砖边界（尽力版）——
         // 门：从地面起，规则5 底排整砖天然覆盖门区；窗：竖向相位对齐到窗顶边，使窗上下砖落在整砖边界。
         const win = wall.win;
         const winOk = !!(win && win.on && win.left > 0 && win.width > 0 && win.sill > 0 && win.height > 0 && (win.left + win.width) <= wall.w);
-        if (wof && winOk) {
-          const p = wDims.y + g;
+        if ((wof || slopeOn) && winOk) {
           const winTop = wall.h - (win.sill || 0) - (win.height || 0); // 窗顶边（从顶算 mm）
           const cand = ((winTop % p) + p) % p;
-          const bottomCut = ((wall.h - cand) % p + p) % p; // 0 表示底排整砖，否则为墙底裁砖宽
-          if (bottomCut === 0 || bottomCut >= wDims.y / 3) yPhase = cand; // 对齐窗顶且墙底不出现极窄条才采用
+          if (slopeOn) {
+            // 找坡时底排上沿必须落在基准线上（四面墙要对齐）；窗顶对不上就让步，提示说明
+            if ((((wall.h - datum - cand) % p) + p) % p < 1e-6) yPhase = cand;
+            else entry.statuses.push({ kind:"info", text:"窗顶对不上砖缝：底排上沿要先和全屋对齐，窗顶这排让步" });
+          } else {
+            const bottomCut = ((wall.h - cand) % p + p) % p; // 0 表示底排整砖，否则为墙底裁砖宽
+            if (bottomCut === 0 || bottomCut >= wDims.y / 3) yPhase = cand; // 对齐窗顶且墙底不出现极窄条才采用
+          }
         }
-        if (yPhase == null && wof) {
-          const p = wDims.y + g;
-          yPhase = ((wall.h - wDims.y) % p + p) % p; // 底排整砖；裁砖甩到顶部（被吊顶/吊柜遮住）
+        if (yPhase == null && (wof || slopeOn)) {
+          // 让一条横缝正好落在 datum：底排上沿那儿就是这条缝
+          // （关坡时 datum = 砖高 → 退化成老规矩：底排整砖、裁砖甩到顶部）
+          yPhase = ((wall.h - datum) % p + p) % p;
         }
         entry.y = yPhase != null
           ? layoutAxis(wall.h, wDims.y, g, s.startMode, yPhase)
@@ -1106,6 +1251,29 @@ const Engine = (() => {
           const minX = Math.min(entry.x.cutLeft != null ? entry.x.cutLeft : Infinity, entry.x.cutRight != null ? entry.x.cutRight : Infinity);
           if (minX < wDims.x / 3) entry.statuses.push({ kind:"warn", text:`墙宽方向边缘裁砖 < 1/3（约 ${Math.round(minX)}mm），请现场定夺` });
           else if (usedOffset) entry.statuses.push({ kind:"ok", text:"已与地砖错缝对齐（半砖偏移，墙地缝错开）" });
+        }
+        // —— 找坡：底排下沿贴墙根坡线（上沿统一在 datum），逐块算出两端实际高度 ——
+        const side = sideMap.get(wall.id);
+        if (slopeOn && side) {
+          const fp = footProfile(scene.floor.slope, floorCard, scene.floor.edges, side);
+          entry.foot = fp;
+          if (fp && datum >= wall.h) {
+            entry.statuses.push({ kind:"error",
+              text:`墙高 ${Math.round(wall.h)}mm 放不下底排（底排上沿已在 ${Math.round(datum)}mm），请核对墙高` });
+          } else if (fp && entry.x) {
+            entry.bottom = bottomRowPlan(scene.floor.slope, floorCard, scene.floor.edges, side, entry.x, datum);
+            const lowest = datum - fp.max;              // 最矮的那块底排砖有多高（墙根最高处）
+            const maxCut = wDims.y - lowest;            // 裁得最多的那一块裁掉多少
+            if (maxCut > 0.5) {
+              if (lowest < wDims.y / 3) {   // 与"边缘裁砖 ≥ 1/3"同一条老规矩
+                entry.statuses.push({ kind:"warn",
+                  text:`底排最矮处只有 ${Math.round(lowest)}mm（不足 1/3 砖高），请现场定夺` });
+              } else {
+                entry.statuses.push({ kind:"info",
+                  text:`底排按墙根坡线裁：最矮 ${Math.round(lowest)}mm，墙角处最多裁掉 ${Math.round(maxCut)}mm（图上每块标了尺寸）` });
+              }
+            }
+          }
         }
         // 规则4：墙宽方向裁砖列数
         const cutX = entry.x.segments.filter(seg => seg.cut).length;
@@ -1216,6 +1384,8 @@ const Engine = (() => {
   return { deriveEdges, laidDims, compatible, layoutAxis, computeScene, nameOfEdge, computeRoomNet,
            /* 地漏找坡（方案 2.4 / 4.3）：已实现 4 个，其余待实现见方案 4.2 */
            drainToDiagram, drainShape, lowDist, slopeZones, slopeHeightAt,
+           /* 底排：墙根剖面 + 按坡裁切计划（"底排按地面最低点起、高的地方裁掉"） */
+           footMap, footHeightAt, footProfile, footMinOf, footMaxOf, bottomRowPlan,
            rideGap, rideReport,
            drainRidgeLines, drainOpening, cutRectByLines, cutRectByHole,
            pickCrossPhase, drainCutPlan, drainAdvice };
@@ -2308,35 +2478,40 @@ function paintDrainPlan(ctx, slope, card, s, opts){
  * 点状地漏 → V 形（两端高、中间最低，且最低点**不是 0**）；
  * 长条平行于本墙 → 处处等高，这条线是平的，直接不画。
  * 高度按真实比例画（不夸张），数字标在三个点上——图上看不清时看数。 */
-function paintSlopeFootLine(ctx, slope, floorCard, fEdges, side, s, W, H){
-  if (!slope || !fEdges || !side || !floorCard) return null;
-  const edge = fEdges[side];                              // 这面墙压着地面的哪条图边
-  if (!edge) return null;
-  const FW = floorCard.w, FH = floorCard.h;
-  const along = (edge === "top" || edge === "bottom") ? FW : FH;   // 沿墙方向的长度
-  /* 墙上的"离左"和地面边的走向**不是到处都同向**：整屋展开图里后墙是
-   * scale(-1,-1) 贴上去的、左墙是 rotate(-90°) 贴上去的，这两面墙的"离左 L"
-   * 压着的都是地面的 (端点 − L)，不是 (端点 + L)（右墙 rotate(+90°) 才同向，
-   * 见 renderRoomNet 的注释）。这里不跟着翻，墙根坡线和三个标高就会整个左右
-   * 颠倒——B 墙（后墙）和 C 墙（左墙）的垫灰高度正好反过来。 */
-  const flip = (side === "back" || side === "left");
-  const N = 40, hs = [];
-  for (let i = 0; i <= N; i++) {
-    const t = flip ? along - (along * i) / N : (along * i) / N;
-    const at = (edge === "top")    ? { x:t, y:0 }
-             : (edge === "bottom") ? { x:t, y:FH }
-             : (edge === "left")   ? { x:0, y:t }
-             :                       { x:FW, y:t };
-    hs.push(Engine.slopeHeightAt(slope.zones, at.x, at.y));
-  }
-  const spread = Math.max(...hs) - Math.min(...hs);
-  if (spread < 0.01) return { flat:true };                // 等高：底排砖不用处理
-  const maxH = Math.max(...hs);
+/* 底排"按坡裁掉"：把墙根坡线以下那块（被地面挡住的部分）从墙上擦掉，让墙砖的
+ * 可见区域正好止于坡线——这就是"地面高的地方把底排裁掉"的画面表达。
+ * hs 是按画布 x 顺序的墙根高度采样（Engine.footProfile 给）。 */
+function clipWallFoot(ctx, hs, s, W, H){
+  const N = hs.length - 1;
   ctx.save();
-  // 按最高点起砖的基准（虚线）
-  ctx.strokeStyle = cssVar("--ink-soft"); ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
-  ctx.beginPath(); ctx.moveTo(0, H - maxH * s); ctx.lineTo(W, H - maxH * s); ctx.stroke();
-  ctx.setLineDash([]);
+  ctx.beginPath();
+  for (let i = 0; i <= N; i++) {
+    const px = (W * i) / N, py = H - hs[i] * s;
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath();
+  ctx.fillStyle = cssVar("--paper");     // 墙外底色：这块已经不是墙了，是地面
+  ctx.fill();
+  ctx.restore();
+}
+
+/* 墙根坡线 + 三点标高（单墙立面用）。采样走 Engine.footProfile——与引擎同一份
+ * 映射（含"后墙/左墙要翻"那条规矩），不再两处各写一遍。
+ * 等高时不画任何东西，返回 { flat:true }。
+ * opts.datum：底排上沿（全屋统一基准线），画一条虚线标出来；
+ * opts.sink：给了就把标高数字攒进去交给 chipRow 统一排，避免压住底排尺寸。 */
+function paintSlopeFootLine(ctx, slope, floorCard, fEdges, side, s, W, H, opts){
+  const fp = Engine.footProfile(slope, floorCard, fEdges, side);
+  if (!fp) return null;
+  if (fp.flat) return { flat:true, min:fp.min, max:fp.max, hs:fp.hs };
+  const sink = opts && opts.sink, hs = fp.hs, N = hs.length - 1;
+  ctx.save();
+  // 底排上沿：一条横缝正好落在这里（四面墙都在这条线上 → 墙角横缝对齐）
+  if (opts && opts.datum > 0) {
+    ctx.strokeStyle = cssVar("--ink-soft"); ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(0, H - opts.datum * s); ctx.lineTo(W, H - opts.datum * s); ctx.stroke();
+    ctx.setLineDash([]);
+  }
   // 墙根真实坡线
   ctx.strokeStyle = cssVar("--accent"); ctx.lineWidth = 2;
   ctx.beginPath();
@@ -2345,12 +2520,16 @@ function paintSlopeFootLine(ctx, slope, floorCard, fEdges, side, s, W, H){
     if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
   }
   ctx.stroke();
-  // 三点标高
+  // 三点标高（左 / 中 / 右）
   const ink = cssVar("--ink-soft"), up = 14;
-  const mark = (i, px) => labelText(ctx, `+${hs[i].toFixed(1)}`, px, Math.max(10, H - hs[i] * s - up), ink);
-  mark(0, 26); mark(N / 2, W / 2); mark(N, W - 26);
+  const mark = (i, px) => {
+    const txt = `+${hs[i].toFixed(1)}`, ay = Math.max(10, H - hs[i] * s - up);
+    if (sink) sink.push({ txt, color: ink, ax: px, ay });
+    else labelText(ctx, txt, px, ay, ink);
+  };
+  mark(0, 26); mark(Math.round(N / 2), W / 2); mark(N, W - 26);
   ctx.restore();
-  return { flat:false, min:Math.min(...hs), max:maxH };
+  return { flat:false, min:fp.min, max:fp.max, hs };
 }
 
 const doorValid = (card) => card.door.on && card.door.left > 0 && card.door.width > 0 && card.door.height > 0
@@ -2602,13 +2781,33 @@ function drawWall(canvas, card, entry, scene){
   paintTiles(ctx, entry.x, entry.y, s, cssW, cssH);
 
   paintWallFeatures(ctx, card, s);
-  paintCuts(ctx, entry.x, entry.y, s, cssW, cssH, null, { skipHeight: true });
 
-  // 找坡：沿墙根画真实高度折线（长条平行于本墙时处处等高，函数内部自己跳过）
+  // 找坡：底排下沿贴着墙根坡线（坡线以下被地面挡住的那块擦掉），上沿落在全屋统一基准线上
   const sl = scene && scene.floor && scene.floor.slope;
-  if (sl) {
-    const side = scene.sideOf && scene.sideOf.get(card.id);
-    paintSlopeFootLine(ctx, sl, scene.floor.card, scene.floor.edges, side, s, cssW, cssH);
+  const side = scene && scene.sideOf && scene.sideOf.get(card.id);
+  const fp = sl ? Engine.footProfile(scene.floor.slope, scene.floor.card, scene.floor.edges, side) : null;
+  if (fp && fp.max > 0.01) {
+    clipWallFoot(ctx, fp.hs, s, cssW, cssH);
+    // 这张墙上所有浮字（裁砖尺寸 / 三点标高 / 底排两端尺寸）攒进 chips，
+    // 最后由 chipRow 统一排开互不相压——和地面图同一条做法。
+    const chips = [];
+    paintCuts(ctx, entry.x, entry.y, s, cssW, cssH, null, { skipHeight: true, sink: chips });
+    paintSlopeFootLine(ctx, sl, scene.floor.card, scene.floor.edges, side, s, cssW, cssH,
+                       { datum: scene.footDatum, sink: chips });
+    // 底排每块砖：标出左右两端的实际高度（红字），现场照两端尺寸裁斜口；
+    // 骑在墙根最低点上那块的下沿是折口，多标一个中间高度（左/中/右）
+    if (entry.bottom) entry.bottom.tiles.forEach((t) => {
+      const mid = (t.hL + t.hR) / 2;
+      const txt = t.vCut
+        ? `${Math.round(t.hL)}/${Math.round(t.hPeak)}/${Math.round(t.hR)}`
+        : `${Math.round(t.hL)}/${Math.round(t.hR)}`;
+      chips.push({ txt, color: cssVar("--danger"),
+                   ax:(t.start + t.width / 2) * s, ay:cssH - ((scene.footDatum || 0) + mid) / 2 * s });
+    });
+    if (chips.length) chipRow(ctx, chips, cssW, cssH);
+  } else {
+    // 没找坡：一切照旧（红字就地画），不改动原有画法
+    paintCuts(ctx, entry.x, entry.y, s, cssW, cssH, null, { skipHeight: true });
   }
 }
 
@@ -2717,6 +2916,9 @@ function paintWallNet(ctx, card, entry, s, W, H){
     const x = effLeft(c, card) * s, w = c.width * s, h = card.h * s;
     paintColumnBand(ctx, x, w, h);
   });
+  // 找坡：墙根坡线以下（被地面挡住的那块）擦掉——展开图只做几何、不标尺寸，
+  // 与"展开图不标裁砖尺寸"的既有取舍一致，但墙底形状要和单墙立面一致。
+  if (entry.foot && entry.foot.max > 0.01) clipWallFoot(ctx, entry.foot.hs, s, W, H);
 }
 
 function renderRoomNet(scene){
