@@ -18,6 +18,7 @@
   --joint:#FFFFFF;      /* 砖缝（图上） */
   --r3d-joint:#8B8D90;  /* 砖缝（三维图上）：用中性灰，避免低分辨率下出现亮白格子 */
   --column:#C9B8A2;     /* 包管立柱（图上） */
+  --fixture:#B7C3CC;    /* 洁具（蹲便器）轮廓：冷灰蓝，和暖褐的"柱"分得开 */
   --open:#F3F1EC;       /* 门窗洞口底色（图上） */
   --accent:#2B5E9B;     /* 操作蓝：墨斗线 */
   --accent-soft:#E3EBF5;
@@ -32,7 +33,7 @@
   :root:not([data-theme="light"]){
     --paper:#17181B; --card:#202226; --ink:#ECEDEF; --ink-soft:#9CA2AA;
     --line:#34373D; --chip:#2A2D32; --tile:#4A4E55; --joint:#1B1C20; --r3d-joint:#2D3138;
-    --column:#6E6050; --open:#1B1C20;
+    --column:#6E6050; --fixture:#5A6672; --open:#1B1C20;
     --accent:#7FA9DC; --accent-soft:#243246;
     --ok:#74C28C; --ok-soft:#1F3327;
     --warn:#E2A44E; --warn-soft:#3A2E1B;
@@ -42,7 +43,7 @@
 :root[data-theme="dark"]{
   --paper:#17181B; --card:#202226; --ink:#ECEDEF; --ink-soft:#9CA2AA;
   --line:#34373D; --chip:#2A2D32; --tile:#4A4E55; --joint:#1B1C20; --r3d-joint:#2D3138;
-  --column:#6E6050; --open:#1B1C20;
+  --column:#6E6050; --fixture:#5A6672; --open:#1B1C20;
   --accent:#7FA9DC; --accent-soft:#243246;
   --ok:#74C28C; --ok-soft:#1F3327;
   --warn:#E2A44E; --warn-soft:#3A2E1B;
@@ -449,6 +450,48 @@ const Engine = (() => {
     return shape;
   };
 
+  /* ---- 蹲便器：外形轮廓 + 排污口（都在地面图坐标系里）----
+   *
+   * 只吃"师傅现场量得到的数"：
+   *   fromLeft / fromBack —— **排污管中心**离左墙 / 离后墙（和地漏同一套量法）
+   *   wallGap             —— **便器靠墙那条边离墙多远**（行业惯例约 150mm，免得碰冲水设备）
+   *   len / wide          —— 便器外形（长 = 靠墙方向进深，宽 = 沿墙方向）
+   *   against             —— 便器后背靠哪面墙（front/back/left/right，与墙面方位同一套词）
+   * 坑距（管中心到那面墙）由上面反推出来给师傅看；**排污口必须落在便器范围内**，
+   * 越界就不生成（validateCard 报错）——"排污口在便器本体上离边多少"没有公开标准值，不猜。
+   * 沿墙方向：排污口居中（排污口在便器中心线上，现实如此）。
+   */
+  const toiletShape = (toilet, floorCard, doorEdge) => {
+    const t = toilet || {};
+    const W = numOr(floorCard && floorCard.w, 0), H = numOr(floorCard && floorCard.h, 0);
+    const len = numOr(t.len, 520), wide = numOr(t.wide, 420);
+    const gap = numOr(t.gap, 5), wallGap = numOr(t.wallGap, 150);
+    const against = t.against || "back";
+    const at = drainToDiagram({ fromLeft:numOr(t.fromLeft, 0), fromBack:numOr(t.fromBack, 0) },
+                              floorCard, doorEdge);
+    // 坑距 = 排污口中心到"所靠那面墙"的距离
+    const pit = against === "back"  ? H - at.y
+              : against === "front" ? at.y
+              : against === "left"  ? at.x
+              :                       W - at.x;
+    // 便器外形：靠墙边离墙 wallGap，朝房间内伸 len；沿墙方向以排污口居中
+    let rect;
+    if (against === "front" || against === "back") {
+      const y0 = (against === "front") ? wallGap : H - wallGap - len;
+      rect = { x: at.x - wide / 2, y: y0, w: wide, h: len };
+    } else {
+      const x0 = (against === "left") ? wallGap : W - wallGap - len;
+      rect = { x: x0, y: at.y - wide / 2, w: len, h: wide };
+    }
+    const hole = { x: rect.x - gap, y: rect.y - gap, w: rect.w + 2 * gap, h: rect.h + 2 * gap };
+    const ok = W > 0 && H > 0 && len > 0 && wide > 0 && isFinite(pit)
+      && pit >= wallGap - 1e-6 && pit <= wallGap + len + 1e-6      // 排污口落在便器里
+      && hole.x >= -1e-6 && hole.y >= -1e-6
+      && hole.x + hole.w <= W + 1e-6 && hole.y + hole.h <= H + 1e-6;
+    return { ok, against, point:{ x:at.x, y:at.y }, pit, rect, hole,
+             len, wide, gap, wallGap, drop: numOr(t.drop, 10) };
+  };
+
   /* 到"最低处"的横竖距离之和（4.3 的核心公式） */
   const lowDist = (shape, x, y) => {
     if (shape.isLine && shape.seg) {
@@ -832,10 +875,18 @@ const Engine = (() => {
    *   edgeCuts   靠墙收边（1/3 老规矩，与找坡无关，单独报，不计入 cutCount）
    *   ride       分水线穿过的砖 → **骑线，不切**，只报底下垫多少灰
    *   ridgeCuts  恒为 0：分水线永不切砖（留着给断言看，见 8b）          */
-  const drainCutPlan = (drain, card, layout, shape) => {
+  const drainCutPlan = (drain, card, layout, shape, holeList) => {
     const d = drain || {};
     const sh = shape || drainShape(d, card);
-    const hole = drainOpening(sh);
+    /* 要挖掉的洞口可以不止一个（地漏 + 蹲便器这种"洁具口"）。每个洞口带 kind：
+     * 地漏 "drain"、洁具 "fixture"——账要分开报，别让"地漏周围 4 块"把蹲便器那几块也数进去。
+     * 不给 holeList 时退回"低点造型自己的洞口"（老行为，一个字不变）。 */
+    const holes = (holeList && holeList.length
+      ? holeList
+      : [{ ...drainOpening(sh), kind:"drain" }])
+      .filter((h) => h && h.w > 0 && h.h > 0);
+    const drainHole = holes.find((h) => h.kind === "drain") || null;
+    const hole = drainHole || { kind:"none", x:0, y:0, w:0, h:0 };   // 下游兼容（scene.floor.slope.hole）
     const k = numOr(d.drop, 10) / 1000;
     const minPiece = numOr(d.minPiece, 50);
     const gap = numOr(d.gap, 3);
@@ -853,13 +904,20 @@ const Engine = (() => {
       return rideGap(k, seg.width, dL);
     };
 
-    const grid = [], drainTiles = [];
+    const grid = [], drainTiles = [], fixtureTiles = [];
     let edgeCuts = 0, scrap = 0, minStrip = Infinity, rideCount = 0, rideMax = 0;
     for (const sy of ay.segments) for (const sx of ax.segments) {
       const r = { x:sx.start, y:sy.start, w:sx.width, h:sy.width };
-      const holed = rectHit(r, hole);
+      const hit = holes.filter((h) => rectHit(r, h));
+      const holed = hit.length > 0;
       const cut = !!(sx.cut || sy.cut);
-      const polys = holed ? cutRectByHole(r, hole) : [{ pts: rectPts(r) }];
+      // 逐洞减：切出来的永远还是轴对齐矩形（cutRectByHole 的保证），面积精确守恒
+      let polys = [{ pts: rectPts(r) }];
+      for (const h of hit) {
+        polys = polys.flatMap((p) => (rectHit(bboxOf(p.pts), h) ? cutRectByHole(p, h) : [p]));
+      }
+      const hitDrain = hit.some((h) => h.kind === "drain");
+      const hitFixture = hit.some((h) => h.kind === "fixture");
       const ride = holed ? 0 : Math.max(
         vFolds.reduce((m, v) => Math.max(m, segRide(sx, v)), 0),
         hFolds.reduce((m, v) => Math.max(m, segRide(sy, v)), 0));
@@ -867,8 +925,9 @@ const Engine = (() => {
         rect: rectPts(r), x:r.x, y:r.y, w:r.w, h:r.h,
         polys, ride,
         cut: cut || holed,
-        hole: holed ? hole : null,
-        reason: holed ? "drain" : (cut ? "edge" : null),
+        hole: holed ? hit[0] : null,
+        hitDrain, hitFixture,
+        reason: holed ? (hitDrain ? "drain" : "fixture") : (cut ? "edge" : null),
       };
       if (ride > 0) { rideCount++; rideMax = Math.max(rideMax, ride); }
       if (tile.cut) {
@@ -877,13 +936,16 @@ const Engine = (() => {
           if (m >= minPiece) { if (m < minStrip) minStrip = m; } else scrap++;
         }
       }
-      if (holed) drainTiles.push(tile); else if (cut) edgeCuts++;
+      if (hitDrain) drainTiles.push(tile);
+      else if (hitFixture) fixtureTiles.push(tile);
+      else if (cut) edgeCuts++;
       grid.push(tile);
     }
 
-    /* 点状：落点判定 → 切法（2.4.3 第二步表） */
-    let cutStyle = "strip", clearance = null;
-    if (!sh.isLine) {
+    /* 点状：落点判定 → 切法（2.4.3 第二步表）。这段是**地漏洞口专属**语义
+     * （四砖交角 / 骑缝 / 砖心套割 / abcd 开孔定位），没有地漏就不算。 */
+    let cutStyle = drainHole ? "strip" : null, clearance = null;   // 没地漏 → 没有"切法"这回事
+    if (drainHole && !sh.isLine) {
       const p = ax.step, phX = ax.phase, phY = ay.phase;
       const c = sh.point || { x:0, y:0 };
       const halfW = hole.w / 2, halfH = hole.h / 2;
@@ -922,23 +984,26 @@ const Engine = (() => {
           };
         }
       }
-    } else {
+    } else if (drainHole) {
       // 长条：洞口离最近的墙多远（槽体要有地方装）
       clearance = Math.min(hole.x, hole.y, W - (hole.x + hole.w), H - (hole.y + hole.h));
     }
 
     return {
       cutStyle, clearance,
-      drainCuts: drainTiles.length,
+      drainCuts: drainTiles.length,        // 地漏周围要切的砖
+      fixtureCuts: fixtureTiles.length,    // 蹲便器等洁具周围的砖（单独一笔）
       edgeCuts,
       ridgeCuts: 0,                        // 分水线永不切砖（2.5）
       cutCount: drainTiles.length,         // 地漏/找坡这边的账；靠墙收边另算
       minStrip: isFinite(minStrip) ? minStrip : null,
       scrapCount: scrap,
       ride: { count: rideCount, max: rideMax },
-      tiles: drainTiles,                   // 下料清单（只有地漏相关的）
+      tiles: drainTiles,                   // 下料清单（地漏那笔）
+      fixtureTiles,                        // 下料清单（洁具那笔）
       grid,                                // 整片砖网（渲染用）
-      hole,
+      hole,                                // 地漏洞口（无地漏时为 none，兼容下游）
+      holes,                               // 全部洞口（地漏 + 洁具）
     };
   };
 
@@ -1095,13 +1160,21 @@ const Engine = (() => {
         floorCutWarn(floorX, fDims.x, "长"); floorCutWarn(floorY, fDims.y, "宽");
       }
 
-      /* 地漏找坡：算坡面 → 调相位（让分水线压在砖缝上）→ 逐砖算骑线与开孔（方案 4.6） */
+      /* 地漏/蹲便器找坡：算坡面 → 调相位（让分水线压在砖缝上）→ 逐砖算骑线与开孔（方案 4.6）
+       * 蹲便器开着时**最低点由它接管**（用户定：很多老房水直接往便器口流），
+       * 地漏仍是一个洞口（砖照裁），只是不再当最低点。 */
       const dr = floorCard.drain && floorCard.drain.on ? floorCard.drain : null;
-      if (dr) {
-        const shape = drainShape(dr, floorCard, state.doorEdge);
-        const zones = slopeZones(floorCard, shape, dr.drop);
+      const tl = floorCard.toilet && floorCard.toilet.on ? floorCard.toilet : null;
+      const tShape = tl ? toiletShape(tl, floorCard, state.doorEdge) : null;
+      const toiletOk = !!(tShape && tShape.ok);          // 越界的便器不参与（validateCard 报错）
+      if (dr || toiletOk) {
+        const dShape = dr ? drainShape(dr, floorCard, state.doorEdge) : null;
+        const shape = toiletOk
+          ? { isLine:false, point:tShape.point, open:tShape.hole, drop:tShape.drop }
+          : dShape;
+        const zones = slopeZones(floorCard, shape, toiletOk ? tShape.drop : dr.drop);
         const tX = fDims.x, tY = fDims.y;
-        const minP = numOr(dr.minPiece, 50);
+        const minP = numOr(toiletOk ? tl.minPiece : dr.minPiece, 50);
         const locked = doorLabel ? ((de === "bottom" || de === "top") ? "y" : "x") : null;
         // 可接受区间 [a,b]：区内有任意一条砖缝即可，不要求"正对中心"。
         // 长条 = 两端垂线 / 靠上一侧的长边，各是一条边 → a === b（行为不变）
@@ -1121,7 +1194,10 @@ const Engine = (() => {
           fitX = o ? [o.x, o.x + o.w] : [shape.point.x, shape.point.x];
           fitY = o ? [o.y, o.y + o.h] : [shape.point.y, shape.point.y];
         }
-        const wantFit = (r) => (shape.isLine ? dr.fitEdges !== false : dr.fitRidges !== false) && r != null;
+        // 微调开关：谁在当最低点就听谁的（长条只有地漏有）
+        const fitRidge = toiletOk ? tl.fitRidges !== false : (dr && dr.fitRidges !== false);
+        const fitEdge  = dr ? dr.fitEdges !== false : true;
+        const wantFit = (r) => (shape.isLine ? fitEdge : fitRidge) && r != null;
         let phX = floorX.phase, phY = floorY.phase;
         // 被门口锁住的那条轴不许动相位（方案第 6 节：门口整砖赢）
         if (wantFit(fitX) && locked !== "x") phX = pickCrossPhase(floorCard.w, tX, g, s.startMode, fitX[0], minP, fitX[1]).phase;
@@ -1130,16 +1206,34 @@ const Engine = (() => {
         if (Math.abs(phY - floorY.phase) > 1e-9) floorY = layoutAxis(floorCard.h, tY, g, s.startMode, phY);
         scene.floor.x = floorX; scene.floor.y = floorY;
 
-        const plan = drainCutPlan(dr, floorCard, { x:floorX, y:floorY, tx:tX, ty:tY, g }, shape);
-        const advice = drainAdvice(dr, floorCard, fDims, { shape, zones, plan });
+        // 洞口表：地漏口 + 蹲便器口（有谁算谁）——砖围着它们挖掉
+        const holes = [];
+        if (dShape) holes.push({ ...drainOpening(dShape), kind:"drain" });
+        if (toiletOk) holes.push({ ...tShape.hole, kind:"fixture" });
+        const plan = drainCutPlan(dr, floorCard, { x:floorX, y:floorY, tx:tX, ty:tY, g }, shape, holes);
+        const advice = drainAdvice(
+          toiletOk ? { drop:tShape.drop } : dr,      // 蹲便器当最低点时只借它的 drop 算抬高量
+          floorCard, fDims, { shape, zones, plan });
         scene.floor.slope = {
-          drain: dr, shape, zones, plan, advice,
+          drain: dr, toilet: toiletOk ? tShape : null, shape, zones, plan, advice,
           lines: drainRidgeLines(floorCard, shape),
           hole: plan.hole,
+          holes: plan.holes,
           tiles: plan.grid,
           phase: { x: phX, y: phY },
           ride: plan.ride,
         };
+        if (toiletOk) scene.floor.toilet = tShape;   // 渲染侧用它画便器轮廓
+        // 谁在当最低点、便器周围要裁几块——说清楚，别让人猜
+        if (toiletOk) {
+          scene.floor.statuses.push({ kind:"info",
+            text:`找坡最低点 = 蹲便器的排污口（坑距 ${Math.round(tShape.pit)}mm，便器外形 ${Math.round(tShape.wide)}×${Math.round(tShape.len)}）`
+                 + (dr ? "；地漏只按洞口裁砖、不再当最低点" : "") });
+          if (plan.fixtureCuts > 0) {
+            scene.floor.statuses.push({ kind:"info",
+              text:`蹲便器洞口 ${Math.round(tShape.hole.w)}×${Math.round(tShape.hole.h)}（含留缝 ${tShape.gap}）：周围 ${plan.fixtureCuts} 块砖要裁，图上标了实测尺寸` });
+          }
+        }
         // 底排基准要用到 slope，所以放在 slope 挂上之后算
         const fb = footBase();
         scene.footDatum = fb.datum;
@@ -1386,6 +1480,8 @@ const Engine = (() => {
            drainToDiagram, drainShape, lowDist, slopeZones, slopeHeightAt,
            /* 底排：墙根剖面 + 按坡裁切计划（"底排按地面最低点起、高的地方裁掉"） */
            footMap, footHeightAt, footProfile, footMinOf, footMaxOf, bottomRowPlan,
+           /* 洁具：蹲便器外形轮廓 + 排污口（方案第 9 节"洞口流水线"） */
+           toiletShape,
            rideGap, rideReport,
            drainRidgeLines, drainOpening, cutRectByLines, cutRectByHole,
            pickCrossPhase, drainCutPlan, drainAdvice };
@@ -1414,7 +1510,7 @@ const defaultState = () => ({
     { id:"w2", type:"wall", name:"墙 B", w:null, h:null, door:{on:false,left:null,width:null,height:null}, win:{on:false,left:null,sill:null,width:null,height:null}, cols:[], alignEdge:"none" },
     { id:"w3", type:"wall", name:"墙 C", w:null, h:null, door:{on:false,left:null,width:null,height:null}, win:{on:false,left:null,sill:null,width:null,height:null}, cols:[], alignEdge:"none" },
     { id:"w4", type:"wall", name:"墙 D", w:null, h:null, door:{on:false,left:null,width:null,height:null}, win:{on:false,left:null,sill:null,width:null,height:null}, cols:[], alignEdge:"none" },
-    { id:"floor", type:"floor", name:"地面", w:null, h:null, drain:defaultDrain() },
+    { id:"floor", type:"floor", name:"地面", w:null, h:null, drain:defaultDrain(), toilet:defaultToilet() },
   ],
 });
 
@@ -1436,6 +1532,25 @@ function defaultDrain(){
     fitRidges:true,       // 点状：微调起铺点，让十字分水线压在砖缝上
     fitEdges:true,        // 长条：微调起铺点，让长条边缘压在砖缝上
     minPiece:50,          // 切出来的块最短边不得小于它
+  };
+}
+
+/* 地面卡片的"蹲便器"默认值（方案第 9 节：地漏/洁具共用"洞口"流水线）。
+ * 只吃师傅现场量得到的数：排污管中心离左墙/离后墙 + 便器靠墙那条边离墙多远；
+ * 坑距由引擎反推（Engine.toiletShape），排污口落到便器外面就算越界、要报错。 */
+function defaultToilet(){
+  return {
+    on:false,             // 总开关
+    fromLeft:null,        // 排污管中心 离"左墙" mm（和地漏同一套量法）
+    fromBack:null,        // 排污管中心 离"后墙" mm
+    against:"back",       // 便器后背靠哪面墙：front/back/left/right
+    len:520,              // 便器外形：长（靠墙方向的进深）
+    wide:420,             // 便器外形：宽（沿墙方向）
+    wallGap:150,          // 便器靠墙那条边离墙多少（惯例约 150，免得碰冲水设备）
+    gap:5,                // 砖与便器之间的留缝（洞口 = 外形 + 2×留缝）
+    drop:10,              // 坡度（它当最低点的时候用）：每 1000mm 降几 mm
+    minPiece:50,          // 切出来的块最短边不得小于它
+    fitRidges:true,       // 微调起铺点，让十字分水线压在砖缝上
   };
 }
 
@@ -1522,6 +1637,29 @@ function validateCard(card){
       const clear = Math.min(o.x, o.y, W - (o.x + o.w), H - (o.y + o.h));
       if (clear < (d.gap || 3) + 20)
         errs.push(`地漏离最近的墙只有 ${Math.round(clear)}mm，至少要留出 ${Math.round((d.gap || 3) + 20)}mm（装不下、也切不了）`);
+    }
+  }
+  if (card.type === "floor" && card.toilet && card.toilet.on) {
+    const t = card.toilet, W = card.w, H = card.h;
+    if (!(t.fromLeft > 0) || !(t.fromBack > 0)) errs.push("蹲便器：排污管中心的位置两个都要填（离左墙、离后墙，毫米）");
+    if (!(t.len >= 400 && t.len <= 700)) errs.push("蹲便器长填 400~700mm（常见 520 / 535 / 580）");
+    if (!(t.wide >= 250 && t.wide <= 500)) errs.push("蹲便器宽填 250~500mm（常见 420 / 430 / 450）");
+    if (!(t.wallGap >= 0 && t.wallGap <= 400)) errs.push("便器靠墙边离墙填 0~400mm（惯例约 150，免得碰冲水设备）");
+    if (!(t.gap >= 0 && t.gap <= 30)) errs.push("砖与便器的留缝填 0~30mm（常见 5）");
+    if (!(t.drop >= 5 && t.drop <= 21)) errs.push("蹲便器当最低点，坡度填 5~21（每米降几毫米；低于 5 排水太慢，高于 21 站不住脚）");
+    if (W > 0 && H > 0 && t.fromLeft > 0 && t.fromBack > 0) {
+      const sh = Engine.toiletShape(t, card, state.doorEdge);
+      if (isFinite(sh.pit) && !(sh.pit >= t.wallGap - 0.5 && sh.pit <= t.wallGap + t.len + 0.5)) {
+        errs.push(`排污口落在便器外面了：坑距算出来 ${Math.round(sh.pit)}mm，便器只从离墙 ${t.wallGap} 到 ${t.wallGap + t.len}mm（前排水/后排水选错型号了？）`);
+      } else if (!sh.ok) {
+        errs.push("蹲便器（含留缝）出了地面范围，请核对位置和尺寸");
+      }
+      if (card.drain && card.drain.on && card.drain.fromLeft > 0 && card.drain.fromBack > 0) {
+        const dh = Engine.drainOpening(Engine.drainShape(card.drain, card, state.doorEdge));
+        const ov = Math.max(0, Math.min(sh.hole.x + sh.hole.w, dh.x + dh.w) - Math.max(sh.hole.x, dh.x))
+                 * Math.max(0, Math.min(sh.hole.y + sh.hole.h, dh.y + dh.h) - Math.max(sh.hole.y, dh.y));
+        if (ov > 0) errs.push("蹲便器洞口和地漏洞口重叠了，请挪开其中一个");
+      }
     }
   }
   return errs;
@@ -1772,12 +1910,24 @@ function featBlock(card){
 
 /* 地面卡片的"地漏与找坡"折叠块（照 featBlock 的写法：details + _sync 回显）
  * 顺序：开关 → 造型四选一 → 只显示该造型要填的字段 → 离左 / 离后 / 每米降几毫米 */
+/* 折叠块的展开状态：renderCards 会把 DOM 整个重建，不记着就会"点一下弹回收起"。
+ * 键 = 卡片 id + 块名；没交互过就是收起（和原来一样）。 */
+const FEAT_OPEN = {};
+const featOpenKey = (card, name) => `${card.id}:${name}`;
+function keepFeatOpen(card, name, box){
+  const key = featOpenKey(card, name);
+  if (FEAT_OPEN[key]) box.open = true;
+  // 注意用 toggle 事件：click 是在浏览器切换 open **之前**触发的，读到的还是旧值
+  box.addEventListener("toggle", () => { FEAT_OPEN[key] = box.open; });
+}
+
 function drainBlock(card){
   const d = card.drain;
   const box = el("details", "feat");
   const sm = el("summary"); sm.appendChild(el("span", "feat-name", "地漏与找坡"));
   const dv = el("span", "feat-val"); dv.dataset.fv = "drain"; sm.appendChild(dv);
   box.appendChild(sm);
+  keepFeatOpen(card, "drain", box);
 
   const body = el("div", "feat-body");
   const sw = el("label", "switch-row");
@@ -1848,6 +1998,88 @@ function drainBlock(card){
   return { node:box, sync:box._sync };
 }
 
+/* 蹲便器：砖围着它裁（嵌入式留坑位），排污口同时当找坡最低点。
+ * 填的都是现场量得到的数；**坑距由引擎反推、只读显示**——"排污口在便器本体上
+ * 离边多少"没有公开标准值，不猜（越界直接报错，见 validateCard）。 */
+function toiletBlock(card){
+  const t = card.toilet;
+  const box = el("details", "feat");
+  const sm = el("summary"); sm.appendChild(el("span", "feat-name", "蹲便器"));
+  const dv = el("span", "feat-val"); dv.dataset.fv = "toilet"; sm.appendChild(dv);
+  box.appendChild(sm);
+  keepFeatOpen(card, "toilet", box);
+
+  const body = el("div", "feat-body");
+  const sw = el("label", "switch-row");
+  sw.appendChild(el("span", null, "这间装蹲便器（砖围着它裁，排污口当最低点）"));
+  const cb = el("input", "switch"); cb.type = "checkbox"; cb.checked = !!t.on;
+  cb.addEventListener("change", () => { t.on = cb.checked; save(); renderCards(); update(); });
+  sw.appendChild(cb); body.appendChild(sw);
+
+  const inputs = el("div", "feat-inputs" + (t.on ? " show" : ""));
+
+  const segRow = (label, items, cur, onPick, mini) => {
+    const row = el("div", "align-row");
+    row.appendChild(el("span", "set-label", label));
+    const seg = el("div", mini ? "seg mini" : "seg");
+    items.forEach(([v, tx]) => {
+      const b = el("button", cur === v ? "on" : "", tx);
+      b.onclick = () => { onPick(v); save(); renderCards(); update(); };
+      seg.appendChild(b);
+    });
+    row.appendChild(seg); inputs.appendChild(row);
+  };
+  segRow("便器后背靠哪面墙", [["back","后墙"],["front","前墙"],["left","左墙"],["right","右墙"]],
+    t.against, (v) => { t.against = v; });
+  segRow("外形（长×宽，常见款）", [["520,420","520×420"],["535,430","535×430"],["580,450","580×450"]],
+    `${t.len},${t.wide}`, (v) => { const [a, b] = v.split(","); t.len = +a; t.wide = +b; }, true);
+
+  const fields = [
+    ["fromLeft", "排污管中心离左墙（mm）", "如 1500"],
+    ["fromBack", "排污管中心离后墙（mm）", "如 400"],
+    ["wallGap", "便器靠墙边离墙（mm）", "惯例 150"],
+    ["len", "便器长（mm）", "如 520"],
+    ["wide", "便器宽（mm）", "如 420"],
+    ["gap", "砖与便器留缝（mm）", "如 5"],
+    ["drop", "每米降几毫米（mm/m）", "7~14 常见"],
+  ];
+  fields.forEach(([k, label, ph]) => {
+    const f = el("label", "field"); f.appendChild(el("span", null, label));
+    const inp = el("input"); inp.type = "text"; inp.inputMode = "numeric"; inp.placeholder = ph;
+    inp.value = t[k] != null ? t[k] : "";
+    inp.addEventListener("input", () => { t[k] = parseMM(inp.value); save(); update(); });
+    f.appendChild(inp); inputs.appendChild(f);
+  });
+
+  // 坑距：引擎算出来给师傅看（只读）
+  const pf = el("label", "field wide");
+  pf.appendChild(el("span", null, "坑距 = 排污口中心到所靠那面墙（自动算）"));
+  const pitInp = el("input"); pitInp.type = "text"; pitInp.disabled = true; pitInp.dataset.pit = "1";
+  pf.appendChild(pitInp); inputs.appendChild(pf);
+
+  const fitRow = el("label", "switch-row");
+  fitRow.appendChild(el("span", null, "微调起铺点，让分水线压在砖缝上"));
+  const fcb = el("input", "switch"); fcb.type = "checkbox"; fcb.checked = t.fitRidges !== false;
+  fcb.addEventListener("change", () => { t.fitRidges = fcb.checked; save(); update(); });
+  fitRow.appendChild(fcb); inputs.appendChild(fitRow);
+
+  body.appendChild(inputs); box.appendChild(body);
+
+  box._sync = () => {
+    inputs.classList.toggle("show", !!t.on);
+    const sh = Engine.toiletShape(t, card, state.doorEdge);
+    const side = { front:"前墙", back:"后墙", left:"左墙", right:"右墙" }[t.against] || "后墙";
+    pitInp.value = (sh && isFinite(sh.pit))
+      ? (sh.ok ? `${Math.round(sh.pit)}` : `${Math.round(sh.pit)}（越界）`) : "";
+    const bits = [`${t.wide || "?"}×${t.len || "?"}`, `靠${side}`];
+    if (sh && isFinite(sh.pit)) bits.push(`坑距 ${Math.round(sh.pit)}`);
+    if (t.drop > 0) bits.push(`每米降 ${t.drop}mm`);
+    dv.textContent = t.on ? bits.join("，") : "无";
+    dv.classList.toggle("lit", !!t.on);
+  };
+  return { node:box, sync:box._sync };
+}
+
 function alignRow(card){
   const row = el("div", "align-row");
   row.appendChild(el("span", "set-label", "墙地通缝：这面墙压着地面哪条边"));
@@ -1888,6 +2120,11 @@ function buildFloorCard(card){
   box.appendChild(drain.node);
   drain.sync();
   box._drainSync = drain.sync;
+  card.toilet = Object.assign(defaultToilet(), card.toilet || {});   // 老存档没有这个字段，补上
+  const toilet = toiletBlock(card);
+  box.appendChild(toilet.node);
+  toilet.sync();
+  box._toiletSync = toilet.sync;
   const row = el("div", "align-row");
   row.appendChild(el("span", "set-label", "门在图的哪条边（用来定前后左右）"));
   const seg = el("div", "seg");
@@ -2001,8 +2238,9 @@ function hookFeatSync(){
   $$(".card").forEach(box => {
     const card = state.cards.find(c => c.id === box.dataset.id);
     if (!card) return;
-    if (card.type === "floor") {          // 地面：只有"地漏与找坡"一个折叠块要回显
+    if (card.type === "floor") {          // 地面：地漏与找坡 + 蹲便器，两个折叠块要回显
       if (box._drainSync) box._drainSync();
+      if (box._toiletSync) box._toiletSync();
       return;
     }
     if (card.type !== "wall") return;
@@ -2811,6 +3049,24 @@ function drawWall(canvas, card, entry, scene){
   }
 }
 
+/* 蹲便器（俯视）：外形色块 + 排污口。嵌入式安装——砖围着这个轮廓裁（洞口已经在
+ * 砖网里挖掉了），所以轮廓和砖边之间会留一圈"留缝"。只吃显式 scale，三个视图共用。 */
+function paintToilet(ctx, t, s){
+  if (!t) return;
+  const x = t.rect.x * s, y = t.rect.y * s, w = t.rect.w * s, h = t.rect.h * s;
+  ctx.save();
+  ctx.fillStyle = cssVar("--fixture");
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = cssVar("--ink-soft"); ctx.lineWidth = 1.5;
+  ctx.strokeRect(x + 0.75, y + 0.75, Math.max(0, w - 1.5), Math.max(0, h - 1.5));
+  // 排污口：和地漏洞口一个画法（深色实心 + 浅色描边），φ110 管
+  const r = Math.max(3, 55 * s);
+  ctx.beginPath(); ctx.arc(t.point.x * s, t.point.y * s, r, 0, Math.PI * 2);
+  ctx.fillStyle = cssVar("--ink"); ctx.fill();
+  ctx.strokeStyle = cssVar("--paper"); ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.restore();
+}
+
 function drawFloor(canvas, card, scene){
   const f = scene.floor;
   if (!f) return;
@@ -2862,12 +3118,22 @@ function drawFloor(canvas, card, scene){
   }
   paintCuts(ctx, f.x, f.y, s, cssW, cssH, undefined, { sink: chips });
 
+  // 蹲便器：轮廓色块 + 排污口（画在砖面上，砖已经围着它挖掉了）
+  if (f.toilet) paintToilet(ctx, f.toilet, s);
+
   // 找坡：分水线（最底）→ 地漏 → 下料清单（最上），字同样攒进 chips。
   if (f.slope) {
     const o = { labels:true, sink: chips };
     paintRidges(ctx, f.slope, card, s, o);
-    paintDrain(ctx, f.slope.shape, card, s, o);
+    if (f.slope.drain) paintDrain(ctx, f.slope.shape, card, s, o);   // 最低点是蹲便器时不画地漏
     paintDrainPlan(ctx, f.slope, card, s, o);
+  }
+
+  // 蹲便器周围被裁到的砖：红字标"砖缝到轮廓边"剩余块的实测尺寸（照洞口算，跟实际下刀一致）
+  if (f.toilet) {
+    paintFootprintCuts(ctx, f.toilet.hole, f.x, f.y, s, cssW, cssH, { sink: chips });
+    chips.push({ txt:`坑距 ${Math.round(f.toilet.pit)}`, color: cssVar("--ink"),
+                 ax:f.toilet.point.x * s, ay:(f.toilet.rect.y + f.toilet.rect.h / 2) * s });
   }
 
   // 被柱脚裁到的地砖：红字标"缝到柱边"剩余块实测尺寸（字也进 chips 统一排）
@@ -2889,8 +3155,10 @@ function paintFloorNet(ctx, card, scene, s, W, H, minG, joint){
   }
   if (f.slope) {
     paintRidges(ctx, f.slope, card, s, { labels:false });
-    paintDrain(ctx, f.slope.shape, card, s, { labels:false });
+    if (f.slope.drain) paintDrain(ctx, f.slope.shape, card, s, { labels:false });
   }
+  // 蹲便器轮廓（展开图与三维地面贴图共用；不标字，与"展开图不标尺寸"一致）
+  if (f.toilet) paintToilet(ctx, f.toilet, s);
 }
 
 function paintWallNet(ctx, card, entry, s, W, H){

@@ -1308,6 +1308,135 @@ test("底排 · 极端输入：最矮处不足 1/3 会报警；墙太矮会报�
   check("墙太矮时不生成底排计划", !w2.bottom);
 });
 
+/* ============================================================
+ * 五、蹲便器：砖围着它裁（嵌入式）+ 排污口当找坡最低点
+ *
+ * 规矩（用户定）：便器轮廓要**真的从砖里挖掉**，周边砖按洞口裁；
+ * 蹲便器开着时找坡最低点由它接管（地漏只当一个洞口）。
+ * 输入只要现场量得到的数：排污管中心（离左/离后）+ 便器靠墙边离墙。
+ * ============================================================ */
+
+function toiletState(over) {
+  const st = footState();                       // 复用上面那组的四墙 + 地面 3000×2000
+  const f = st.cards.find((c) => c.type === "floor");
+  f.drain.on = false;                           // 先只看蹲便器
+  f.toilet = Object.assign({
+    on:true, fromLeft:1500, fromBack:400, against:"back",
+    len:520, wide:420, wallGap:150, gap:5, drop:10, minPiece:50, fitRidges:true,
+  }, over || {});
+  return st;
+}
+const floorCardOf = (st) => st.cards.find((c) => c.type === "floor");
+
+test("蹲便器 · 四面墙都能摆正：坑距 / 靠墙间隙 / 沿墙居中", () => {
+  const W = 3000, H = 2000;
+  const cases = [
+    ["back",  { fromLeft:1500, fromBack:400 }],
+    ["front", { fromLeft:1500, fromBack:1600 }],
+    ["left",  { fromLeft:400,  fromBack:1000 }],
+    ["right", { fromLeft:2600, fromBack:1000 }],
+  ];
+  let ok = true, detail = "";
+  cases.forEach(([against, pos]) => {
+    const st = toiletState(Object.assign({ against }, pos));
+    const t = E.computeScene(st).floor.toilet;
+    if (!t) { ok = false; detail = `${against}: 没生成`; return; }
+    if (Math.abs(t.pit - 400) > 0.5) { ok = false; detail = `${against} 坑距 ${t.pit.toFixed(1)} 应为 400`; }
+    const gap = against === "back"  ? H - (t.rect.y + t.rect.h)
+              : against === "front" ? t.rect.y
+              : against === "left"  ? t.rect.x
+              :                       W - (t.rect.x + t.rect.w);
+    if (Math.abs(gap - 150) > 0.5) { ok = false; detail = `${against} 靠墙边离墙 ${gap.toFixed(1)} 应为 150`; }
+    const lr = (against === "front" || against === "back");
+    const mid = lr ? t.rect.x + t.rect.w / 2 : t.rect.y + t.rect.h / 2;
+    const pt  = lr ? t.point.x : t.point.y;
+    if (Math.abs(mid - pt) > 0.5) { ok = false; detail = `${against} 排污口没在便器中心线上`; }
+    // 排污口必须落在便器范围内
+    if (!t.ok) { ok = false; detail = `${against} ok=false`; }
+  });
+  check("四个方向都对（坑距 400 / 靠墙间隙 150 / 沿墙居中）", ok, detail);
+});
+
+test("蹲便器 · 洞口 = 外形 + 2×留缝，且完整落在地面内", () => {
+  const t = E.computeScene(toiletState()).floor.toilet;
+  check("洞口每边比外形大一个留缝",
+        Math.abs(t.hole.w - (t.rect.w + 2 * t.gap)) < 1e-6 && Math.abs(t.hole.h - (t.rect.h + 2 * t.gap)) < 1e-6,
+        `洞口 ${t.hole.w}×${t.hole.h} 外形 ${t.rect.w}×${t.rect.h}`);
+  check("洞口完整落在地面内",
+        t.hole.x >= 0 && t.hole.y >= 0 && t.hole.x + t.hole.w <= 3000 && t.hole.y + t.hole.h <= 2000,
+        `x=${t.hole.x} y=${t.hole.y}`);
+});
+
+test("蹲便器 · 砖围着洞口裁：面积守恒、只有直刀、账和地漏分开", () => {
+  const plan = E.computeScene(toiletState()).floor.slope.plan;
+  check("有砖被蹲便器洞口裁到", plan.fixtureCuts > 0, `fixtureCuts=${plan.fixtureCuts}`);
+  check("地漏那笔账没被算进来", plan.drainCuts === 0);
+  const fx = plan.grid.filter((t) => t.hitFixture);
+  check("被便器裁到的砖 reason = fixture", fx.length > 0 && fx.every((t) => t.reason === "fixture"));
+  check("切块都是轴对齐矩形（只有直刀）",
+        plan.grid.every((t) => t.polys.every((p) => isAxisRect(p.pts))));
+
+  let got = 0, want = 0;
+  const ovl = (a, b) => Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)) *
+                        Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+  for (const t of plan.grid) {
+    for (const p of t.polys) got += polyArea(p.pts);
+    want += t.w * t.h;
+    for (const h of plan.holes) want -= ovl({ x:t.x, y:t.y, w:t.w, h:t.h }, h);
+  }
+  check("切块面积守恒（相对误差 < 1e-9）", Math.abs(got - want) / want < 1e-9,
+        `${got.toFixed(1)} vs ${want.toFixed(1)}`);
+});
+
+test("蹲便器 · 和地漏同时开：两个洞口都挖，各报各的账", () => {
+  const st = toiletState();
+  const f = floorCardOf(st);
+  f.drain.on = true; f.drain.fromLeft = 700; f.drain.fromBack = 300;   // 挪到一边，不与便器重叠
+  const plan = E.computeScene(st).floor.slope.plan;
+  check("两个洞口都在", plan.holes.length === 2 && !!plan.hole,
+        plan.holes.map((h) => h.kind).join(","));
+  check("地漏和蹲便器各报各的", plan.drainCuts > 0 && plan.fixtureCuts > 0,
+        `drainCuts=${plan.drainCuts} fixtureCuts=${plan.fixtureCuts}`);
+  check("便器那笔没混进地漏清单一", plan.tiles.every((t) => !t.hitFixture));
+});
+
+test("蹲便器 · 当找坡最低点：排污口处高度 0，四面墙根由它算", () => {
+  const sc = E.computeScene(toiletState());
+  const t = sc.floor.toilet, sl = sc.floor.slope;
+  check("排污口处高度 = 0", Math.abs(E.slopeHeightAt(sl.zones, t.point.x, t.point.y)) < 0.01);
+  check("分水线还是两条（十字）", sl.lines.length === 2, `${sl.lines.length} 条`);
+  check("最远墙角被抬高（水往便器流）", E.slopeHeightAt(sl.zones, 0, 0) > 0,
+        `墙角 ${E.slopeHeightAt(sl.zones, 0, 0).toFixed(1)}mm`);
+  check("最低点登记的是蹲便器，不是地漏", sl.toilet && !sl.drain);
+});
+
+test("蹲便器 · 排污口落在便器外面 / 便器出界 → ok=false（不静默乱画）", () => {
+  const outside = toiletState({ fromBack: 800 });          // 离墙 800 > 靠墙 150 + 长 520
+  const sc = E.computeScene(outside);
+  const sh = E.toiletShape(floorCardOf(outside).toilet, floorCardOf(outside), outside.doorEdge);
+  check("排污口在便器外 → ok=false", sh.ok === false, `坑距=${sh.pit.toFixed(0)}`);
+  check("越界时不参与计算（不生成 slope / 便器）", !sc.floor.slope && !sc.floor.toilet);
+
+  const out2 = toiletState({ fromLeft: 200 });             // 便器宽 420 → 左边 −10，出地面
+  const t2 = E.toiletShape(floorCardOf(out2).toilet, floorCardOf(out2), out2.doorEdge);
+  check("便器出地面范围 → 也 ok=false", t2.ok === false);
+  check("极端输入不出现 NaN", isFinite(t2.pit) && isFinite(t2.hole.x) && isFinite(t2.rect.w));
+});
+
+test("蹲便器 · 关掉时完全是老行为（单洞口、切块逐块一致）", () => {
+  const st = toiletState();
+  const f = floorCardOf(st);
+  f.toilet.on = false; f.drain.on = true;
+  const plan = E.computeScene(st).floor.slope.plan;
+  check("只有地漏一个洞口", plan.holes.length === 1 && plan.holes[0].kind === "drain");
+  check("fixtureCuts = 0", plan.fixtureCuts === 0);
+  const t0 = plan.grid.find((t) => t.hitDrain);
+  const ref = E.cutRectByHole({ x:t0.x, y:t0.y, w:t0.w, h:t0.h }, plan.hole);
+  const same = ref.length === t0.polys.length && ref.every((p, i) =>
+    Math.abs(p.pts[0].x - t0.polys[i].pts[0].x) < 1e-9 && Math.abs(p.pts[0].y - t0.polys[i].pts[0].y) < 1e-9);
+  check("切块与老算法（单洞口直减）逐块一致", same, `老 ${ref.length} 块 / 现 ${t0.polys.length} 块`);
+});
+
 if (!SLOPE_READY) {
   console.log(`\n⏸  地漏造型组（断言 13~25 + 命门）整组跳过：引擎还缺 ${_missApi.length} 个函数`);
   console.log(`   待实现：${_missApi.join(", ")}`);
