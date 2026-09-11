@@ -1437,6 +1437,87 @@ test("蹲便器 · 关掉时完全是老行为（单洞口、切块逐块一致�
   check("切块与老算法（单洞口直减）逐块一致", same, `老 ${ref.length} 块 / 现 ${t0.polys.length} 块`);
 });
 
+/* ============================================================
+ * 六、方位换算：门画在图的哪条边，都不许错位
+ *
+ * 工具里有两套方位说法，必须在 Engine.wallSideOf 里换算一次：
+ *   ① 用户说的 前/后/左/右 —— 门相对（alignEdge、"离左/离后"、便器"靠哪面墙"都用这套）
+ *   ② 图上墙摆的位置      —— front(地面上方)/back(下方)/left/right（展开图、三维、
+ *                            "后墙/左墙要翻"那条镜像规矩用这套）
+ * 门在图的**下边**时两套完全重合，所以这个坑长期藏着；门一挪到别的边就集体错位。
+ * ============================================================ */
+
+test("方位 · 门在四条边时，墙的方位 / 取坡线 / 展开图摆放三者一致", () => {
+  const EDGES = ["bottom", "top", "left", "right"];
+  const POS = ["front", "back", "left", "right"];
+  let ok = true, detail = "";
+  EDGES.forEach((de) => {
+    const st = footState();
+    st.doorEdge = de;
+    st.cards.filter((c) => c.type === "wall").forEach((c, i) => { c.alignEdge = POS[i]; });
+    const sc = E.computeScene(st);
+    const net = E.computeRoomNet(sc, st, { maxWidth: 1000, maxHeight: 1400, margin: 40 });
+    POS.forEach((want, i) => {
+      const id = "w" + (i + 1);
+      const side = sc.sideOf.get(id);
+      // 用户圈的是"前/后/左/右"，墙要落在**图上有那个徽标**的边 → 位置标签
+      const expectPos = E.EDGE_TO_POS[E.deriveEdges(de)[want]];
+      if (side !== expectPos) { ok = false; detail = `${de}: ${id} 圈的是${want}，落在 ${side}，应为 ${expectPos}`; return; }
+      // 墙根剖面必须取自它实际摆的那条边
+      const fp = sc.walls[id].foot;
+      const wantEdge = E.POS_TO_EDGE[expectPos];
+      if (!fp || fp.edge !== wantEdge) { ok = false; detail = `${de}: ${id} 取坡线用 ${fp && fp.edge}，应为 ${wantEdge}`; }
+      // 展开图摆放也要一致
+      const wr = net.walls.find((w) => w.id === id);
+      if (!wr || wr.side !== expectPos) { ok = false; detail = `${de}: ${id} 展开图画在 ${wr && wr.side}`; }
+    });
+  });
+  check("四条门边 × 四面墙：方位/取坡线/摆放全都对得上", ok, detail);
+  // 门在下边时（默认）退化成老行为：圈什么就是什么
+  const st2 = footState();
+  st2.cards.filter((c) => c.type === "wall").forEach((c, i) => { c.alignEdge = POS[i]; });
+  const sc2 = E.computeScene(st2);
+  check("门在下边时方位与圈的一致（老行为不回退）",
+        POS.every((p, i) => sc2.sideOf.get("w" + (i + 1)) === p));
+});
+
+test("方位 · 蹲便器「靠后墙」跟着门走，坑距从后墙量起", () => {
+  // 让排污口离"后墙"（门那面）400mm；后墙在图上的位置随门变
+  // 想在图上放的点 = 离"后墙"400mm、沿墙居中（后墙在图上的位置随门变）
+  const AT = { bottom:{ x:1500, y:1600 }, top:{ x:1500, y:400 },
+               left:{ x:400, y:1000 },  right:{ x:2600, y:1000 } };
+  // 图坐标 → 师傅要填的"离左墙/离后墙"（signed 地漏同一套换算，别手算）
+  const toInputs = (de, at, W, H) => {
+    const e = E.deriveEdges(de);
+    const d = (edge, v) => edge === "top" ? v : edge === "bottom" ? H - v
+                       : edge === "left" ? v : W - v;
+    const isX = (edge) => edge === "left" || edge === "right";
+    return isX(e.back) ? { fromBack:d(e.back, at.x), fromLeft:d(e.left, at.y) }
+                       : { fromBack:d(e.back, at.y), fromLeft:d(e.left, at.x) };
+  };
+  let ok = true, detail = "";
+  Object.entries(AT).forEach(([de, at]) => {
+    const st = toiletState();
+    st.doorEdge = de;
+    const f = floorCardOf(st);
+    const ins = toInputs(de, at, f.w, f.h);
+    f.toilet = Object.assign({}, f.toilet, { against:"back" }, ins);
+    const sc = E.computeScene(st);
+    const t = sc.floor.toilet;
+    if (!t) { ok = false; detail = `${de}: 没生成便器`; return; }
+    const back = E.deriveEdges(de).back;                 // 用户说的"后墙" = 图上这条边
+    const W = f.w, H = f.h;
+    const gapTo = { top:t.rect.y, bottom:H - (t.rect.y + t.rect.h),
+                    left:t.rect.x, right:W - (t.rect.x + t.rect.w) };
+    const nearest = Object.entries(gapTo).sort((a, b) => a[1] - b[1])[0];
+    if (nearest[0] !== back || Math.abs(nearest[1] - 150) > 0.5) {
+      ok = false; detail = `${de}: 便器靠了图的${nearest[0]}边（间隙 ${nearest[1].toFixed(0)}），应为图的${back}边`;
+    }
+    if (Math.abs(t.pit - 400) > 0.5) { ok = false; detail = `${de}: 坑距 ${t.pit.toFixed(0)}，应为 400`; }
+  });
+  check("四条门边：便器都靠在“后墙”上，坑距都从后墙量起 = 400", ok, detail);
+});
+
 if (!SLOPE_READY) {
   console.log(`\n⏸  地漏造型组（断言 13~25 + 命门）整组跳过：引擎还缺 ${_missApi.length} 个函数`);
   console.log(`   待实现：${_missApi.join(", ")}`);

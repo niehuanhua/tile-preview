@@ -293,6 +293,39 @@ const Engine = (() => {
     right:  { back:"right",  front:"left",   left:"bottom", right:"top"    },
   }[doorEdge] || null);
 
+  /* ---- 方位词汇对齐（"用户说的前/后/左/右" ↔ "图上墙摆的位置"）----
+   *
+   * 这两套说法必须在这里换算一次，否则**门不在图的下面**时四面墙集体错位：
+   *   用户说的 前/后/左/右 —— 门相对（`card.alignEdge`、地漏的"离左/离后"都用这套）
+   *   墙上摆的位置        —— front(地面上方) / back(下方) / left / right
+   *                         （展开图、三维、"后墙/左墙要翻"那条镜像规矩都用这套）
+   * 换法：alignEdge --deriveEdges--> 图上的边 --EDGE_TO_POS--> 位置。
+   * 这样"贴后墙"永远落在图上有"后"徽标的那条边旁边，门画在哪条边都不会错位。
+   * （门在下边时两套完全相同——所以这个坑以前一直没暴露出来。） */
+  const EDGE_TO_POS = { top:"front", bottom:"back", left:"left", right:"right" };
+  const POS_TO_EDGE = { front:"top", back:"bottom", left:"left", right:"right" };
+  const wallSideOf = (card, doorEdge, used) => {
+    const u = used || new Set();
+    const edges = deriveEdges(doorEdge);
+    if (card && card.alignEdge && card.alignEdge !== "none" && edges) {
+      const pos = EDGE_TO_POS[edges[card.alignEdge]];
+      if (pos && !u.has(pos)) { u.add(pos); return pos; }
+    }
+    for (const q of ["front", "back", "left", "right"]) if (!u.has(q)) { u.add(q); return q; }
+    return null;
+  };
+  /* 整个状态的墙方位表（墙的顺序与去重规则同原实现） */
+  const wallSideMapOf = (state, doorEdge) => {
+    const map = new Map(), used = new Set();
+    if (!state || !Array.isArray(state.cards)) return map;
+    for (const card of state.cards) {
+      if (card.type !== "wall" || !(card.w > 0) || !(card.h > 0)) continue;
+      const s = wallSideOf(card, doorEdge, used);
+      if (s) map.set(card.id, s);
+    }
+    return map;
+  };
+
   /* 铺贴方向 → 砖的实际摆放尺寸。横铺 = 长边水平，竖铺 = 长边竖直。 */
   const laidDims = (spec, direction) => {
     const a = Math.min(spec.w, spec.h), b = Math.max(spec.w, spec.h);
@@ -466,21 +499,24 @@ const Engine = (() => {
     const W = numOr(floorCard && floorCard.w, 0), H = numOr(floorCard && floorCard.h, 0);
     const len = numOr(t.len, 520), wide = numOr(t.wide, 420);
     const gap = numOr(t.gap, 5), wallGap = numOr(t.wallGap, 150);
+    // "靠后墙"是**门相对**的说法（和地漏的"离左/离后"同一套），必须先换成图上的边
+    const edges = deriveEdges(doorEdge) || deriveEdges("bottom");
     const against = t.against || "back";
+    const edge = edges[against] || edges.back;         // 图上的边：top/bottom/left/right
     const at = drainToDiagram({ fromLeft:numOr(t.fromLeft, 0), fromBack:numOr(t.fromBack, 0) },
                               floorCard, doorEdge);
     // 坑距 = 排污口中心到"所靠那面墙"的距离
-    const pit = against === "back"  ? H - at.y
-              : against === "front" ? at.y
-              : against === "left"  ? at.x
-              :                       W - at.x;
+    const pit = edge === "bottom" ? H - at.y
+              : edge === "top"    ? at.y
+              : edge === "left"   ? at.x
+              :                     W - at.x;
     // 便器外形：靠墙边离墙 wallGap，朝房间内伸 len；沿墙方向以排污口居中
     let rect;
-    if (against === "front" || against === "back") {
-      const y0 = (against === "front") ? wallGap : H - wallGap - len;
+    if (edge === "top" || edge === "bottom") {
+      const y0 = (edge === "top") ? wallGap : H - wallGap - len;
       rect = { x: at.x - wide / 2, y: y0, w: wide, h: len };
     } else {
-      const x0 = (against === "left") ? wallGap : W - wallGap - len;
+      const x0 = (edge === "left") ? wallGap : W - wallGap - len;
       rect = { x: x0, y: at.y - wide / 2, w: len, h: wide };
     }
     const hole = { x: rect.x - gap, y: rect.y - gap, w: rect.w + 2 * gap, h: rect.h + 2 * gap };
@@ -589,8 +625,9 @@ const Engine = (() => {
    * 处理——与 columnFootprints、三维立柱、通缝相位是同一条规矩。
    */
   const footMap = (floorCard, edges, side) => {
-    if (!floorCard || !edges || !side || !(floorCard.w > 0) || !(floorCard.h > 0)) return null;
-    const edge = edges[side];
+    if (!floorCard || !side || !(floorCard.w > 0) || !(floorCard.h > 0)) return null;
+    // side 是"墙摆的位置"（见 wallSideOf），位置→图上的边是固定的一对一，不再经 deriveEdges
+    const edge = POS_TO_EDGE[side];
     if (!edge) return null;
     const FW = floorCard.w, FH = floorCard.h;
     const along = (edge === "top" || edge === "bottom") ? FW : FH;   // 沿墙方向长度
@@ -1083,17 +1120,7 @@ const Engine = (() => {
     const scene = { floor:null, walls:{} };
 
     // 四面墙 side 分配（与整屋展开图/三维一致）：不通缝时也据此决定对齐到地面哪条轴
-    const sideMap = new Map();
-    {
-      const used = new Set(); const order = ["front", "back", "left", "right"];
-      for (const card of state.cards) {
-        if (card.type !== "wall" || !(card.w > 0) || !(card.h > 0)) continue;
-        let s = null;
-        if (card.alignEdge && card.alignEdge !== "none" && !used.has(card.alignEdge)) { used.add(card.alignEdge); s = card.alignEdge; }
-        else { for (const q of order) if (!used.has(q)) { used.add(q); s = q; break; } }
-        if (s) sideMap.set(card.id, s);
-      }
-    }
+    const sideMap = wallSideMapOf(state, state.doorEdge);   // 方位词汇在这里统一换算（见 wallSideOf）
     scene.sideOf = sideMap;      // 渲染侧要知道"每面墙站在地面哪条边"（画墙根坡线用）
 
     /* 底排基准：全屋墙根最低点 + 一块砖高。
@@ -1301,10 +1328,13 @@ const Engine = (() => {
           const edgeLen   = horizontal ? floorCard.w : floorCard.h;
           if (compatible(wDims.x, floorDim)) {
             locked = true;
-            // 左墙转 -90°、后墙(有门那面)在展开图里左右镜像，墙的 x 方向都相对地面对应边反向，
+            // 左墙转 -90°、后墙在展开图里左右镜像，墙的 x 方向都相对地面对应边反向，
             // 直接照搬地面相位会把整面墙的缝翻到另一端（错位≈一个相位）。
             // 故左墙/后墙镜像：墙相位 = (墙长 − 地面相位) mod 墙模块；前/右方向一致，直接照搬。
-            const phaseOverride = (wall.alignEdge === "left" || wall.alignEdge === "back")
+            // 按 side（墙实际摆的位置）判，不按 card.alignEdge（用户填的意愿）——两面墙抢同
+            // 一个方位时后一个会被顺延，这时照 alignEdge 判就会按错的方位去镜像。
+            const wside = sideMap.get(wall.id);
+            const phaseOverride = (wside === "left" || wside === "back")
               ? (wall.w - floorAxis.phase)
               : floorAxis.phase;
             entry.x = layoutAxis(wall.w, wDims.x, g, s.startMode, phaseOverride);
@@ -1396,16 +1426,11 @@ const Engine = (() => {
     }
     const fw = floor.card.w, fh = floor.card.h;
 
-    // 1) 给每面墙分配 side：优先用 alignEdge；未指定则按剩余空位补（避免两块挤同一边）
+    // 1) 给每面墙分配 side：优先用 alignEdge（门相对），否则按剩余空位补（避免两块挤同一边）。
+    //    方位词汇统一在 wallSideOf 里换算成"图上摆的位置"——门不在下边时两者不同，
+    //    不换算的话展开图会把墙画到和"取坡线/徽标"不一致的位置上。
     const used = new Set();
-    const order = ["front", "back", "left", "right"];
-    const sideOf = (card) => {
-      if (card.alignEdge && card.alignEdge !== "none" && !used.has(card.alignEdge)) {
-        used.add(card.alignEdge); return card.alignEdge;
-      }
-      for (const s of order) if (!used.has(s)) { used.add(s); return s; }
-      return null; // 超过四面则放不下，跳过
-    };
+    const sideOf = (card) => wallSideOf(card, state && state.doorEdge, used);
 
     // 2) 各墙在“毫米坐标系”里的包围盒（地面占 [0,fw]×[0,fh]）
     const wallsMM = [];
@@ -1482,6 +1507,8 @@ const Engine = (() => {
            footMap, footHeightAt, footProfile, footMinOf, footMaxOf, bottomRowPlan,
            /* 洁具：蹲便器外形轮廓 + 排污口（方案第 9 节"洞口流水线"） */
            toiletShape,
+           /* 方位词汇换算：用户说的前/后/左/右 ↔ 图上墙摆的位置 */
+           EDGE_TO_POS, POS_TO_EDGE, wallSideOf, wallSideMapOf,
            rideGap, rideReport,
            drainRidgeLines, drainOpening, cutRectByLines, cutRectByHole,
            pickCrossPhase, drainCutPlan, drainAdvice };
@@ -1799,6 +1826,7 @@ function featBlock(card){
   const ds = el("summary"); ds.appendChild(el("span", "feat-name", "门洞"));
   const dv = el("span", "feat-val"); dv.dataset.fv = "door"; ds.appendChild(dv);
   door.appendChild(ds);
+  keepFeatOpen(card, "door", door);
   const db = el("div", "feat-body");
   const sw = el("label", "switch-row");
   sw.appendChild(el("span", null, "这面墙有门（从地面开始）"));
@@ -1825,6 +1853,7 @@ function featBlock(card){
   const ws = el("summary"); ws.appendChild(el("span", "feat-name", "窗户"));
   const wv = el("span", "feat-val"); wv.dataset.fv = "win"; ws.appendChild(wv);
   win.appendChild(ws);
+  keepFeatOpen(card, "win", win);
   const wb = el("div", "feat-body");
   const sw2 = el("label", "switch-row");
   sw2.appendChild(el("span", null, "这面墙有窗（窗台离地）"));
@@ -2782,18 +2811,10 @@ function effLeft(c, card){
 }
 const colValid = (c, card) => { const L = effLeft(c, card); return L >= 0 && c.width > 0 && c.depth > 0 && L + c.width <= (card.w || 0); };
 
-/* 每面墙的物理方位（front/back/left/right），与整屋展开图/三维一致 */
+/* 每面墙的物理方位（front/back/left/right），与整屋展开图/三维一致。
+ * 换算（"用户说的前/后/左/右"→"图上摆的位置"）统一在引擎的 wallSideOf 里做。 */
 function wallSideMap(st){
-  const map = new Map();
-  const used = new Set(); const order = ["front","back","left","right"];
-  for (const card of st.cards) {
-    if (card.type !== "wall" || !(card.w > 0) || !(card.h > 0)) continue;
-    let s = null;
-    if (card.alignEdge && card.alignEdge !== "none" && !used.has(card.alignEdge)) { used.add(card.alignEdge); s = card.alignEdge; }
-    else { for (const q of order) if (!used.has(q)) { used.add(q); s = q; break; } }
-    if (s) map.set(card.id, s);
-  }
-  return map;
+  return Engine.wallSideMapOf(st, st && st.doorEdge);
 }
 
 /* 公共（角部）立柱：贴在墙角的立柱同时属于相邻那面墙。
@@ -2834,14 +2855,12 @@ function columnFootprints(scene, state){
   const f = scene && scene.floor;
   if (!f || !f.card || !(f.card.w > 0) || !(f.card.h > 0)) return [];
   const FW = f.card.w, FH = f.card.h;
-  const used = new Set(); const order = ["front", "back", "left", "right"];
+  const sideMap = Engine.wallSideMapOf(state, state.doorEdge);   // 方位词汇统一在引擎里换算
   const out = [];
   for (const card of state.cards) {
     if (card.type !== "wall") continue;
     if (!(card.w > 0) || !(card.h > 0)) continue;
-    let side = null;
-    if (card.alignEdge && card.alignEdge !== "none" && !used.has(card.alignEdge)) { used.add(card.alignEdge); side = card.alignEdge; }
-    else { for (const s of order) if (!used.has(s)) { used.add(s); side = s; break; } }
+    const side = sideMap.get(card.id);
     if (!side) continue;
     /* 后墙和左墙要翻：展开图里后墙是 scale(-1,-1) 贴上去的、左墙是 rotate(-90°)
      * 贴上去的，这两面墙的"离左 L"压着的是地面的 (端点 − L)；只有右墙
@@ -3283,16 +3302,8 @@ function buildRoomModel(scene, state){
   const FW = f.card.w, FH = f.card.h;
   const ts = Math.min(0.7, 700 / Math.max(FW, FH, 1));   // px / mm
 
-  // 四面墙 side 分配（alignEdge 优先，否则按空位补）：先算，地面阴影和墙都要用
-  const used = new Set(); const order = ["front", "back", "left", "right"];
-  const sideMap = new Map();
-  for (const card of state.cards) {
-    if (card.type !== "wall" || !(card.w > 0) || !(card.h > 0)) continue;
-    let s = null;
-    if (card.alignEdge && card.alignEdge !== "none" && !used.has(card.alignEdge)) { used.add(card.alignEdge); s = card.alignEdge; }
-    else { for (const q of order) if (!used.has(q)) { used.add(q); s = q; break; } }
-    if (s) sideMap.set(card.id, s);
-  }
+  // 四面墙 side 分配：先算，地面阴影和墙都要用（方位词汇统一在引擎里换算）
+  const sideMap = Engine.wallSideMapOf(state, state.doorEdge);
 
   // 柱盒落地矩形（角点对齐：和墙上柱色带、柱盒严格同位）→ 地面阴影按它画，
   // 保证任何数据下"柱子坐在阴影里"；2D 地面图/展开图另用居中约定（columnFootprints）
