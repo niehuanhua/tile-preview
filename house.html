@@ -1,0 +1,1517 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#F2F1ED">
+<title>全屋通铺排砖</title>
+<style>
+/* ---------- 主题色板（浅色为基准，深色自动切换） ---------- */
+:root{
+  --paper:#F2F1ED;      /* 页面底色：暖石灰白 */
+  --card:#FFFFFF;       /* 卡片底 */
+  --ink:#26292E;        /* 正文 */
+  --ink-soft:#6A6F76;   /* 次要文字 */
+  --line:#DFDCD4;       /* 边框 */
+  --chip:#ECEAE4;       /* 未选中的选项块 */
+  --tile:#DAD6CE;       /* 砖块（图上） */
+  --joint:#FFFFFF;      /* 砖缝（图上） */
+  --r3d-joint:#8B8D90;  /* 砖缝（三维图上）：用中性灰，避免低分辨率下出现亮白格子 */
+  --column:#C9B8A2;     /* 包管立柱（图上） */
+  --fixture:#B7C3CC;    /* 洁具（蹲便器）轮廓：冷灰蓝，和暖褐的"柱"分得开 */
+  --open:#F3F1EC;       /* 门窗洞口底色（图上） */
+  --accent:#2B5E9B;     /* 操作蓝：墨斗线 */
+  --accent-soft:#E3EBF5;
+  --ok:#2E7D46;         /* 成功绿 */
+  --ok-soft:#E4F0E7;
+  --warn:#B26205;       /* 提醒橙 */
+  --warn-soft:#F7EBDA;
+  --danger:#C0362C;     /* 错误红 */
+  --danger-soft:#F8E4E2;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#17181B; --card:#202226; --ink:#ECEDEF; --ink-soft:#9CA2AA;
+    --line:#34373D; --chip:#2A2D32; --tile:#4A4E55; --joint:#1B1C20; --r3d-joint:#2D3138;
+    --column:#6E6050; --fixture:#5A6672; --open:#1B1C20;
+    --accent:#7FA9DC; --accent-soft:#243246;
+    --ok:#74C28C; --ok-soft:#1F3327;
+    --warn:#E2A44E; --warn-soft:#3A2E1B;
+    --danger:#E5796F; --danger-soft:#3C2320;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#17181B; --card:#202226; --ink:#ECEDEF; --ink-soft:#9CA2AA;
+  --line:#34373D; --chip:#2A2D32; --tile:#4A4E55; --joint:#1B1C20; --r3d-joint:#2D3138;
+  --column:#6E6050; --fixture:#5A6672; --open:#1B1C20;
+  --accent:#7FA9DC; --accent-soft:#243246;
+  --ok:#74C28C; --ok-soft:#1F3327;
+  --warn:#E2A44E; --warn-soft:#3A2E1B;
+  --danger:#E5796F; --danger-soft:#3C2320;
+}
+
+/* ---------- 基础 ---------- */
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--paper); color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  font-size:16px; line-height:1.5;
+}
+.wrap{max-width:560px; margin:0 auto; padding:0 14px calc(40px + env(safe-area-inset-bottom));}
+input,button,select{font:inherit; color:inherit}
+input{background:var(--card); border:1px solid var(--line); border-radius:8px; padding:9px 10px; width:100%; min-height:44px; font-variant-numeric:tabular-nums;}
+input:focus{outline:2px solid var(--accent); outline-offset:0; border-color:var(--accent)}
+button{cursor:pointer; touch-action:manipulation}
+
+/* ---------- 页头 ---------- */
+.app-head{padding:20px 2px 10px}
+.app-head h1{margin:0; font-size:24px; font-weight:800; letter-spacing:.5px}
+.app-head p{margin:2px 0 0; color:var(--ink-soft); font-size:13px}
+
+/* 图例 */
+.legend{display:flex; flex-wrap:wrap; gap:8px 16px; margin:10px 2px 14px; font-size:12px; color:var(--ink-soft)}
+.legend .lg{display:inline-flex; align-items:center; gap:6px}
+.legend i{font-style:normal; display:inline-flex; align-items:center; justify-content:center; border-radius:5px; box-sizing:border-box}
+.sw-cut{background:#fff; color:var(--danger); border:1px solid var(--danger); font-weight:700; font-size:11px; min-width:28px; height:18px; padding:0 4px}
+.sw-edge{background:var(--accent); color:#fff; font-weight:700; font-size:11px; width:20px; height:18px}
+.sw-col{width:16px; height:14px; background:linear-gradient(90deg, rgba(0,0,0,.22), rgba(0,0,0,0) 32%, rgba(0,0,0,0) 68%, rgba(0,0,0,.22)), var(--column); border:1px solid var(--line)}
+.sw-open{width:16px; height:14px; background:var(--open); border:1px dashed var(--ink-soft)}
+
+/* ---------- 顶部设置区（吸顶、可收起） ---------- */
+.settings{position:sticky; top:0; z-index:20; margin:0 -14px; padding:0 14px; background:var(--paper);}
+.settings-box{background:var(--card); border:1px solid var(--line); border-radius:12px; overflow:hidden;}
+.settings-toggle{display:flex; align-items:center; gap:8px; width:100%; min-height:48px; padding:10px 14px; background:none; border:none; text-align:left;}
+.settings-summary{flex:1; min-width:0; font-size:14px; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.settings-summary b{font-weight:700}
+.chev{color:var(--ink-soft); transition:transform .15s; font-size:12px}
+.settings.open .chev{transform:rotate(180deg)}
+.settings-body{display:none; border-top:1px solid var(--line); padding:12px 14px 14px;}
+.settings.open .settings-body{display:block}
+.set-row{margin-bottom:14px}
+.set-row:last-child{margin-bottom:0}
+.set-label{display:block; font-size:13px; font-weight:700; color:var(--ink-soft); margin-bottom:6px; letter-spacing:.3px}
+.chips{display:flex; flex-wrap:wrap; gap:8px}
+.chip{border:1px solid var(--line); background:var(--chip); border-radius:8px; padding:8px 12px; min-height:42px; font-size:15px; font-variant-numeric:tabular-nums;}
+.chip.on{background:var(--accent-soft); border-color:var(--accent); color:var(--accent); font-weight:700}
+.custom-inputs{display:none; gap:8px; margin-top:8px}
+.custom-inputs.show{display:flex}
+.seg{display:flex; flex-wrap:wrap; gap:6px}
+.seg button{flex:1; min-width:52px; min-height:42px; padding:0 6px; border:1px solid var(--line); background:var(--chip); border-radius:8px; font-size:14px}
+.seg button.on{background:var(--accent-soft); border-color:var(--accent); color:var(--accent); font-weight:700}
+
+/* ---------- 卡片 ---------- */
+.card{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; margin-top:14px;}
+.card-head{display:flex; align-items:center; gap:8px}
+.card-name{flex:1; border:none; background:none; padding:4px 0; min-height:40px; font-size:18px; font-weight:800;}
+.card-name:focus{outline:2px solid var(--accent); border-radius:6px}
+.icon-btn{flex:none; width:40px; height:40px; border:1px solid var(--line); background:var(--chip); border-radius:8px; font-size:15px; color:var(--ink-soft)}
+.icon-btn:active{background:var(--danger-soft); color:var(--danger); border-color:var(--danger)}
+.card-sub{margin:0 0 10px; font-size:13px; color:var(--ink-soft); font-variant-numeric:tabular-nums}
+.dim-grid{display:grid; grid-template-columns:1fr 1fr; gap:8px}
+.dim-grid .field, .feat-inputs .field{min-width:0}
+.field{display:block}
+.field>span{display:block; font-size:12px; color:var(--ink-soft); margin-bottom:3px}
+.field.mini{flex:1; min-width:0}
+.field.mini>span{font-size:11px}
+.field.mini input{min-height:40px; padding:7px 8px; font-size:15px}
+
+/* 门 / 窗 / 立柱 折叠区 */
+.feat{margin-top:10px; border:1px solid var(--line); border-radius:10px; overflow:hidden}
+.feat summary{display:flex; align-items:center; gap:8px; list-style:none; padding:10px 12px; min-height:44px; background:var(--chip); font-size:15px; font-weight:700; cursor:pointer}
+.feat summary::-webkit-details-marker{display:none}
+.feat summary::after{content:"▾"; margin-left:auto; color:var(--ink-soft); font-size:12px}
+.feat[open] summary::after{transform:rotate(180deg)}
+.feat-val{margin-left:2px; font-size:12px; font-weight:400; color:var(--ink-soft)}
+.feat-val.lit{color:var(--accent); font-weight:700}
+.feat-body{padding:12px; display:flex; flex-direction:column; gap:10px}
+.switch-row{display:flex; align-items:center; justify-content:space-between; gap:10px; min-height:32px; font-size:15px}
+.switch{appearance:none; -webkit-appearance:none; flex:none; width:52px; height:30px; border-radius:15px; background:var(--line); position:relative; transition:background .15s; border:none; min-height:0; padding:0}
+.switch::after{content:""; position:absolute; top:3px; left:3px; width:24px; height:24px; border-radius:50%; background:#fff; transition:left .15s; box-shadow:0 1px 2px rgba(0,0,0,.25)}
+.switch:checked{background:var(--accent)}
+.switch:checked::after{left:25px}
+.feat-inputs{display:none; grid-template-columns:1fr 1fr; gap:8px}
+.feat-inputs.show{display:grid}
+.feat-inputs .wide{grid-column:1 / -1}
+.col-row{display:flex; flex-direction:column; gap:8px; border:1px solid var(--line); border-radius:8px; padding:8px}
+.col-top{display:flex; align-items:center; gap:8px}
+.col-tag{flex:none; font-size:12px; color:var(--ink-soft); font-weight:700}
+.seg.mini{gap:4px}
+.seg.mini button{flex:0 1 auto; min-width:0; min-height:30px; padding:0 9px; font-size:12px; border-radius:7px}
+.mini-add{border:1px dashed var(--accent); color:var(--accent); background:none; border-radius:8px; min-height:42px; font-size:14px; font-weight:700}
+.align-row{margin-top:10px}
+.align-row .set-label{margin-bottom:6px}
+
+/* 状态提示 */
+.statuses{margin-top:10px; display:flex; flex-direction:column; gap:6px}
+.st{font-size:13px; padding:7px 10px; border-radius:8px; line-height:1.45}
+.st.ok{color:var(--ok); background:var(--ok-soft)}
+.st.warn{color:var(--warn); background:var(--warn-soft)}
+.st.error{color:var(--danger); background:var(--danger-soft)}
+.st.info{color:var(--ink-soft); background:var(--chip)}
+
+/* 示意图 */
+.plot{margin-top:10px; background:var(--card); display:flex; justify-content:center}
+.plot canvas{display:block; max-width:100%}
+.plot-empty{margin:6px 0 2px; font-size:13px; color:var(--ink-soft); text-align:center}
+
+/* 增加墙 / 地面 */
+.add-row{display:flex; gap:10px; margin-top:16px}
+.room-net{margin-top:18px; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px}
+.rn-title{font-size:16px; margin:0 0 4px}
+.rn-sub{margin:0 0 10px; font-size:13px; color:var(--ink-soft)}
+.rn-plot{display:flex; justify-content:center; position:relative; overflow-x:auto}
+.rn-plot canvas{display:block}
+.rn-plot .plot-empty{position:absolute; top:50%; left:0; right:0; transform:translateY(-50%); margin:0; font-size:13px; color:var(--ink-soft); text-align:center}
+
+/* 三维整屋图 */
+.r3d-plot{position:relative; display:flex; justify-content:center; background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:hidden}
+.r3d-plot canvas{display:block; width:100%; height:auto; touch-action:none; cursor:grab}
+.r3d-plot canvas:active{cursor:grabbing}
+.r3d-plot .plot-empty{position:absolute; top:50%; left:0; right:0; transform:translateY(-50%); margin:0; font-size:13px; color:var(--ink-soft); text-align:center; padding:0 12px}
+.add-btn{flex:1; min-height:50px; border-radius:12px; border:1px solid var(--accent); background:var(--accent-soft); color:var(--accent); font-size:16px; font-weight:800}
+.app-foot{margin-top:18px; text-align:center; font-size:12px; color:var(--ink-soft)}
+/* ---- 本项目新增（复用不了的几处）---- */
+.plan-plot{position:relative; margin-top:10px}
+.plan-plot canvas{display:block; width:100%; border:1px solid var(--line); border-radius:10px; background:var(--joint);
+  touch-action:none; cursor:grab}
+.plan-plot canvas.dragging{cursor:grabbing}
+.plan-undo{position:absolute; top:8px; right:8px; z-index:2; min-height:36px; padding:0 12px;
+  border:1px solid var(--accent); background:var(--accent-soft); color:var(--accent);
+  border-radius:8px; font:inherit; font-size:13px; font-weight:800; box-shadow:0 2px 8px rgba(0,0,0,.12)}
+.plan-undo[hidden]{display:none}
+.room-row{display:flex; flex-direction:column; gap:8px; border:1px solid var(--line); border-radius:8px; padding:8px; margin-top:8px}
+.room-top{display:flex; align-items:center; gap:8px}
+.room-tag{flex:none; font-size:12px; color:var(--ink-soft); font-weight:700}
+.room-fields{display:grid; grid-template-columns:1fr 1fr; gap:8px}
+.cut-list{margin-top:10px; padding:10px 12px; background:var(--chip); border-radius:8px;
+  font-variant-numeric:tabular-nums; font-size:14px; line-height:1.7; white-space:pre-wrap; word-break:break-word}
+.cut-list b{color:var(--ink)}
+.cut-list .dim{color:var(--danger); font-weight:700}
+.plan-legend{margin-top:8px; font-size:12px; color:var(--ink-soft)}
+select{min-height:40px; padding:7px 8px; border:1px solid var(--line); border-radius:8px;
+  background:var(--card); color:var(--ink); width:100%; font:inherit}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="app-head">
+    <h1>全屋通铺</h1>
+    <p class="sub">一块砖、一张网铺满全屋：砖缝从客厅对到卧室，门口不断缝</p>
+  </header>
+
+  <section class="settings" id="settings">
+    <div class="settings-box">
+      <button class="settings-toggle" id="settingsToggle" aria-expanded="false">
+        <span class="settings-summary" id="settingsSummary">设置</span>
+        <span class="chev">▾</span>
+      </button>
+      <div class="settings-body" id="settingsBody">
+        <div class="set-row"><span class="set-label">地砖规格</span><div class="chips" id="tileChips"></div></div>
+        <div class="custom-inputs" id="tileCustom">
+          <label class="field mini"><span>长边</span><input type="text" inputmode="numeric" id="tileW" placeholder="如 800"></label>
+          <label class="field mini"><span>短边</span><input type="text" inputmode="numeric" id="tileH" placeholder="如 800"></label>
+        </div>
+        <div class="set-row"><span class="set-label">铺贴方向</span>
+          <div class="seg" id="dirSeg">
+            <button data-v="horizontal">长边横着</button>
+            <button data-v="vertical">长边竖着</button>
+          </div>
+        </div>
+        <div class="set-row"><span class="set-label">砖缝</span>
+          <div class="seg" id="groutSeg">
+            <button data-v="1">1 mm</button><button data-v="2">2 mm</button><button data-v="2.5">2.5 mm</button><button data-v="3">3 mm</button>
+          </div>
+        </div>
+        <div class="set-row"><span class="set-label">以哪间房为准起铺</span>
+          <select id="baseRoom"></select>
+        </div>
+        <div class="set-row"><span class="set-label">起铺方式</span>
+          <div class="seg" id="baseModeSeg">
+            <button data-v="center">居中对称</button><button data-v="edge">靠一边</button>
+          </div>
+        </div>
+        <div class="custom-inputs">
+          <label class="field mini"><span>整网右移（mm）</span><input type="text" inputmode="numeric" id="nudgeX" placeholder="0"></label>
+          <label class="field mini"><span>整网下移（mm）</span><input type="text" inputmode="numeric" id="nudgeY" placeholder="0"></label>
+        </div>
+        <div class="custom-inputs">
+          <label class="field mini"><span>墙厚（拖动吸附用，mm）</span><input type="text" inputmode="numeric" id="wallThk" placeholder="240"></label>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <main id="cards">
+    <section class="card">
+      <h2 class="card-title">全屋平面图</h2>
+      <p class="card-sub" id="planSub"></p>
+      <div class="plan-plot">
+        <canvas id="housePlan"></canvas>
+        <p class="plot-empty" id="planEmpty">先把地砖规格和房间尺寸填好</p>
+        <button type="button" class="plan-undo" id="dragUndo" hidden>↩ 撤销这次拖动</button>
+      </div>
+      <div class="plan-legend">浅色缝＝砖缝（全屋同一张网）ㆍ白框＝墙（房间之间的空档）ㆍ虚线框＝门洞（标「过门石」的门口在这里断开）<br>
+        👆 <b>按住房间直接在图上拖动</b>：靠到隔壁房间的墙边会自动吸附对齐（墙厚可在设置里改），拖完可在下面精确改数字。<br>
+        拖歪了不用慌：<b>点图右上角「↩ 撤销这次拖动」</b>就回到拖动前；手指还没松开时按 <b>Esc</b>（电脑）可以当场放弃。房间坐标不会再被自动拉回原点。</div>
+      <div class="statuses" id="statuses"></div>
+    </section>
+
+    <section class="card">
+      <h2 class="card-title">房间</h2>
+      <p class="card-sub">按户型图填：每间房离原点的左/上距离 + 长宽。房间之间空出来的地方就是墙。</p>
+      <div id="roomRows"></div>
+      <button class="mini-add" id="addRoom">＋ 添加房间</button>
+      <div class="statuses" id="roomStatuses"></div>
+    </section>
+
+    <section class="card">
+      <h2 class="card-title">门洞</h2>
+      <p class="card-sub">「通铺」＝砖缝从门口穿过去；「过门石」＝这里断开，另放一块过门石。</p>
+      <div id="doorRows"></div>
+      <button class="mini-add" id="addDoor">＋ 添加门洞</button>
+      <div class="statuses" id="doorStatuses"></div>
+    </section>
+
+    <section class="card">
+      <h2 class="card-title">下料清单</h2>
+      <p class="card-sub">整砖多少块、每种裁砖多少块。长按这段文字可以复制。</p>
+      <div class="cut-list" id="cutList">—</div>
+    </section>
+
+    <section class="card" id="roomDetailCard">
+      <h2 class="card-title">每间房明细</h2>
+      <div id="roomDetails"></div>
+    </section>
+  </main>
+
+  <p class="app-foot">本地优先 · 数据存本机浏览器 · 适合业主确认与现场下料</p>
+</div>
+
+<script>
+/* ============================================================
+ * 全屋通铺排砖 · 单文件工具
+ *
+ * 设计要点：**全屋只有一张砖网**（一个相位）。每个房间只是把这张网切出自己那一块，
+ * 所以砖缝在门口处天然连成一条线——这就是"通铺"。
+ *
+ * 下面 ENGINE 段里的纯函数不碰 DOM，house-test.js 会把它们抽出来在 node 里跑。
+ * 其中 laidDims / compatible / layoutAxis / rectPts / bboxOf / rectHit / polyAreaOf
+ * 是从卫生间工具 index.html 原样搬来的（那边有 300+ 条测试与模糊测试压着，
+ * 行为一致最重要）；将来改动请两个文件一起改。
+ * ============================================================ */
+/*ENGINE-START*/
+const Engine = (() => {
+
+  const numOr = (v, d) => (typeof v === "number" && isFinite(v)) ? v : d;
+  const mod = (v, m) => ((v % m) + m) % m;
+
+  const laidDims = (spec, direction) => {
+    const a = Math.min(spec.w, spec.h), b = Math.max(spec.w, spec.h);
+    return direction === "horizontal" ? { x:b, y:a } : { x:a, y:b };
+  };
+
+  const compatible = (a, b) => {
+    if (!(a > 0) || !(b > 0)) return false;
+    const isInt = x => x >= 1 && Math.abs(x - Math.round(x)) < 1e-6;
+    return isInt(a / b) || isInt(b / a);
+  };
+
+  const layoutAxis = (L, t, g, mode, phaseOverride) => {
+    if (!(L > 0) || !(t > 0)) return { segments:[], phase:0, step:0, cutLeft:null, cutRight:null, adjusted:false, narrow:false };
+    const p = t + g;
+    if (L < t) { // 墙比一块砖还窄：一整块裁砖覆盖
+      return { segments:[{ start:0, width:L, cut:true }], phase:0, step:p, cutLeft:L, cutRight:L, adjusted:false, narrow:true };
+    }
+    const build = (phase) => {
+      const segs = [];
+      const i0 = Math.floor((0 - phase) / p) - 1;
+      for (let i = i0; ; i++) {
+        const s0 = phase + i * p;
+        if (s0 >= L) break;
+        const v0 = Math.max(0, s0), v1 = Math.min(L, s0 + t);
+        if (v1 - v0 > 1e-9) {
+          const full = s0 >= -1e-9 && s0 + t <= L + 1e-9;
+          segs.push({ start:v0, width:v1 - v0, cut:!full });
+        }
+        if (segs.length > 600) { segs.dense = true; break; } // 极小砖防爆
+      }
+      return segs;
+    };
+    const edgeCuts = (segs) => {
+      let left = null, right = null;
+      if (segs.length) {
+        if (segs[0].cut) left = segs[0].width;
+        if (segs[segs.length - 1].cut) right = segs[segs.length - 1].width;
+      }
+      return { left, right };
+    };
+
+    let phase, adjusted = false;
+    if (phaseOverride != null) {
+      phase = ((phaseOverride % p) + p) % p;
+    } else {
+      const nFull = Math.floor((L + g) / p);
+      const F = nFull * p - g;              // 整砖块总宽
+      const base = mode === "center" ? (((L - F) / 2) % p + p) % p : 0;
+      phase = base;
+      const c0 = edgeCuts(build(phase));
+      // 裁砖 1/3 规矩：任一边缘裁砖 < 整砖 1/3 → 整体平移半个模块
+      if ((c0.left != null && c0.left < t / 3) || (c0.right != null && c0.right < t / 3)) {
+        phase = (base + p / 2) % p;
+        adjusted = true;
+      }
+    }
+    const segments = build(phase);
+    const cuts = edgeCuts(segments);
+    return { segments, phase, step:p, cutLeft:cuts.left, cutRight:cuts.right, adjusted, narrow:false };
+  };
+
+  const rectPts = (r) => [
+    { x:r.x, y:r.y }, { x:r.x + r.w, y:r.y },
+    { x:r.x + r.w, y:r.y + r.h }, { x:r.x, y:r.y + r.h },
+  ];
+
+  const bboxOf = (pts) => {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const p of pts) {
+      x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y);
+      x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y);
+    }
+    return { x:x0, y:y0, w:x1 - x0, h:y1 - y0 };
+  };
+
+  const rectHit = (a, b) =>
+    a.x < b.x + b.w - 1e-9 && b.x < a.x + a.w - 1e-9 &&
+    a.y < b.y + b.h - 1e-9 && b.y < a.y + a.h - 1e-9;
+
+  const polyAreaOf = (pts) => {
+    let s = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      s += a.x * b.y - b.x * a.y;
+    }
+    return Math.abs(s) / 2;
+  };
+
+  /* ---- 房间 / 全屋包围盒 ---- */
+  const roomRect = (r) => ({ x:numOr(r && r.x, 0), y:numOr(r && r.y, 0),
+                             w:numOr(r && r.w, 0), h:numOr(r && r.h, 0) });
+  const roomName = (r) => (r && (r.name || "").trim()) || (r && r.id) || "未命名";
+  const spanOv = (a0, a1, b0, b1) => Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
+  const rectOverlapArea = (a, b) => spanOv(a.x, a.x + a.w, b.x, b.x + b.w) *
+                                     spanOv(a.y, a.y + a.h, b.y, b.y + b.h);
+
+  /* 全屋包围盒（mm）：用来定平面图的缩放 */
+  const roomsBBox = (rooms) => {
+    const rs = (rooms || []).map(roomRect).filter(r => r.w > 0 && r.h > 0);
+    if (!rs.length) return null;
+    const x0 = Math.min(...rs.map(r => r.x)), y0 = Math.min(...rs.map(r => r.y));
+    const x1 = Math.max(...rs.map(r => r.x + r.w)), y1 = Math.max(...rs.map(r => r.y + r.h));
+    return { x:x0, y:y0, w:x1 - x0, h:y1 - y0 };
+  };
+
+  /* ---- 起铺基准：全屋格线原点（全局坐标）----
+   * 以"参考房"为准跑一次 layoutAxis（含"边缘裁砖 ≥ 1/3"那条老规矩），
+   * 再折算到全局坐标；nudge 是师傅的整体微调。
+   * 全屋就这一个原点——其余房间都由它推出来，通缝就是这么来的。 */
+  const basePhase = (rooms, baseId, t, g, mode, nudge) => {
+    const list = (rooms || []).filter(r => { const rr = roomRect(r); return rr.w > 0 && rr.h > 0; });
+    if (!list.length || !t || !(t.x > 0) || !(t.y > 0)) return { ok:false };
+    const base = list.find(r => r.id === baseId) || list[0];
+    const br = roomRect(base);
+    const ax = layoutAxis(br.w, t.x, g, mode || "center");
+    const ay = layoutAxis(br.h, t.y, g, mode || "center");
+    return {
+      ok:true, baseId:base.id, baseName:roomName(base), baseRect:br,
+      GX: br.x + ax.phase + numOr(nudge && nudge.x, 0),
+      GY: br.y + ay.phase + numOr(nudge && nudge.y, 0),
+      baseAx: ax, baseAy: ay,
+    };
+  };
+
+  /* ---- 全局格线在区间 [a,b] 里的所有砖（坐标一律用**全局** mm）----
+   * i 是格线序号：全屋同一块砖在不同房间里序号相同 → 汇总时靠它认成一块。
+   * cut=true 表示这块砖被区间边界切到了（即需要裁）。 */
+  const latticeSegments = (G, t, g, a, b) => {
+    const p = t + g, segments = [];
+    if (!(t > 0) || !(b - a > 1e-9)) return { segments, phase:G, step:p, cutLeft:null, cutRight:null };
+    const k0 = Math.floor((a - G) / p) - 1;
+    for (let k = k0; ; k++) {
+      const s0 = G + k * p;
+      if (s0 >= b) break;
+      const v0 = Math.max(a, s0), v1 = Math.min(b, s0 + t);
+      if (v1 - v0 > 1e-9) {
+        segments.push({ start:v0, width:v1 - v0, i:k,
+                        cut: !(s0 >= a - 1e-9 && s0 + t <= b + 1e-9) });
+      }
+      if (segments.length > 4000) { segments.dense = true; break; }   // 极小砖防爆
+    }
+    const cutLeft  = segments.length && segments[0].cut ? segments[0].width : null;
+    const cutRight = segments.length && segments[segments.length - 1].cut ? segments[segments.length - 1].width : null;
+    return { segments, phase:G, step:p, cutLeft, cutRight };
+  };
+
+  /* 把全局轴转成"房间局部轴"（绘图用：坐标回到 0 起） */
+  const toLocal = (ax, origin) => ({ ...ax, segments: ax.segments.map(s => ({ ...s, start: s.start - origin })) });
+
+  /* ---- 门洞：从两间房的几何反推洞口矩形 ----
+   * at = 洞口中心离 A 房"沿共用边那一侧的起点"（左右相邻时=离 A 上墙；上下相邻时=离 A 左墙）
+   * 返回 { ok, rect, vertical, wallT, span }；不合法时给中文原因。 */
+  const doorRect = (a, b, at, width) => {
+    const A = roomRect(a), B = roomRect(b);
+    if (!(A.w > 0 && A.h > 0 && B.w > 0 && B.h > 0)) return { ok:false, why:"两间房的尺寸还没填全" };
+    if (!(width > 0)) return { ok:false, why:"门宽要填正整数（毫米）" };
+    const yOv = spanOv(A.y, A.y + A.h, B.y, B.y + B.h);
+    const xOv = spanOv(A.x, A.x + A.w, B.x, B.x + B.w);
+    // 左右相邻（竖直缝）：两房在 x 上分开、y 上有重叠
+    let vGap = null;
+    if (B.x >= A.x + A.w - 1e-6) vGap = [A.x + A.w, B.x];
+    else if (B.x + B.w <= A.x + 1e-6) vGap = [B.x + B.w, A.x];
+    // 上下相邻（水平缝）：两房在 y 上分开、x 上有重叠
+    let hGap = null;
+    if (B.y >= A.y + A.h - 1e-6) hGap = [A.y + A.h, B.y];
+    else if (B.y + B.h <= A.y + 1e-6) hGap = [B.y + B.h, A.y];
+    const useV = vGap && yOv > 1, useH = hGap && xOv > 1;
+    if (!useV && !useH) return { ok:false, why:"这两间房不相邻（中间没有共用的墙），门洞放不下" };
+    const vertical = useV && (!useH || yOv >= xOv);
+    const gap = vertical ? vGap : hGap;
+    const wallT = gap[1] - gap[0];
+    if (wallT <= 1e-6) return { ok:false, why:"两间房贴在一起了（中间没有墙），不需要门洞" };
+    const lo = vertical ? Math.max(A.y, B.y) : Math.max(A.x, B.x);
+    const hi = vertical ? Math.min(A.y + A.h, B.y + B.h) : Math.min(A.x + A.w, B.x + B.w);
+    const start = vertical ? A.y : A.x;
+    const c = start + numOr(at, 0);
+    if (!(c - width / 2 >= lo - 1e-6 && c + width / 2 <= hi + 1e-6)) {
+      return { ok:false, why:`门洞超出两间房的共用段（这里可用 ${Math.round(lo - start)}~${Math.round(hi - start)}mm）` };
+    }
+    const rect = vertical
+      ? { x:gap[0], y:c - width / 2, w:wallT, h:width }
+      : { x:c - width / 2, y:gap[0], w:width, h:wallT };
+    return { ok:true, rect, vertical, wallT, span:{ lo, hi }, at:c };
+  };
+
+  /* ---- 拖动吸附：给"正在拖的房间"找一个吸附位置 ----
+   * 优先级：**贴墙**（对方边缘 ± 墙厚）> **对齐**（两边齐平 / 直接贴死）> **10mm 网格**。
+   * 返回 { x, y, guides, onGridX, onGridY }：
+   *   guides 是给绘图用的提示线（axis + at + 跟谁对齐），拖动时画出来，
+   *   onGridX/Y 表示这一轴没吸到房间、退成了网格吸附（不画提示线）。
+   * 纯函数、不碰 DOM，整段可以在 node 里测。 */
+  const snapRoom = (rooms, id, want, opts) => {
+    const o = opts || {};
+    const wall = numOr(o.wall, 240);
+    const tol = numOr(o.tol, 8);              // 吸附阈值（mm，调用方按屏幕像素折算后传进来）
+    const grid = numOr(o.grid, 10);
+    const me = (rooms || []).find(r => r.id === id);
+    const out = { x:numOr(want && want.x, 0), y:numOr(want && want.y, 0), guides:[], onGridX:false, onGridY:false };
+    if (!me) return out;
+    const R = roomRect(me);
+    if (!(R.w > 0 && R.h > 0)) return out;
+    const others = (rooms || []).filter(r => r.id !== id).map(r => ({ id:r.id, rect:roomRect(r) }))
+                                .filter(x => x.rect.w > 0 && x.rect.h > 0);
+    // 一个轴上收集所有候选位置，挑最近的
+    const best = (axis, wantV, size) => {
+      let pick = null;
+      others.forEach(({ id:oid, rect }) => {
+        const cands = axis === "x"
+          ? [ [rect.x, "align", 0], [rect.x + rect.w, "align", 0],
+              [rect.x + rect.w + wall, "wall", wall], [rect.x - size - wall, "wall", -wall],
+              [rect.x + rect.w - size, "align", 0], [rect.x - size, "align", 0] ]
+          : [ [rect.y, "align", 0], [rect.y + rect.h, "align", 0],
+              [rect.y + rect.h + wall, "wall", wall], [rect.y - size - wall, "wall", -wall],
+              [rect.y + rect.h - size, "align", 0], [rect.y - size, "align", 0] ];
+        cands.forEach(([v, kind]) => {
+          const d = Math.abs(v - wantV);
+          if (d <= tol && (!pick || d < pick.d)) pick = { v, d, kind, with:oid, gap:kind === "wall" ? wall : 0 };
+        });
+      });
+      return pick;
+    };
+    const bx = best("x", out.x, R.w);
+    const by = best("y", out.y, R.h);
+    if (bx) { out.x = bx.v; out.guides.push({ axis:"x", at:bx.v, kind:bx.kind, with:bx.with, gap:bx.gap }); }
+    else { out.x = Math.round(out.x / grid) * grid; out.onGridX = true; }
+    if (by) { out.y = by.v; out.guides.push({ axis:"y", at:by.v, kind:by.kind, with:by.with, gap:by.gap }); }
+    else { out.y = Math.round(out.y / grid) * grid; out.onGridY = true; }
+    return out;
+  };
+
+  /* 把所有房间整体平移，让最小坐标回到 0（拖到原点左边/上边之后整理一下，数字不至于变负数） */
+  const reOrigin = (rooms) => {
+    const rs = (rooms || []).map(roomRect).filter(r => r.w > 0 && r.h > 0);
+    if (!rs.length) return { dx:0, dy:0, moved:false };
+    const dx = -Math.min(...rs.map(r => r.x)), dy = -Math.min(...rs.map(r => r.y));
+    if (dx === 0 && dy === 0) return { dx:0, dy:0, moved:false };
+    return { dx, dy, moved:true };
+  };
+
+  /* ---- 总入口：算全屋 ---- */
+  const housePlan = (state) => {
+    const out = { ok:false, errors:[], warnings:[], rooms:[], doors:[], region:[], summary:null, grid:null, tile:null };
+    const s = (state && state.settings) || {};
+    const spec = s.floorTile;
+    if (!spec || !(spec.w > 0) || !(spec.h > 0)) { out.errors.push("先在顶部选地砖规格（没规格就不出图）"); return out; }
+    const t = laidDims(spec, s.direction);
+    const g = numOr(s.grout, 2);
+    out.tile = { x:t.x, y:t.y, grout:g };
+
+    const all = ((state && state.rooms) || []).map(r => ({ ...r, rect:roomRect(r) }));
+    const rooms = all.filter(r => r.rect.w > 0 && r.rect.h > 0);
+    if (!rooms.length) { out.errors.push("至少填一间房（长、宽都要填正整数）"); return out; }
+    const bad = all.filter(r => !(r.rect.w > 0 && r.rect.h > 0));
+    bad.forEach(r => out.warnings.push(`「${roomName(r)}」的长或宽还没填好，先不参与排版`));
+
+    for (let i = 0; i < rooms.length; i++) for (let j = i + 1; j < rooms.length; j++) {
+      const ov = rectOverlapArea(rooms[i].rect, rooms[j].rect);
+      if (ov > 1e-6) out.errors.push(`「${roomName(rooms[i])}」和「${roomName(rooms[j])}」重叠了（${Math.round(ov / 1000)} 千 mm²），请改坐标`);
+    }
+    if (out.errors.some(e => e.includes("重叠"))) return out;
+
+    const bp = basePhase(rooms, s.baseRoom, t, g, s.baseMode, { x:s.nudgeX, y:s.nudgeY });
+    if (!bp.ok) return out;
+    out.grid = { GX:bp.GX, GY:bp.GY, pX:t.x + g, pY:t.y + g, baseId:bp.baseId, baseName:bp.baseName };
+
+    // 门洞
+    for (const d of ((state && state.doors) || [])) {
+      const A = rooms.find(r => r.id === d.from), B = rooms.find(r => r.id === d.to);
+      if (!A || !B) { out.errors.push("有门洞指向了不存在或被删掉的房间，请重选"); continue; }
+      if (A === B) { out.errors.push("门洞要选两间**不同**的房"); continue; }
+      const dr = doorRect(A, B, numOr(d.at, 0), numOr(d.width, 0));
+      if (!dr.ok) { out.errors.push(`门洞「${roomName(A)} → ${roomName(B)}」：${dr.why}`); continue; }
+      out.doors.push({ id:d.id, from:A.id, to:B.id, fromName:roomName(A), toName:roomName(B),
+                       at:numOr(d.at, 0), width:numOr(d.width, 0), threshold:!!d.threshold,
+                       rect:dr.rect, vertical:dr.vertical, wallT:dr.wallT });
+    }
+
+    // 要铺的区域 = 各房间 + 「通铺」门口（过门石门口不铺砖，另给过门石尺寸）
+    out.region = rooms.map(r => r.rect).concat(out.doors.filter(d => !d.threshold).map(d => d.rect));
+
+    /* 全屋同一块砖的归并：按格线序号 (i,j) 认。
+     * 一块砖可能落在两间房里（跨门口/跨墙）——按房间各算一次就会把一块砖数成两块。 */
+    const cells = new Map();
+    const addCell = (i, j, piece, kind) => {
+      const key = i + ":" + j;
+      let c = cells.get(key);
+      if (!c) { c = { i, j, pieces:[], area:0, kinds:new Set() }; cells.set(key, c); }
+      c.pieces.push(piece); c.area += piece.w * piece.h; c.kinds.add(kind);
+    };
+
+    // 每间房：把自己区间喂进全局格线
+    for (const r of rooms) {
+      const R = r.rect;
+      const gx = latticeSegments(bp.GX, t.x, g, R.x, R.x + R.w);
+      const gy = latticeSegments(bp.GY, t.y, g, R.y, R.y + R.h);
+      const tiles = [];
+      for (const sy of gy.segments) for (const sx of gx.segments) {
+        tiles.push({ x:sx.start, y:sy.start, w:sx.width, h:sy.width, gi:sx.i, gj:sy.i,
+                     cut: !!(sx.cut || sy.cut) });
+        addCell(sx.i, sy.i, { x:sx.start, y:sy.start, w:sx.width, h:sy.width }, "room");
+      }
+      const warn = [];
+      const cutLo = Math.min(
+        gx.cutLeft != null ? gx.cutLeft : Infinity, gx.cutRight != null ? gx.cutRight : Infinity,
+        gy.cutLeft != null ? gy.cutLeft : Infinity, gy.cutRight != null ? gy.cutRight : Infinity);
+      if (isFinite(cutLo) && cutLo < Math.min(t.x, t.y) / 3)
+        warn.push(`边缘裁砖最窄 ${Math.round(cutLo)}mm（不足 1/3 砖），请现场定夺`);
+      if (gx.segments.dense || gy.segments.dense)
+        warn.push("这块砖太小/房间太大，砖格太密，图上只画示意、尺寸看清单");
+      out.rooms.push({ id:r.id, name:roomName(r), rect:R,
+                       ax:toLocal(gx, R.x), ay:toLocal(gy, R.y), gx, gy, tiles, warn });
+    }
+    // 通铺门口那一段也算进砖网（门槛处不断缝）
+    for (const d of out.doors.filter(x => !x.threshold)) {
+      const D = d.rect;
+      const gx = latticeSegments(bp.GX, t.x, g, D.x, D.x + D.w);
+      const gy = latticeSegments(bp.GY, t.y, g, D.y, D.y + D.h);
+      for (const sy of gy.segments) for (const sx of gx.segments)
+        addCell(sx.i, sy.i, { x:sx.start, y:sy.start, w:sx.width, h:sy.width }, "door");
+    }
+
+    // 逐块判定：整砖 / 裁砖
+    const tileArea = t.x * t.y;
+    let wholeCount = 0, crossDoorWhole = 0, areaMM = 0;
+    const cuts = [], notches = [];
+    for (const c of cells.values()) {
+      const full = Math.abs(c.area - tileArea) < 1e-6;
+      if (full) {
+        wholeCount++;
+        if (c.kinds.has("door")) crossDoorWhole++;
+        continue;
+      }
+      const hasDoor = c.kinds.has("door");
+      const pieces = c.pieces;
+      if (hasDoor) {
+        // 跨门口的砖：缝穿过去，但门口比砖窄时要开缺口（两侧避开墙）
+        notches.push({ i:c.i, j:c.j, area:c.area, pieces:pieces.length });
+        cuts.push({ kind:"notch", count:1, w:t.x, h:t.y, area:c.area, pieces });
+      } else if (pieces.length > 1) {
+        // 被墙切成几块的砖：每一块都是独立要裁的
+        pieces.forEach(p => cuts.push({ kind:"piece", count:1, w:p.w, h:p.h, area:p.w * p.h, pieces:[p] }));
+      } else {
+        const p = pieces[0];
+        cuts.push({ kind:"piece", count:1, w:p.w, h:p.h, area:p.w * p.h, pieces });
+      }
+    }
+    for (const rect of out.region) areaMM += rect.w * rect.h;
+
+    // 按尺寸归并裁块（同一尺寸合并计数）
+    const groupMap = new Map();
+    for (const c of cuts) {
+      const key = c.kind === "notch" ? "notch" : `${Math.round(c.w)}×${Math.round(c.h)}`;
+      let it = groupMap.get(key);
+      if (!it) { it = { kind:c.kind, w:Math.round(c.w), h:Math.round(c.h), count:0, area:0 }; groupMap.set(key, it); }
+      it.count += c.count; it.area += c.area;
+    }
+    const cutGroups = [...groupMap.values()].sort((a, b) => (b.w * b.h) - (a.w * a.h));
+    const pieceCount = cuts.reduce((n, c) => n + c.count, 0);
+    const cutArea = cuts.reduce((a, c) => a + c.area, 0);
+    /* 校验用：整砖面积 + 裁块面积 == 砖面合计 == 铺贴面积 − 砖缝面积
+     * （砖格之间那几毫米缝不铺砖，所以砖面合计天然比房间面积小一点点，这是对的） */
+    const tiledArea = wholeCount * tileArea + cutArea;
+    out.summary = {
+      tile: { x:t.x, y:t.y, grout:g },
+      areaMM,
+      tiledArea,
+      groutArea: areaMM - tiledArea,
+      wholeCount, crossDoorWhole, pieceCount,
+      cutGroups,
+      notchCount: notches.length,
+      buyCount: Math.ceil((wholeCount + pieceCount) * 1.05),
+      checkArea: tiledArea,
+    };
+    out.ok = out.errors.length === 0;
+    return out;
+  };
+
+  return { numOr, mod, roomRect, roomName, roomsBBox, rectOverlapArea, basePhase,
+           latticeSegments, toLocal, doorRect, housePlan,
+           snapRoom, reOrigin };
+})();
+if (typeof module !== "undefined" && module.exports) module.exports = Engine;
+/*ENGINE-END*/
+
+/* ============================================================
+ * 绘图原语（从 index.html 原样搬来，保证两个工具长得一样）
+ * ============================================================ */
+function setupCanvas(canvas, wMM, hMM){
+  const maxW = canvas.parentElement.clientWidth || 320;
+  const maxH = 460;
+  const s = Math.min(maxW / wMM, maxH / hMM);
+  const cssW = Math.max(1, Math.round(wMM * s)), cssH = Math.max(1, Math.round(hMM * s));
+  const dpr = window.devicePixelRatio || 1;
+  canvas.style.width = cssW + "px"; canvas.style.height = cssH + "px";
+  canvas.width = Math.round(cssW * dpr); canvas.height = Math.round(cssH * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, s, cssW, cssH };
+}
+
+function paintTiles(ctx, xe, ye, s, W, H, minG){
+  ctx.fillStyle = cssVar("--tile");
+  if (xe.segments.dense || ye.segments.dense) { // 砖太小、数量太多：整体示意
+    ctx.fillRect(0, 0, W || 0, H || 0);
+    return;
+  }
+  // minG>0 时：砖缝在贴图里的像素宽小于 minG 会把每块砖四边内缩 minG/2，
+  // 让砖缝至少 minG 像素，肉眼能看出砖的尺寸（仅 3D 传 >0，2D 不受影响）。
+  const pad = (minG && minG > 0) ? minG / 2 : 0;
+  for (const ys of ye.segments) {
+    for (const xs of xe.segments) {
+      const wpx = xs.width * s, hpx = ys.width * s;
+      if (pad > 0 && pad * 2 < Math.min(wpx, hpx)) {
+        ctx.fillRect(xs.start * s + pad, ys.start * s + pad, wpx - 2 * pad, hpx - 2 * pad);
+      } else {
+        ctx.fillRect(xs.start * s, ys.start * s, wpx, hpx);
+      }
+    }
+  }
+}
+
+function paintCuts(ctx, xe, ye, s, W, H, map, opts){
+  const M = map || ((x, y) => ({ x, y }));
+  const cut = cssVar("--danger");
+  const pad = 14; // 尺寸线离边缘的距离（也顺带避开地面的前/后/左/右徽标）
+  const skipHeight = !!(opts && opts.skipHeight);
+  const sink = opts && opts.sink;   // 给了就把标签攒进去交给 chipRow 统一排（地面图），否则就地画白底标签（墙面图）
+  ctx.save();
+  ctx.font = '700 12px -apple-system, "PingFang SC", sans-serif';
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  const pillW = (txt) => ctx.measureText(txt).width + 10;
+  const pill = (cx, cy, txt) => {
+    const p = M(cx, cy);
+    const w = pillW(txt);
+    ctx.fillStyle = "rgba(255,255,255,0.92)";
+    ctx.fillRect(p.x - w/2, p.y - 10, w, 20);
+    ctx.fillStyle = cut;
+    ctx.fillText(txt, p.x, p.y);
+  };
+
+  // 1) 收集所有标注：主尺寸线两端点 + 标签默认落点
+  const marks = [];
+  const add = (axis, x0, x1, y0, y1, vx, vy, txt) =>
+    marks.push({ axis, x0, x1, y0, y1, cx: vx, cy: vy, txt, w: pillW(txt), h: 20 });
+
+  // 横向裁砖（宽）
+  xe.segments.forEach((xs) => {
+    if (!xs.cut) return;
+    const x0 = xs.start * s, x1 = (xs.start + xs.width) * s;
+    const cy = (xs.start < 1) ? pad : H - pad;         // 左缘→顶；右缘→底
+    add("h", x0, x1, cy, cy, (x0 + x1) / 2, cy, String(Math.round(xs.width)));
+  });
+  // 纵向裁砖（高）；墙面预览可跳过
+  if (!skipHeight) ye.segments.forEach((ys) => {
+    if (!ys.cut) return;
+    const y0 = ys.start * s, y1 = (ys.start + ys.width) * s;
+    const cx = (ys.start < 1) ? pad : W - pad;         // 上缘→左；下缘→右
+    add("v", cx, cx, y0, y1, cx, (y0 + y1) / 2, String(Math.round(ys.width)));
+  });
+
+  // 2) 先把贴边的标签夹回画布内（贴边标签会略微内移）
+  marks.forEach((m) => {
+    m.cx = Math.max(m.w / 2 + 2, Math.min(W - m.w / 2 - 2, m.cx));
+    m.cy = Math.max(m.h / 2 + 2, Math.min(H - m.h / 2 - 2, m.cy));
+  });
+  // 3) 解角部重叠：宽标靠某角、高标也靠某角（如地面左上角）会挤在一起；
+  //    把高标整体挪到对侧的那条垂直边（顶→右、底→左），等于"挪到另一个格子"，
+  //    既一定不重叠，又仍然量的是同一段裁砖的高度，语义不变。
+  const overlap = (a, b) =>
+    Math.abs(a.cx - b.cx) < (a.w + b.w) / 2 &&
+    Math.abs(a.cy - b.cy) < (a.h + b.h) / 2;
+  const flipH = (m) => {
+    const newCx = (m.x0 < W / 2) ? W - pad : pad;   // 对侧垂直边
+    m.x0 = m.x1 = newCx;
+    m.cx = Math.max(m.w / 2 + 2, Math.min(W - m.w / 2 - 2, newCx));
+  };
+  // 最多翻两次以防翻转后又撞上另一侧的宽标
+  for (let pass = 0; pass < 2; pass++) {
+    let any = false;
+    for (let i = 0; i < marks.length; i++) for (let j = 0; j < marks.length; j++) {
+      if (i === j) continue;
+      const a = marks[i], b = marks[j];
+      if (!(a.axis !== b.axis && overlap(a, b))) continue;
+      // 翻动“高度”标；优先翻 b 是高度的；若 a 也是高度，翻 a 即可
+      const h = a.axis === "v" ? a : b;
+      flipH(h);
+      any = true;
+    }
+    if (!any) break;
+  }
+
+  // 4) 画主尺寸线 + 两端短刻度 + 标签
+  marks.forEach((m) => {
+    ctx.strokeStyle = cut; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(m.x0, m.y0); ctx.lineTo(m.x1, m.y1);            // 主尺寸线
+    if (m.axis === "h") {
+      ctx.moveTo(m.x0, m.y0 - 5); ctx.lineTo(m.x0, m.y0 + 5);  // 左端刻度
+      ctx.moveTo(m.x1, m.y1 - 5); ctx.lineTo(m.x1, m.y1 + 5);  // 右端刻度
+    } else {
+      ctx.moveTo(m.x0 - 5, m.y0); ctx.lineTo(m.x0 + 5, m.y0);  // 上端刻度
+      ctx.moveTo(m.x1 - 5, m.y1); ctx.lineTo(m.x1 + 5, m.y1);  // 下端刻度
+    }
+    ctx.stroke();
+    if (sink) { const p = M(m.cx, m.cy); sink.push({ txt: m.txt, color: cut, ax: p.x, ay: p.y }); }
+    else pill(m.cx, m.cy, m.txt);
+  });
+  ctx.restore();
+}
+
+function dashedRect(ctx, x, y, w, h, color){
+  ctx.save();
+  ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.setLineDash([5,4]);
+  ctx.strokeRect(x, y, w, h);
+  ctx.restore();
+}
+
+function labelText(ctx, text, cx, cy, color){
+  ctx.save();
+  ctx.fillStyle = color;
+  ctx.font = '700 13px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText(text, cx, cy);
+  ctx.restore();
+}
+
+function chipText(ctx, text, cx, cy, color, W, H){
+  ctx.save();
+  ctx.font = '700 12px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  const w = ctx.measureText(text).width + 10, h = 18;
+  const x = Math.max(w / 2 + 2, Math.min(W - w / 2 - 2, cx));
+  const y = Math.max(h / 2 + 2, Math.min(H - h / 2 - 2, cy));
+  ctx.fillStyle = cssVar("--paper");
+  ctx.fillRect(x - w / 2, y - h / 2, w, h);
+  ctx.strokeStyle = cssVar("--line"); ctx.lineWidth = 1;
+  ctx.strokeRect(x - w / 2, y - h / 2, w, h);
+  ctx.fillStyle = color;
+  ctx.fillText(text, x, y + 0.5);
+  ctx.restore();
+}
+
+function chipRow(ctx, items, W, H){
+  if (!items || !items.length) return;
+  ctx.save();
+  ctx.font = '700 12px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+  const clampX = (c, x) => Math.max(c.w / 2 + 2, Math.min(W - c.w / 2 - 2, x));
+  const clampY = (c, y) => Math.max(c.h / 2 + 2, Math.min(H - c.h / 2 - 2, y));
+  items.forEach((c) => {
+    if (c.ghost) { c.x = clampX(c, c.x); c.y = clampY(c, c.y); return; } // 占位项：不画也不挪（徽标/柱字）
+    c.w = ctx.measureText(c.txt).width + 10; c.h = 18;
+    c.x = clampX(c, c.ax); c.y = clampY(c, c.ay);
+  });
+  ctx.restore();
+  const hit = (a, b) =>
+    Math.abs(a.x - b.x) * 2 < a.w + b.w + 6 && Math.abs(a.y - b.y) * 2 < a.h + b.h + 6;
+  const ovl = (a, b) => Math.max(0, (a.w + b.w) / 2 - Math.abs(a.x - b.x))
+                      * Math.max(0, (a.h + b.h) / 2 - Math.abs(a.y - b.y));
+  const freeAt = (b, x, y) => !items.some((o) => o !== b && hit(o, { x, y, w: b.w, h: b.h }));
+  const cost = (b, x, y) => items.reduce((sum, o) =>
+    sum + (o === b ? 0 : ovl(o, { x, y, w: b.w, h: b.h })), 0);
+  for (let pass = 0; pass < 12; pass++) {                   // 多轮推开，直到互不相压
+    let any = false;
+    for (let i = 0; i < items.length; i++) for (let j = i + 1; j < items.length; j++) {
+      const a = items[i], b = items[j];                     // 只推后面的，第一个守住砖中心
+      if ((a.ghost && b.ghost) || !hit(a, b)) continue;
+      const m = b.ghost ? a : b, o = m === a ? b : a;       // 占位项不挪，只推真标签
+      any = true;
+      const dy = (o.h + m.h) / 2 + 8 - Math.abs(m.y - o.y); // 竖向让开要挪多少
+      const dx = (o.w + m.w) / 2 + 8 - Math.abs(m.x - o.x); // 横向让开要挪多少
+      const sy = m.y >= o.y ? dy : -dy, sx = m.x >= o.x ? dx : -dx;
+      /* 候选落点：离 a 远的那侧优先、近的那侧兜底，距离 1、2、3 倍，由近到远试，
+       * 取第一个"挪过去谁都不压"的。
+       * 只试最短的那一步不够：挤在墙角时那个方向往往只是一条窄缝（甚至已经顶到
+       * 画布边、想让都让不动），挪过去又撞上别人、下一轮被推回来，来回抖到轮数
+       * 用完还压着——所以反向（绕过 a 到另一侧）也必须试。 */
+      const cands = [];
+      const dirs = dy <= dx ? [[0, sy], [0, -sy], [sx, 0], [-sx, 0]]
+                            : [[sx, 0], [-sx, 0], [0, sy], [0, -sy]];
+      for (const k of [1, 2, 3]) for (const [ox, oy] of dirs)
+        cands.push([clampX(m, m.x + ox * k), clampY(m, m.y + oy * k)]);
+      const free = cands.filter(([nx, ny]) => freeAt(m, nx, ny));
+      const pick = free.length ? free[0]                    // 有空位就用最近的那个
+        : cands.reduce((p, q) =>                            // 都没有：挑压得最轻的
+            cost(m, q[0], q[1]) < cost(m, p[0], p[1]) ? q : p);
+      m.x = pick[0]; m.y = pick[1];
+    }
+    if (!any) break;
+  }
+  for (const c of items) {
+    if (c.ghost) continue;
+    if (Math.hypot(c.x - c.ax, c.y - c.ay) > 6) {           // 挪过位 → 拉引线指回那块砖
+      ctx.save();
+      ctx.strokeStyle = c.color; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.moveTo(c.ax, c.ay); ctx.lineTo(c.x, c.y); ctx.stroke();
+      ctx.restore();
+    }
+    chipText(ctx, c.txt, c.x, c.y, c.color, W, H);
+  }
+}
+
+function chipTo(ctx, sink, txt, color, ax, ay, W, H){
+  if (sink) sink.push({ txt, color, ax, ay });
+  else chipText(ctx, txt, ax, ay, color, W, H);
+}
+
+const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
+
+const parseMM = (v) => {
+  const s = String(v == null ? "" : v).trim();
+  if (!/^\d+$/.test(s)) return NaN;
+  return parseInt(s, 10);
+};
+
+const $ = (sel, root) => (root || document).querySelector(sel);
+
+const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
+
+/* ============================================================
+ * 界面
+ * ============================================================ */
+const STORE_KEY = "houseTileV1";        // 与卫生间工具（tilePreviewV12）分开存，互不干扰
+const TILE_PRESETS = ["800×800", "600×600", "750×1500", "600×1200", "900×900", "300×300"];
+
+/* 初始给一套示例户型（客厅/次卧/主卧），照自己的户型改数字即可 */
+const defaultState = () => ({
+  settings: { floorTile:null, direction:"horizontal", grout:2,
+              baseRoom:null, baseMode:"center", nudgeX:0, nudgeY:0, showCuts:false, wall:240 },
+  seq: 4,
+  rooms: [
+    { id:"r1", name:"客厅", x:0,    y:0,    w:4200, h:3600 },
+    { id:"r2", name:"次卧", x:4440, y:0,    w:3000, h:3600 },
+    { id:"r3", name:"主卧", x:0,    y:3840, w:3300, h:3000 },
+  ],
+  doors: [ { id:"d1", from:"r1", to:"r3", at:1500, width:900, threshold:false } ],
+});
+
+function load(){
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    if (!raw) return null;
+    const d = JSON.parse(raw);
+    if (!d || !d.settings || !Array.isArray(d.rooms)) return null;
+    return d;
+  } catch (e) { return null; }
+}
+function save(){ try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch (e) {} }
+
+let state = load() || defaultState();
+
+/* ---------------- 顶部设置 ---------------- */
+function segInto(host, items, cur, onPick){
+  host.innerHTML = "";
+  items.forEach(([v, label]) => {
+    const b = el("button", String(cur) === String(v) ? "on" : "", label);
+    b.onclick = () => { onPick(v); save(); renderSettings(); update(); };
+    host.appendChild(b);
+  });
+}
+
+function renderSettings(){
+  const s = state.settings;
+  const chips = $("#tileChips");
+  chips.innerHTML = "";
+  TILE_PRESETS.forEach((p) => {
+    const [w, h] = p.split("×").map(Number);
+    const on = s.floorTile && s.floorTile.preset === p;
+    const b = el("button", "chip" + (on ? " on" : ""), p);
+    b.onclick = () => { s.floorTile = { preset:p, w, h }; save(); renderSettings(); update(); };
+    chips.appendChild(b);
+  });
+  const cur = s.floorTile;
+  const customOn = cur && cur.preset === "custom";
+  const cb = el("button", "chip" + (customOn ? " on" : ""), "自定义");
+  cb.onclick = () => {
+    s.floorTile = { preset:"custom", w:parseMM($("#tileW").value), h:parseMM($("#tileH").value) };
+    save(); renderSettings(); update();
+  };
+  chips.appendChild(cb);
+  $("#tileCustom").style.display = customOn ? "grid" : "none";
+  if (!$("#tileW").value && cur) $("#tileW").value = cur.w || "";
+  if (!$("#tileH").value && cur) $("#tileH").value = cur.h || "";
+
+  segInto($("#dirSeg"), [["horizontal","长边横着"],["vertical","长边竖着"]], s.direction,
+          (v) => { s.direction = v; });
+  segInto($("#groutSeg"), [[1,"1 mm"],[2,"2 mm"],[2.5,"2.5 mm"],[3,"3 mm"]], s.grout,
+          (v) => { s.grout = parseFloat(v); });
+  segInto($("#baseModeSeg"), [["center","居中对称"],["edge","靠一边"]], s.baseMode,
+          (v) => { s.baseMode = v; });
+
+  // 起铺基准房间
+  const sel = $("#baseRoom");
+  sel.innerHTML = "";
+  const usable = state.rooms.filter((r) => r.w > 0 && r.h > 0);
+  if (!usable.length) {
+    const o = el("option", null, "（先把房间长宽填好）");
+    o.value = ""; sel.appendChild(o);
+  } else {
+    usable.forEach((r) => {
+      const o = el("option", null, r.name || r.id);
+      o.value = r.id;
+      if ((s.baseRoom || usable[0].id) === r.id) o.selected = true;
+      sel.appendChild(o);
+    });
+  }
+
+  // 摘要
+  const bits = [];
+  bits.push(cur ? `${cur.preset === "custom" ? "自定义 " : ""}${cur.w}×${cur.h}` : "未选砖");
+  bits.push(s.direction === "horizontal" ? "长边横着" : "长边竖着");
+  bits.push(`缝 ${s.grout}mm`);
+  $("#settingsSummary").textContent = bits.join(" · ");
+}
+
+/* ---------------- 房间 / 门洞 列表 ---------------- */
+function numField(obj, key, label, ph, onChange){
+  const f = el("label", "field mini");
+  f.appendChild(el("span", null, label));
+  const inp = el("input"); inp.type = "text"; inp.inputMode = "numeric"; inp.placeholder = ph;
+  inp.value = obj[key] != null ? obj[key] : "";
+  inp.addEventListener("input", () => { obj[key] = parseMM(inp.value); save(); onChange && onChange(); update(); });
+  f.appendChild(inp);
+  return f;
+}
+
+function renderRooms(){
+  const box = $("#roomRows");
+  box.innerHTML = "";
+  state.rooms.forEach((r, i) => {
+    const row = el("div", "room-row");
+    const top = el("div", "room-top");
+    top.appendChild(el("span", "room-tag", `${i + 1}`));
+    const name = el("input", "card-name");
+    name.type = "text"; name.value = r.name || ""; name.placeholder = "房间名（如 客厅）";
+    name.addEventListener("input", () => { r.name = name.value; save(); update(); });
+    top.appendChild(name);
+    const del = el("button", "icon-btn", "✕");
+    del.onclick = () => {
+      if (!confirm(`删掉「${r.name || r.id}」？相关门洞也会一起删掉。`)) return;
+      state.rooms = state.rooms.filter((x) => x !== r);
+      state.doors = state.doors.filter((d) => d.from !== r.id && d.to !== r.id);
+      if (state.settings.baseRoom === r.id) state.settings.baseRoom = null;
+      save(); renderRooms(); renderDoors(); renderSettings(); update();
+    };
+    top.appendChild(del);
+    row.appendChild(top);
+    const grid = el("div", "room-fields");
+    grid.appendChild(numField(r, "x", "离原点左（mm）", "如 0"));
+    grid.appendChild(numField(r, "y", "离原点上（mm）", "如 0"));
+    grid.appendChild(numField(r, "w", "长（mm）", "如 4200"));
+    grid.appendChild(numField(r, "h", "宽（mm）", "如 3600"));
+    row.appendChild(grid);
+    box.appendChild(row);
+  });
+  if (!state.rooms.length) box.appendChild(el("p", "card-sub", "还没有房间——点下面加一间"));
+}
+
+function roomSelect(val, onPick){
+  const sel = el("select");
+  state.rooms.forEach((r) => {
+    const o = el("option", null, r.name || r.id);
+    o.value = r.id;
+    if (r.id === val) o.selected = true;
+    sel.appendChild(o);
+  });
+  sel.addEventListener("change", () => { onPick(sel.value); save(); update(); });
+  return sel;
+}
+
+function renderDoors(){
+  const box = $("#doorRows");
+  box.innerHTML = "";
+  if (!state.doors.length) {
+    box.appendChild(el("p", "card-sub", "没有门洞也能用——不加就是全屋一张网铺过去"));
+    return;
+  }
+  state.doors.forEach((d, i) => {
+    const row = el("div", "room-row");
+    const top = el("div", "room-top");
+    top.appendChild(el("span", "room-tag", `门${i + 1}`));
+    top.appendChild(roomSelect(d.from, (v) => { d.from = v; }));
+    top.appendChild(el("span", "room-tag", "→"));
+    top.appendChild(roomSelect(d.to, (v) => { d.to = v; }));
+    const del = el("button", "icon-btn", "✕");
+    del.onclick = () => { state.doors = state.doors.filter((x) => x !== d); save(); renderDoors(); update(); };
+    top.appendChild(del);
+    row.appendChild(top);
+    const grid = el("div", "room-fields");
+    grid.appendChild(numField(d, "at", "洞口中心离起点（mm）", "如 1500"));
+    grid.appendChild(numField(d, "width", "门洞宽（mm）", "如 900"));
+    row.appendChild(grid);
+    const segRow = el("div", "align-row");
+    segRow.appendChild(el("span", "set-label", "这个门口"));
+    const seg = el("div", "seg mini");
+    [["0","通铺（缝穿过去）"],["1","过门石（断开）"]].forEach(([v, label]) => {
+      const b = el("button", (d.threshold ? "1" : "0") === v ? "on" : "", label);
+      b.onclick = () => { d.threshold = v === "1"; save(); renderDoors(); update(); };
+      seg.appendChild(b);
+    });
+    segRow.appendChild(seg);
+    row.appendChild(segRow);
+    box.appendChild(row);
+  });
+}
+
+/* 全屋平面图缩得很小，2mm 的砖缝只有零点几像素——直接铺砖的话看着就是一块实心色板，
+ * 而"缝在门口连不连"恰恰是通铺最该让人一眼看到的东西。
+ * 所以砖缝另外用**至少 1 像素**的线补画一遍（和三维图的 R3D_MIN_GROUT 同一个思路）。
+ * 各房间的缝位来自全屋同一个相位 → 这些线天然跨房间连成一条。 */
+function drawJoints(ctx, ax, ay, s, W, H, groutPx){
+  const lw = Math.max(1, groutPx);
+  ctx.save();
+  ctx.strokeStyle = cssVar("--joint");
+  ctx.lineWidth = lw;
+  const xs = ax.segments.map((q) => q.start);
+  const lastX = ax.segments[ax.segments.length - 1];
+  if (lastX) xs.push(lastX.start + lastX.width);
+  const ys = ay.segments.map((q) => q.start);
+  const lastY = ay.segments[ay.segments.length - 1];
+  if (lastY) ys.push(lastY.start + lastY.width);
+  xs.forEach((v) => { ctx.beginPath(); ctx.moveTo(v * s, 0); ctx.lineTo(v * s, H); ctx.stroke(); });
+  ys.forEach((v) => { ctx.beginPath(); ctx.moveTo(0, v * s); ctx.lineTo(W, v * s); ctx.stroke(); });
+  ctx.restore();
+}
+
+/* ---------------- 画全屋平面图 ---------------- */
+let planView = null;          // { s, OX, OY, bb, pad, cssW, cssH } —— 拖动时把屏幕坐标换算回毫米要用
+let dragGuides = [];          // 拖动中的对齐提示线
+let dragId = null;            // 正在拖的房间
+let dragView = null;          // 拖动开始时冻结的视图（拖动中不许重算比例，否则房间会"跑"）
+let undoRooms = null;         // 拖动前的房间快照（只留最近一次，用来「回到拖动前」）
+
+/* 撤销这次拖动：把房间位置退回开始拖动那一刻（坐标原样退回，不做任何归零） */
+function restoreSnapshot(snap){
+  if (!snap) return;
+  snap.forEach((r) => {
+    const t = state.rooms.find((q) => q.id === r.id);
+    if (t) { t.x = r.x; t.y = r.y; }
+  });
+}
+function hideUndo(){ const b = $("#dragUndo"); if (b) b.hidden = true; }
+function showUndo(){ const b = $("#dragUndo"); if (b) b.hidden = false; }
+function undoDrag(){
+  if (!undoRooms) return;
+  restoreSnapshot(undoRooms); undoRooms = null;
+  hideUndo(); save(); syncAllRoomInputs(); update();
+}
+
+function drawPlan(plan){
+  const cv = $("#housePlan"), empty = $("#planEmpty");
+  if (!plan.ok || !plan.rooms.length) {
+    cv.style.display = "none"; empty.style.display = "block";
+    empty.textContent = plan.errors[0] || "先把地砖规格和房间尺寸填好";
+    return;
+  }
+  const bbLive = Engine.roomsBBox(plan.rooms.map((r) => r.rect));
+  const bb = (dragId && dragView) ? dragView.bb : bbLive;   // 拖动中冻结视图，房间才跟得住手指
+  const pad = (dragId && dragView) ? dragView.pad : 220;    // mm：四周留白，好看清墙
+  const maxW = cv.parentElement.clientWidth || 320, maxH = 520;
+  const s = Math.min(maxW / (bb.w + pad * 2), maxH / (bb.h + pad * 2));
+  const cssW = Math.max(1, Math.round((bb.w + pad * 2) * s));
+  const cssH = Math.max(1, Math.round((bb.h + pad * 2) * s));
+  const dpr = window.devicePixelRatio || 1;
+  cv.style.display = "block"; empty.style.display = "none";
+  cv.style.width = cssW + "px"; cv.style.height = cssH + "px";
+  cv.width = Math.round(cssW * dpr); cv.height = Math.round(cssH * dpr);
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = cssVar("--joint");                   // 打底＝砖缝色（墙也留成这个色）
+  ctx.fillRect(0, 0, cssW, cssH);
+  const OX = (pad - bb.x) * s, OY = (pad - bb.y) * s;  // 全局 mm → 画布 px
+
+  const chips = [];
+  // 每间房：按**同一张网**铺砖（这是"通铺"的关键，缝在门口自然连成一条线）
+  plan.rooms.forEach((rm) => {
+    const W = rm.rect.w * s, H = rm.rect.h * s;
+    ctx.save();
+    ctx.translate(OX + rm.rect.x * s, OY + rm.rect.y * s);
+    paintTiles(ctx, rm.ax, rm.ay, s, W, H);
+    drawJoints(ctx, rm.ax, rm.ay, s, W, H, plan.tile.grout * s);
+    ctx.strokeStyle = cssVar("--ink-soft"); ctx.lineWidth = 1;
+    ctx.strokeRect(0.5, 0.5, Math.max(0, W - 1), Math.max(0, H - 1));
+    if (plan.settingsShowCuts) paintCuts(ctx, rm.ax, rm.ay, s, W, H, null, { sink: chips });
+    ctx.restore();
+    // 房间名（放在房间左上角内侧）
+    chips.push({ ghost:false, txt:rm.name, color:cssVar("--accent"),
+                 ax:OX + (rm.rect.x + Math.min(600, rm.rect.w / 2)) * s,
+                 ay:OY + (rm.rect.y + Math.min(450, rm.rect.h / 2)) * s });
+  });
+
+  // 通铺门口那一段也要铺上砖（不然门口露白底，看着像断了）
+  plan.doors.filter((d) => !d.threshold).forEach((d) => {
+    const R = d.rect;
+    const gx = Engine.latticeSegments(plan.grid.GX, plan.tile.x, plan.tile.grout, R.x, R.x + R.w);
+    const gy = Engine.latticeSegments(plan.grid.GY, plan.tile.y, plan.tile.grout, R.y, R.y + R.h);
+    ctx.save();
+    ctx.translate(OX + R.x * s, OY + R.y * s);
+    paintTiles(ctx, Engine.toLocal(gx, R.x), Engine.toLocal(gy, R.y), s, R.w * s, R.h * s);
+    drawJoints(ctx, Engine.toLocal(gx, R.x), Engine.toLocal(gy, R.y), s, R.w * s, R.h * s, plan.tile.grout * s);
+    ctx.restore();
+  });
+
+  // 门洞：通铺＝蓝虚线；过门石＝红实线 + 标注
+  plan.doors.forEach((d) => {
+    const x = OX + d.rect.x * s, y = OY + d.rect.y * s, w = d.rect.w * s, h = d.rect.h * s;
+    ctx.save();
+    ctx.strokeStyle = d.threshold ? cssVar("--danger") : cssVar("--accent");
+    ctx.lineWidth = 1.6;
+    ctx.setLineDash(d.threshold ? [] : [5, 4]);
+    ctx.strokeRect(x, y, w, h);
+    ctx.restore();
+    chips.push({ ghost:false, txt:(d.threshold ? "过门石 " : "通铺 ") + `${Math.round(d.width)}`,
+                 color:d.threshold ? cssVar("--danger") : cssVar("--accent"),
+                 ax:x + w / 2, ay:y + h / 2 });
+  });
+
+  chipRow(ctx, chips, cssW, cssH);
+
+  // 拖动中：高亮正在拖的房间 + 画对齐提示线（贴墙＝蓝实线、对齐＝蓝虚线）
+  if (dragId) {
+    const rm = plan.rooms.find((r) => r.id === dragId);
+    if (rm) {
+      ctx.save();
+      ctx.strokeStyle = cssVar("--accent"); ctx.lineWidth = 2.5;
+      ctx.strokeRect(OX + rm.rect.x * s + 1, OY + rm.rect.y * s + 1,
+                     Math.max(0, rm.rect.w * s - 2), Math.max(0, rm.rect.h * s - 2));
+      ctx.restore();
+    }
+    dragGuides.forEach((gd) => {
+      ctx.save();
+      ctx.strokeStyle = cssVar("--accent");
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash(gd.kind === "wall" ? [] : [6, 4]);
+      ctx.beginPath();
+      if (gd.axis === "x") {
+        const px = OX + gd.at * s;
+        ctx.moveTo(px, 0); ctx.lineTo(px, cssH);
+      } else {
+        const py = OY + gd.at * s;
+        ctx.moveTo(0, py); ctx.lineTo(cssW, py);
+      }
+      ctx.stroke();
+      ctx.restore();
+    });
+  }
+
+  planView = { s, OX, OY, bb, pad, cssW, cssH };
+  $("#planSub").textContent =
+    `全屋 ${(bb.w / 1000).toFixed(2)} × ${(bb.h / 1000).toFixed(2)} m　` +
+    `砖 ${plan.tile.x}×${plan.tile.y}　以「${plan.grid.baseName}」为准起铺`;
+}
+
+/* ---------------- 状态栏 / 清单 / 明细 ---------------- */
+function renderStatuses(plan){
+  const box = $("#statuses");
+  box.innerHTML = "";
+  const msgs = [];
+  plan.errors.forEach((t) => msgs.push({ kind:"error", text:t }));
+  (plan.warnings || []).forEach((t) => msgs.push({ kind:"warn", text:t }));
+  if (plan.ok) {
+    msgs.push({ kind:"info",
+      text:`全屋一张网：以「${plan.grid.baseName}」为准起铺（${plan.grid.baseName} 左边缘的缝位 ${Math.round(plan.grid.GX)}mm）；其余房间自动跟这张网，门口不断缝` });
+    const notched = plan.summary.notchCount;
+    if (notched) msgs.push({ kind:"warn",
+      text:`有 ${notched} 块砖跨门口，且门口比砖窄：这两侧要开缺口避开墙（图上按整砖算，现场照缺口切）` });
+    if (plan.summary.crossDoorWhole) msgs.push({ kind:"ok",
+      text:`有 ${plan.summary.crossDoorWhole} 块整砖直接穿过门口（缝不断，不用裁）` });
+  }
+  msgs.forEach((m) => box.appendChild(el("div", "st " + m.kind, m.text)));
+  // 房间/门洞的提示分别放到各自卡片下
+  const rb = $("#roomStatuses"); rb.innerHTML = "";
+  plan.rooms.forEach((rm) => rm.warn.forEach((w) => rb.appendChild(el("div", "st warn", `${rm.name}：${w}`))));
+  const db = $("#doorStatuses"); db.innerHTML = "";
+  plan.doors.forEach((d) => db.appendChild(el("div", "st ok",
+    `${d.fromName} → ${d.toName}：${d.threshold ? "过门石（这里断开）" : "通铺（缝穿过去）"}，洞宽 ${Math.round(d.width)}`)));
+}
+
+function renderCutList(plan){
+  const box = $("#cutList");
+  if (!plan.ok || !plan.summary) { box.textContent = "—"; return; }
+  const S = plan.summary, lines = [];
+  lines.push(`铺贴面积：${(S.areaMM / 1e6).toFixed(2)} m²（含通铺门口过道）`);
+  lines.push(`整砖：${S.wholeCount} 块` + (S.crossDoorWhole ? `（其中 ${S.crossDoorWhole} 块直接跨门口）` : ""));
+  lines.push(`要裁的砖：${S.pieceCount} 块，按尺寸分：`);
+  S.cutGroups.forEach((g) => {
+    if (g.kind === "notch") lines.push(`  跨门口开缺口 ×${g.count}（整砖 ${Math.round(S.tile.x)}×${Math.round(S.tile.y)}，两侧开口）`);
+    else lines.push(`  ${g.w} × ${g.h} mm　×${g.count}`);
+  });
+  lines.push(`——————`);
+  lines.push(`按 5% 损耗备料：约 ${S.buyCount} 块`);
+  box.textContent = lines.join("\n");
+}
+
+function renderRoomDetails(plan){
+  const box = $("#roomDetails");
+  box.innerHTML = "";
+  if (!plan.ok) { box.appendChild(el("p", "card-sub", "尺寸填好后这里会列出每间房要裁的砖")); return; }
+  plan.rooms.forEach((rm) => {
+    const wrap = el("div", "room-row");
+    const head = el("div", "room-top");
+    head.appendChild(el("span", "room-tag", rm.name));
+    head.appendChild(el("span", "card-sub",
+      `${rm.rect.w} × ${rm.rect.h}　离原点 ${rm.rect.x}, ${rm.rect.y}`));
+    wrap.appendChild(head);
+    // 这间房里需要裁的砖（按尺寸归并）
+    const map = new Map();
+    rm.tiles.filter((t) => t.cut).forEach((t) => {
+      const k = `${Math.round(t.w)}×${Math.round(t.h)}`;
+      map.set(k, (map.get(k) || 0) + 1);
+    });
+    const items = [...map.entries()].sort((a, b) => {
+      const [aw, ah] = a[0].split("×").map(Number), [bw, bh] = b[0].split("×").map(Number);
+      return bw * bh - aw * ah;
+    });
+    const line = el("div", "cut-list");
+    line.textContent = items.length
+      ? `要裁 ${[...map.values()].reduce((a, b) => a + b, 0)} 块：\n` +
+        items.map(([k, n]) => `  ${k} mm ×${n}`).join("\n")
+      : "全是整砖，不用裁";
+    wrap.appendChild(line);
+    box.appendChild(wrap);
+  });
+}
+
+/* ---------------- 主流程 ---------------- */
+let planCache = null;
+function recompute(){
+  planCache = Engine.housePlan(state);
+  planCache.settingsShowCuts = !!state.settings.showCuts;
+  return planCache;
+}
+function update(){
+  const plan = recompute();
+  drawPlan(plan);
+  renderStatuses(plan);
+  renderCutList(plan);
+  renderRoomDetails(plan);
+}
+/* 拖动中只重画平面图（不重建房间/门洞/清单那些 DOM，手机上才跟手） */
+let rafPending = false;
+function redrawSoon(){
+  if (rafPending) return;
+  rafPending = true;
+  requestAnimationFrame(() => { rafPending = false; drawPlan(recompute()); });
+}
+
+/* ---------------- 拖动房间（带对齐吸附）---------------- */
+function pxToMm(px, py){
+  if (!planView) return null;
+  const { s, bb, pad } = planView;
+  return { x: px / s + bb.x - pad, y: py / s + bb.y - pad };
+}
+function hitRoom(mm){
+  for (let i = state.rooms.length - 1; i >= 0; i--) {          // 后画的在上，从后往前找
+    const r = state.rooms[i], R = Engine.roomRect(r);
+    if (!(R.w > 0 && R.h > 0)) continue;
+    if (mm.x >= R.x && mm.x <= R.x + R.w && mm.y >= R.y && mm.y <= R.y + R.h) return { room:r, rect:R };
+  }
+  return null;
+}
+function syncRoomInputs(id){
+  const idx = state.rooms.findIndex((r) => r.id === id);
+  if (idx < 0) return;
+  const row = document.querySelectorAll("#roomRows .room-row")[idx];
+  if (!row) return;
+  const ins = row.querySelectorAll(".room-fields input");
+  const r = state.rooms[idx];
+  if (ins[0]) ins[0].value = r.x != null ? r.x : "";
+  if (ins[1]) ins[1].value = r.y != null ? r.y : "";
+}
+function syncAllRoomInputs(){ state.rooms.forEach((r) => syncRoomInputs(r.id)); }
+
+function bindPlanDrag(){
+  const cv = $("#housePlan");
+  let drag = null;
+  const ptOf = (e) => {
+    const b = cv.getBoundingClientRect();
+    return { px: e.clientX - b.left, py: e.clientY - b.top };
+  };
+  cv.addEventListener("pointerdown", (e) => {
+    if (!planView) return;
+    const mm = pxToMm(ptOf(e).px, ptOf(e).py);
+    const hit = hitRoom(mm);
+    if (!hit) return;
+    drag = { id: hit.room.id, gx: mm.x - hit.rect.x, gy: mm.y - hit.rect.y, moved:false };
+    dragId = hit.room.id;
+    dragView = planView ? { bb:{ ...planView.bb }, pad:planView.pad } : null;   // 冻结视图
+    undoRooms = JSON.parse(JSON.stringify(state.rooms));   // 记下拖动前的样子
+    hideUndo();
+    cv.classList.add("dragging");
+    try { cv.setPointerCapture(e.pointerId); } catch (err) {}
+    e.preventDefault();
+  });
+  cv.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    const { px, py } = ptOf(e);
+    const mm = pxToMm(px, py);
+    if (!mm) return;
+    const want = { x: mm.x - drag.gx, y: mm.y - drag.gy };
+    const view = dragView ? { s:planView.s } : planView;      // 用冻结后的比例换算阈值
+    const tol = 9 / (view && view.s ? view.s : 1);          // 9 屏幕像素折算成毫米
+    const sn = Engine.snapRoom(state.rooms, drag.id, want, { wall: state.settings.wall, tol, grid: 10 });
+    const room = state.rooms.find((r) => r.id === drag.id);
+    if (!room) return;
+    if (room.x !== sn.x || room.y !== sn.y) drag.moved = true;
+    room.x = sn.x; room.y = sn.y;
+    dragGuides = sn.guides;
+    syncRoomInputs(drag.id);
+    redrawSoon();
+    e.preventDefault();
+  });
+  /* restore=true → 放弃这次拖动、退回原位；false → 认下这次拖动 */
+  const finish = (restore) => {
+    if (!drag) return;
+    const moved = drag.moved;
+    drag = null; dragId = null; dragGuides = []; dragView = null;
+    cv.classList.remove("dragging");
+    if (restore) {                      // Esc 或手指拒：当场退回去，连存盘都不用
+      restoreSnapshot(undoRooms); undoRooms = null;
+      syncAllRoomInputs(); update();
+      return;
+    }
+    if (moved) {
+      showUndo();          // 刚拖完：给一次「回到拖动前」的机会
+      save();
+      syncAllRoomInputs();
+    } else {
+      undoRooms = null;    // 没真的挪动，不留快照
+    }
+    update();
+  };
+  cv.addEventListener("pointerup", () => finish(false));
+  cv.addEventListener("pointercancel", () => finish(false));
+  cv.addEventListener("pointerleave", () => { if (drag) finish(false); });
+  // 电脑上的两条退路：拖动中按 Esc 当场放弃；拖完后 Ctrl/⌘+Z 退回去
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && drag) { finish(true); return; }
+    if ((e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z")) {
+      const t = (e.target && e.target.tagName || "").toLowerCase();
+      if (t === "input" || t === "textarea" || t === "select") return;   // 让输入框自己撤字
+      if (drag || !undoRooms) return;
+      e.preventDefault(); undoDrag();
+    }
+  });
+  const ub = $("#dragUndo");
+  if (ub) ub.addEventListener("click", () => undoDrag());
+}
+
+/* ---------------- 启动 ---------------- */
+(function init(){
+  // 设置面板展开/收起（与卫生间工具同一套交互）
+  const box = $("#settings"), tog = $("#settingsToggle");
+  tog.onclick = () => {
+    const open = !box.classList.contains("open");
+    box.classList.toggle("open", open);
+    tog.setAttribute("aria-expanded", open ? "true" : "false");
+  };
+  // 自定义砖尺寸
+  $("#tileW").addEventListener("input", () => {
+    if (!state.settings.floorTile || state.settings.floorTile.preset !== "custom")
+      state.settings.floorTile = { preset:"custom", w:null, h:null };
+    state.settings.floorTile.w = parseMM($("#tileW").value);
+    save(); update();
+  });
+  $("#tileH").addEventListener("input", () => {
+    if (!state.settings.floorTile || state.settings.floorTile.preset !== "custom")
+      state.settings.floorTile = { preset:"custom", w:null, h:null };
+    state.settings.floorTile.h = parseMM($("#tileH").value);
+    save(); update();
+  });
+  // 基准房 / 微调
+  $("#baseRoom").addEventListener("change", (e) => { state.settings.baseRoom = e.target.value; save(); update(); });
+  $("#nudgeX").addEventListener("input", (e) => { state.settings.nudgeX = parseMM(e.target.value) || 0; save(); update(); });
+  $("#nudgeY").addEventListener("input", (e) => { state.settings.nudgeY = parseMM(e.target.value) || 0; save(); update(); });
+  $("#nudgeX").value = state.settings.nudgeX || ""; $("#nudgeY").value = state.settings.nudgeY || "";
+  // 平面图上标裁砖尺寸（默认关，字会很多）
+  const cutSw = el("label", "switch-row");
+  cutSw.appendChild(el("span", null, "在平面图上标出裁砖尺寸（字多，看细节时再开）"));
+  const ccb = el("input", "switch"); ccb.type = "checkbox"; ccb.checked = !!state.settings.showCuts;
+  ccb.addEventListener("change", () => { state.settings.showCuts = ccb.checked; save(); update(); });
+  cutSw.appendChild(ccb);
+  $("#settingsBody").appendChild(cutSw);
+  // 添加按钮
+  $("#addRoom").onclick = () => {
+    state.rooms.push({ id:"r" + (state.seq++), name:"房间 " + state.rooms.length, x:null, y:null, w:null, h:null });
+    save(); renderRooms(); renderSettings(); update();
+  };
+  $("#addDoor").onclick = () => {
+    const rs = state.rooms;
+    if (rs.length < 2) { alert("至少要两间房才能加门洞"); return; }
+    state.doors.push({ id:"d" + (state.seq++), from:rs[0].id, to:rs[1].id, at:null, width:900, threshold:false });
+    save(); renderDoors(); update();
+  };
+
+  const wallInp = $("#wallThk");
+  wallInp.value = state.settings.wall != null ? state.settings.wall : "";
+  wallInp.addEventListener("input", () => {
+    state.settings.wall = parseMM(wallInp.value) || 240;
+    save(); update();
+  });
+  bindPlanDrag();
+  renderSettings(); renderRooms(); renderDoors(); update();
+})();
+
+</script>
+</body>
+</html>
