@@ -136,6 +136,43 @@ input:focus{outline:2px solid var(--accent); border-color:var(--accent)}
     <p class="hint" style="text-align:left">点一行就选中那间房。要是哪间的坐标离得特别远，画面会被它撑得很大——改掉数字就行。</p>
   </section>
 
+  <section class="card" id="doorCard">
+    <h2>门洞</h2>
+    <!-- 「新门默认」必须常驻：流程是"先设好宽度、再去点墙"。
+         要是它只在选中某道门时才出现，碰上共用段放不下当前宽度就会卡死：
+         开不了门 → 选不中门 → 改不了宽度。 -->
+    <div class="dim-grid">
+      <label class="field"><span>新门默认宽（mm）</span>
+        <input type="text" inputmode="numeric" id="doorW" placeholder="900"></label>
+      <label class="field"><span>新门默认类型</span>
+        <select id="doorKind">
+          <option value="flat">通铺（砖缝穿过去）</option>
+          <option value="stone">过门石（门口断开）</option>
+        </select></label>
+    </div>
+    <p class="hint" style="text-align:left">定好宽度和类型，再去点两间房中间那道墙——门就开在你点的位置。开完按住门能顺着墙拖。</p>
+
+    <div id="doorEditor" style="display:none">
+      <h2 style="margin-top:12px" id="doorTitle">选中的门</h2>
+      <div class="dim-grid">
+        <label class="field"><span>门宽（mm）</span><input type="text" inputmode="numeric" id="dW"></label>
+        <label class="field"><span>洞口中心离起点（mm）</span><input type="text" inputmode="numeric" id="dAt"></label>
+      </div>
+      <div class="btn-row">
+        <button class="primary" id="dFlat">通铺</button>
+        <button class="ghost" id="dStone">过门石</button>
+      </div>
+      <div class="btn-row">
+        <button class="ghost" id="dDel" style="color:var(--danger)">删除这道门</button>
+      </div>
+      <p class="hint" style="text-align:left" id="doorTip"></p>
+    </div>
+
+    <h2 style="margin-top:12px">门洞清单</h2>
+    <div id="doorList"></div>
+    <p class="hint" style="text-align:left">「离起点」和 house.html 里的数是同一个（从这堵共用墙靠里的那头量起）。</p>
+  </section>
+
   <section class="card">
     <button class="primary" id="apply" style="width:100%">应用到 house.html</button>
     <div class="ok-banner" id="ok" style="display:none">已写入！打开 house.html 就能看到。</div>
@@ -143,7 +180,7 @@ input:focus{outline:2px solid var(--accent); border-color:var(--accent)}
 </div>
 
 <script>
-const BUILD = "2026-09-16 20:52";  // 版本号：手机上看看对不对，就知道是不是旧页面了
+const BUILD = "2026-09-16 23:40";  // 版本号：手机上看看对不对，就知道是不是旧页面了
 
 const STORE_KEY = "houseTileV1";   // house.html 的存档（导出时往这里写）
 const SKETCH_KEY = "houseSketchV1"; // 草图自己的存档（和 house.html 分开，互不干扰）
@@ -152,7 +189,289 @@ const SNAP_GRID = 100;           // 网格吸附（mm）
 const SNAP_ROOM = 500;           // 房间吸附触发距离（mm）
 const HIT_SLOP_PX = 12;          // 手指命中半径（屏幕像素）
 const DRAG_THRESHOLD_PX = 8;     // 拖动触发阈值（屏幕像素）
+const DOOR_W_DEFAULT = 900;      // 新门默认宽（mm），和 house.html 的默认值一致
+const MIN_DOOR_MM = 300;         // 比这还窄的缝就不给开门了（点下去会落到"选中房间"）
+const WALL_SLOP_PX = 12;         // 点墙的命中半径（屏幕像素，要调手感就调这一个）
+const DOOR_SNAP_MM = 10;         // 拖动门的时候吸附到多少毫米
+const DOOR_LABEL_MIN_PX = 34;    // 洞口在屏幕上短于这个就不写宽度数字了（太挤）
 
+/*ENGINE-START*/
+/* ================= 引擎段 =================
+ * house-test.js / test.js 那套「正则抽出「ENGINE-START」到「ENGINE-END」两行注释之间、
+ * 在 node 里零依赖跑」的办法，这里也接上：sketch-test.js 用同样的正则抽这一段做验收。
+ *
+ * 硬约束：这一段会被 new Function 放进**独立作用域**里执行，
+ * 所以**不能引用 state / canvas / 上面那些常量**——要用什么，全部显式传参。
+ *
+ * 门洞的换算必须和 house.html 的 doorRect（house.html:402-435）**逐字镜像**：
+ * 只要差一点，草图里看着合法的门，到 house.html 会判不合法——
+ * 而 house.html 的规矩是「一道门不合法 → 整张图拒绝渲染」。
+ * 镜像由 sketch-test.js 的测试 2 逐字段比着：改了 house.html 那边没同步，这条会红。 */
+
+/* ---- 基础小工具（house.html:247/339/342/343 的镜像）---- */
+const numOr = (v, d) => (typeof v === "number" && isFinite(v)) ? v : d;
+const rectOf = (r) => ({ x:numOr(r && r.x, 0), y:numOr(r && r.y, 0),
+                         w:numOr(r && r.w, 0), h:numOr(r && r.h, 0) });
+const spanOv = (a0, a1, b0, b1) => Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
+const rectOvArea = (a, b) => spanOv(a.x, a.x + a.w, b.x, b.x + b.w) *
+                             spanOv(a.y, a.y + a.h, b.y, b.y + b.h);
+/* 点到区间 [a,b] 的距离；落在区间里面就是 0 */
+const distToRange = (v, a, b) => (v < a ? a - v : (v > b ? v - b : 0));
+
+/* ---- 门洞第一半：这两间房之间是不是有一道墙、墙在哪、能用的段多长 ----
+ * 对应 house.html:402-425。拆成两半是为了草图能单独拿"墙的位置"用（点墙命中）。
+ * 比 house.html 多返回一个 gap（墙缝区间）和 A/B，其余逐字照抄。 */
+const doorAxis = (a, b) => {
+  const A = rectOf(a), B = rectOf(b);
+  if (!(A.w > 0 && A.h > 0 && B.w > 0 && B.h > 0)) return { ok:false, why:"两间房的尺寸还没填全" };
+  const yOv = spanOv(A.y, A.y + A.h, B.y, B.y + B.h);
+  const xOv = spanOv(A.x, A.x + A.w, B.x, B.x + B.w);
+  // 左右相邻（竖直缝）：两房在 x 上分开、y 上有重叠
+  let vGap = null;
+  if (B.x >= A.x + A.w - 1e-6) vGap = [A.x + A.w, B.x];
+  else if (B.x + B.w <= A.x + 1e-6) vGap = [B.x + B.w, A.x];
+  // 上下相邻（水平缝）：两房在 y 上分开、x 上有重叠
+  let hGap = null;
+  if (B.y >= A.y + A.h - 1e-6) hGap = [A.y + A.h, B.y];
+  else if (B.y + B.h <= A.y + 1e-6) hGap = [B.y + B.h, A.y];
+  const useV = vGap && yOv > 1, useH = hGap && xOv > 1;
+  if (!useV && !useH) return { ok:false, why:"这两间房不相邻（中间没有共用的墙），门洞放不下" };
+  /* 上面这两行还藏着一件事：useV 和 useH **永远不可能同时成立**——
+   * vGap 非空意味着两间房在 x 上分开了，于是 xOv = 0，而 useH 要求 xOv > 1。
+   * 所以 vertical 恒等于 !!useV，那个 yOv >= xOv 的平手判定是死代码（照抄，别删）。
+   * 结论：两间房斜着摆（x、y 都分开）时永远开不了门，点下去会落到"选中房间"——正是想要的。 */
+  const vertical = useV && (!useH || yOv >= xOv);
+  const gap = vertical ? vGap : hGap;
+  const wallT = gap[1] - gap[0];
+  /* wallT = 0 是允许的：两间房连通（中间没有墙，比如客餐厅一体、或以后装推拉门），
+   * 这时门洞只是标个位置，洞厚为 0，不占铺贴面积。 */
+  if (wallT < 0) return { ok:false, why:"这两间房的间隙算出来是负数，请检查一下坐标" };
+  const lo = vertical ? Math.max(A.y, B.y) : Math.max(A.x, B.x);
+  const hi = vertical ? Math.min(A.y + A.h, B.y + B.h) : Math.min(A.x + A.w, B.x + B.w);
+  return { ok:true, vertical, gap, wallT, lo, hi, A, B };
+};
+
+/* ---- 门洞第二半：把"洞口中心离起点多远"换算成洞口矩形 ----
+ * 对应 house.html:426-434。start = A 房沿共用边那一侧的起点
+ * （左右相邻时 = 离 A 上墙；上下相邻时 = 离 A 左墙）。 */
+const doorRectOf = (at, width, ax) => {
+  if (!(width > 0)) return { ok:false, why:"门宽要填正整数（毫米）" };
+  const start = ax.vertical ? ax.A.y : ax.A.x;
+  const c = start + numOr(at, 0);
+  if (!(c - width / 2 >= ax.lo - 1e-6 && c + width / 2 <= ax.hi + 1e-6)) {
+    return { ok:false, why:`门洞超出两间房的共用段（这里可用 ${Math.round(ax.lo - start)}~${Math.round(ax.hi - start)}mm）` };
+  }
+  const rect = ax.vertical
+    ? { x:ax.gap[0], y:c - width / 2, w:ax.wallT, h:width }
+    : { x:c - width / 2, y:ax.gap[0], w:width, h:ax.wallT };
+  return { ok:true, rect, vertical:ax.vertical, wallT:ax.wallT, span:{ lo:ax.lo, hi:ax.hi }, at:c };
+};
+
+/* 两半拼回一个和 house.html:402-435 **完全等价**的入口。
+ * 次序必须和 house.html 一模一样：先验房间尺寸 → 再验门宽 → 再验相邻。
+ * （分开调用时若两边都错，报的原因会和 house.html 不同，这条入口就是拿来消掉那个歧义的。） */
+const doorRect = (a, b, at, width) => {
+  const A = rectOf(a), B = rectOf(b);
+  if (!(A.w > 0 && A.h > 0 && B.w > 0 && B.h > 0)) return { ok:false, why:"两间房的尺寸还没填全" };
+  if (!(width > 0)) return { ok:false, why:"门宽要填正整数（毫米）" };
+  const ax = doorAxis(A, B);
+  if (!ax.ok) return { ok:false, why:ax.why };
+  return doorRectOf(at, width, ax);
+};
+
+/* 把位置夹进共用段：中心最多到 [lo+宽/2, hi-宽/2]。门比墙还宽时无解，调用者得先自己判。 */
+const clampPos = (lo, hi, width, pos) => Math.min(Math.max(numOr(pos, lo), lo + width / 2), hi - width / 2);
+
+/* 洞口矩形有没有压在第三间房上。
+ * 为什么必须查：house.html 把每道通铺门的洞口矩形也算进"要铺的区域"，
+ * 而总面积是逐个矩形**直加、不去重**的；洞口压在第三间房上 → 那块地方算两遍面积，
+ * 整砖判定跟着失败、砖被误判成"要开缺口"，house.html **不报错也不警告**。 */
+const thirdRoomOnDoor = (rect, rooms, A, B) =>
+  (rooms || []).find((r) => r !== A && r !== B && rectOvArea(rect, rectOf(r)) > 1e-6) || null;
+
+/* ---- 一道门的完整视图：合不合法、在哪、画多大 ----
+ * d = { id, a, b, x, y, width, threshold }（a/b 是草图房间 id，x/y 是洞口中心的绝对坐标）
+ * 返回 { ok, why, axis, lo, hi, gapLo, gapHi, wallT, pos, rect, at }
+ * pos 是**夹紧之后**的沿墙位置：画图、面板显示、导出都用它。 */
+const doorView = (d, rooms, doors) => {
+  if (!d) return { ok:false, why:"这道门不存在" };
+  const A = (rooms || []).find((r) => r.id === d.a);
+  const B = (rooms || []).find((r) => r.id === d.b);
+  if (!A || !B) return { ok:false, why:"指向了不存在或被删掉的房间" };
+  if (A === B) return { ok:false, why:"门要选两间**不同**的房" };
+  const ax = doorAxis(A, B);
+  if (!ax.ok) return { ok:false, why:ax.why };
+  const width = numOr(d.width, 0);
+  if (!(width > 0)) return { ok:false, why:"门宽要填正整数（毫米）" };
+  if (ax.hi - ax.lo < width - 1e-6)
+    return { ok:false, why:`共用段只有 ${Math.round(ax.hi - ax.lo)}mm，放不下 ${Math.round(width)}mm 的门` };
+  const pos = clampPos(ax.lo, ax.hi, width, ax.vertical ? d.y : d.x);
+  const rr = doorRectOf(pos - (ax.vertical ? ax.A.y : ax.A.x), width, ax);
+  if (!rr.ok) return { ok:false, why:rr.why };
+  const third = thirdRoomOnDoor(rr.rect, rooms, A, B);
+  if (third) return { ok:false, why:`洞口压在「${third.name || third.id}」上了（这缝里还夹着别的房间）` };
+  const clash = sameWallDoorClash(d, ax, pos, width, doors);
+  if (clash) return { ok:false, why:"和同一道墙上另一道门重叠了" };
+  return { ok:true, axis: ax.vertical ? "v" : "h", vertical: ax.vertical,
+           lo: ax.lo, hi: ax.hi, gapLo: ax.gap[0], gapHi: ax.gap[1], wallT: ax.wallT,
+           pos, rect: rr.rect, at: pos - (ax.vertical ? ax.A.y : ax.A.x), width, A, B };
+};
+
+/* 同一道墙上的另一道门（a/b 对调也算同一道墙）有没有和自己的洞口区间叠上 */
+const sameWallDoorClash = (d, ax, pos, width, doors) => {
+  for (const o of (doors || [])) {
+    if (o === d) continue;
+    if (!((o.a === d.a && o.b === d.b) || (o.a === d.b && o.b === d.a))) continue;
+    const ow = numOr(o.width, 0);
+    if (!(ow > 0)) continue;
+    const opos = clampPos(ax.lo, ax.hi, ow, ax.vertical ? o.y : o.x);
+    if (Math.min(pos + width / 2, opos + ow / 2) - Math.max(pos - width / 2, opos - ow / 2) > 1e-6) return o;
+  }
+  return null;
+};
+
+/* ---- 点墙：手指底下是哪道墙 ----
+ * slopMM 按屏幕像素换算（WALL_SLOP_PX / 缩放），所以放大缩小手感一致。
+ * dPerp = 手指离墙缝的远近；dOut = 手指离"两间房共用段"两端的远近。
+ * 两个都要在 slop 之内才算命中；取最贴近的一道墙。
+ * 缝里夹着第三间房、或者缝太窄（放不下 MIN 门宽）→ 不认，点下去自然落到"选中房间"。 */
+const findWallGap = (rooms, x, y, slopMM, minDoorMM, doors, doorW) => {
+  let best = null, bestScore = Infinity;
+  const rs = rooms || [];
+  const want = numOr(doorW, 0) > 0 ? numOr(doorW, 0) : Math.max(minDoorMM, 0);
+  for (let i = 0; i < rs.length; i++) for (let j = i + 1; j < rs.length; j++) {
+    const A = rs[i], B = rs[j];
+    const ax = doorAxis(A, B);
+    if (!ax.ok) continue;
+    const span = ax.hi - ax.lo;
+    if (span < Math.max(minDoorMM, 0) - 1e-6) continue;   // 缝太窄，根本开不了门
+    /* 探测宽度 = 真会开出来的那个宽度（放不下就退到这道墙能容纳的最大值，下限 MIN_DOOR_MM）。
+     * 用它而不是 minDoorMM，是为了让「点得中」和 doorView 的合法性判定一致：
+     * 探测过的地方，建出来的门一定合法、不会是红门。 */
+    const w = Math.min(Math.max(want, Math.max(minDoorMM, 0)), span);
+    const perp  = ax.vertical ? x : y;
+    const along = ax.vertical ? y : x;
+    const dPerp = distToRange(perp, ax.gap[0], ax.gap[1]);
+    if (dPerp > slopMM) continue;
+    const dOut = distToRange(along, ax.lo, ax.hi);
+    if (dOut > slopMM) continue;
+    const score = dPerp + dOut;
+    if (score >= bestScore) continue;
+    /* 只按"手指底下那个洞口"判第三间房，不按整道墙判——
+     * 缝里塞着一间小房（管道井）时，那道墙上没被占住的那一段照样应该能开门。 */
+    const pos = clampPos(ax.lo, ax.hi, w, along);
+    const probe = ax.vertical
+      ? { x: ax.gap[0], y: pos - w / 2, w: ax.wallT, h: w }
+      : { x: pos - w / 2, y: ax.gap[0], w: w, h: ax.wallT };
+    if (thirdRoomOnDoor(probe, rs, A, B)) continue;
+    bestScore = score;
+    best = { a:A, b:B, axis: ax.vertical ? "v" : "h", vertical: ax.vertical,
+             lo: ax.lo, hi: ax.hi, gapLo: ax.gap[0], gapHi: ax.gap[1], wallT: ax.wallT,
+             w, pos };
+  }
+  return best;
+};
+
+/* ---- 这道墙上，门还能落在哪一段（避开同墙已有的门）----
+ * 只认含 pos 的那一段空隙：拖到头就停住，不会滑到墙的另一头、也不会变成红色。
+ * 返回 { lo, hi }（都是"洞口中心"的允许范围），放不下就 null。 */
+const freeRangeOnWall = (ax, doors, d, pos) => {
+  const w = numOr(d && d.width, 0);
+  if (!(w > 0)) return null;
+  let lo = ax.lo, hi = ax.hi;
+  for (const o of (doors || [])) {
+    if (o === d) continue;
+    if (!((o.a === d.a && o.b === d.b) || (o.a === d.b && o.b === d.a))) continue;
+    const ow = numOr(o.width, 0);
+    if (!(ow > 0)) continue;
+    const opos = clampPos(ax.lo, ax.hi, ow, ax.vertical ? o.y : o.x);
+    const b0 = opos - ow / 2, b1 = opos + ow / 2;
+    if (b1 <= pos) lo = Math.max(lo, b1);
+    else if (b0 >= pos) hi = Math.min(hi, b0);
+    else return null;                       // 当前位置正压在别人的门上
+  }
+  if (hi - lo < w - 1e-6) return null;
+  return { lo: lo + w / 2, hi: hi - w / 2 };
+};
+
+/* ---- 存档过滤：老存档没有 doors 字段、或者门指向了已经删掉的房间，都要吃掉 ---- */
+const sanitizeDoors = (raw, roomIds) => {
+  if (!Array.isArray(raw)) return [];
+  const ids = new Set(roomIds || []);
+  const out = [];
+  for (const d of raw) {
+    if (!d || typeof d.id !== "string") continue;
+    if (!ids.has(d.a) || !ids.has(d.b) || d.a === d.b) continue;
+    if (![d.x, d.y, d.width].every((v) => typeof v === "number" && isFinite(v))) continue;
+    if (!(d.width > 0)) continue;
+    out.push({ id:d.id, a:d.a, b:d.b, x:d.x, y:d.y, width:d.width, threshold: !!d.threshold });
+  }
+  return out;
+};
+
+/* ---- 下一个编号：房间和门**一起**扫 ----
+ * 只扫房间的话，「5 间房 + 4 道门」刷新后 seq 只回到 5，下次开门生成 d6 会和已存在的 d6 撞号。 */
+const nextSeq = (rooms, doors) => {
+  const nums = [];
+  for (const o of (rooms || []).concat(doors || [])) {
+    const n = parseInt(String(o && o.id).replace(/\D/g, ""), 10);
+    if (isFinite(n)) nums.push(n);
+  }
+  return nums.length ? Math.max(...nums) : 0;
+};
+
+/* ---- 导出：把草图的门换算成 house.html 认的 {from, to, at, width, threshold} ----
+ * roomsFinal = 已经平移取整后的房间（house.html 里的坐标，id 是 r1..rN）
+ * idMap      = { 草图房间 id → 导出后的房间 id }
+ * 返回 { list, dropped }；dropped 每项带 d 和 why（中文，直接念给用户听）。 */
+const exportDoors = (roomsFinal, doors, idMap) => {
+  const list = [], dropped = [], placed = [];
+  const byId = {};
+  for (const r of (roomsFinal || [])) byId[r.id] = r;
+  for (const d of (doors || [])) {
+    const A = byId[(idMap || {})[d.a]], B = byId[(idMap || {})[d.b]];
+    if (!A || !B) { dropped.push({ d, why:"有一间房没跟着导出去" }); continue; }
+    if (A === B) { dropped.push({ d, why:"这两间房是同一间" }); continue; }
+    const ax = doorAxis(A, B);
+    if (!ax.ok) { dropped.push({ d, why: ax.why }); continue; }
+    const width = numOr(d.width, 0);
+    if (!(width > 0)) { dropped.push({ d, why:"门宽要填正整数（毫米）" }); continue; }
+    if (ax.hi - ax.lo < width - 1e-6) {
+      dropped.push({ d, why:`共用段只有 ${Math.round(ax.hi - ax.lo)}mm，放不下 ${Math.round(width)}mm 的门` });
+      continue;
+    }
+    // 位置夹进共用段再取整；取整可能又蹭出去半毫米（奇数门宽），所以夹两次
+    let c = clampPos(ax.lo, ax.hi, width, ax.vertical ? d.y : d.x);
+    c = clampPos(ax.lo, ax.hi, width, Math.round(c));
+    /* ★ from 取"在共用轴上起点更大"的那间：这样 start === lo，
+     *   于是 at = c - lo 正好是用户在草图里看到的那个数（两个工具显示同一个数字）。
+     *   doorRect 里除了 start，其余的量都与 from/to 顺序无关——已经逐行验过。 */
+    /* 注意用 A/B 这两个**房间对象**（带 id/name），不要用 ax.A/ax.B——
+     * 那两个是 rectOf 出来的矩形，只有 x/y/w/h，读 .id 会得到 undefined，
+     * 于是导出的门丢了 from/to，house.html 打开就报"门洞指向了不存在的房间"。 */
+    const pickA = ax.vertical ? (A.y >= B.y) : (A.x >= B.x);
+    const fromR = pickA ? A : B, toR = pickA ? B : A;
+    const at = c - (ax.vertical ? fromR.y : fromR.x);
+    // 用取整平移后的房间**重算一遍**，确认 house.html 那边也会认它
+    const chk = doorRect(fromR, toR, at, width);
+    if (!chk.ok) { dropped.push({ d, why: chk.why }); continue; }
+    const third = thirdRoomOnDoor(chk.rect, roomsFinal, fromR, toR);
+    if (third) { dropped.push({ d, why:`洞口压在「${third.name || third.id}」上了` }); continue; }
+    const hit = placed.find((p) =>
+      ((p.from === fromR.id && p.to === toR.id) || (p.from === toR.id && p.to === fromR.id)) &&
+      Math.min(c + width / 2, p.c + p.width / 2) - Math.max(c - width / 2, p.c - p.width / 2) > 1e-6);
+    if (hit) { dropped.push({ d, why:"和同一道墙上另一道门重叠了" }); continue; }
+    placed.push({ from: fromR.id, to: toR.id, c, width });
+    list.push({ id: d.id, from: fromR.id, to: toR.id, at, width, threshold: !!d.threshold });
+  }
+  return { list, dropped };
+};
+
+const Engine = { numOr, rectOf, spanOv, rectOvArea, distToRange, doorAxis, doorRectOf, doorRect,
+                 clampPos, thirdRoomOnDoor, doorView, sameWallDoorClash,
+                 findWallGap, freeRangeOnWall, sanitizeDoors, nextSeq, exportDoors };
+if (typeof module !== "undefined" && module.exports) module.exports = Engine;
+/*ENGINE-END*/
 
 const canvas = document.getElementById("cv");
 const $ = (s) => document.querySelector(s);
@@ -160,13 +479,22 @@ const $ = (s) => document.querySelector(s);
 const state = {
   seq: 0,
   rooms: [],          // { id, name, x, y, w, h }
-  selected: null,
+  doors: [],          // { id, a, b, x, y, width, threshold } —— a/b 是房间 id，x/y 是洞口中心
+  selected: null,     // 选中的房间（**绝不能**指向门对象，renderEditor 会读 .w/.h 写坏数据）
+  selDoor: null,      // 选中的门；和 selected 强制互斥，统一走 setSel()
+  doorW: DOOR_W_DEFAULT,      // 新门默认宽度
+  doorThreshold: false,       // 新门默认类型：false 通铺 / true 过门石
   view: null,         // { scale, offsetX, offsetY }
   pending: null,      // 交互中状态
   gapMode: "wall",    // "wall" = 房间之间留一个墙厚；"zero" = 贴死，间隙 0（两间连通）
   wall: WALL_DEFAULT, // 墙厚（mm）
   manualView: false,  // 用户自己拖过/缩放过画布 → 不再自动扶正，尊重手动位置
 };
+/* 房间和门只能选中一个。现在有 5 处地方各自赋值，全部改走这里，免得哪处漏了。 */
+function setSel(room, door) {
+  state.selected = room || null;
+  state.selDoor = door || null;
+}
 /* 当前该留多大缝：贴死模式就是 0 */
 const gapMM = () => (state.gapMode === "zero" ? 0 : Math.max(0, Number(state.wall) || 0));
 
@@ -174,7 +502,9 @@ const gapMM = () => (state.gapMode === "zero" ? 0 : Math.max(0, Number(state.wal
 function saveSketch() {
   try {
     localStorage.setItem(SKETCH_KEY, JSON.stringify({
-      seq: state.seq, rooms: state.rooms, gapMode: state.gapMode, wall: state.wall,
+      seq: state.seq, rooms: state.rooms, doors: state.doors,
+      doorW: state.doorW, doorThreshold: state.doorThreshold,
+      gapMode: state.gapMode, wall: state.wall,
     }));
   } catch (e) {}
 }
@@ -189,11 +519,32 @@ function loadSketch() {
     [r.x, r.y, r.w, r.h].every((v) => typeof v === "number" && isFinite(v)) && r.w > 0 && r.h > 0);
   if (!ok.length) return;
   state.rooms = ok.map((r) => ({ id: r.id, name: r.name || "房间", x: r.x, y: r.y, w: r.w, h: r.h }));
-  // 编号接着已有的往下排，免得新加的房间 id 跟旧的重号
-  const nums = state.rooms.map((r) => parseInt(String(r.id).replace(/\D/g, ""), 10)).filter((n) => isFinite(n));
-  state.seq = Math.max(Number(d.seq) || 0, ...nums, 0);
+  // 老存档没有 doors 字段 → sanitizeDoors 返回 []，不抛异常；指向已删房间的门也在这里吃掉
+  state.doors = sanitizeDoors(d.doors, state.rooms.map((r) => r.id));
+  // 编号接着已有的往下排，免得新加的房间/门 id 跟旧的重号。
+  // ★ 必须把**门**也扫进来：只扫房间的话「5 间房 + 4 道门」刷新后 seq 只回到 5，
+  //   下次开门生成 d6，和存档里已有的 d6 撞号。
+  state.seq = Math.max(Number(d.seq) || 0, nextSeq(state.rooms, state.doors), 0);
+  if (typeof d.doorW === "number" && isFinite(d.doorW) && d.doorW >= MIN_DOOR_MM) state.doorW = d.doorW;
+  state.doorThreshold = !!d.doorThreshold;
   if (d.gapMode === "zero" || d.gapMode === "wall") state.gapMode = d.gapMode;
   if (typeof d.wall === "number" && isFinite(d.wall) && d.wall >= 0) state.wall = d.wall;
+  reconcileDoors();
+}
+
+/* ---------- 门的归位 ----------
+ * 门存的是绝对坐标，拖房间就可能让洞口漂出共用段。规矩是「读取时夹紧」（见 doorView），
+ * 但光夹紧的话，存档里的数还是漂的、下次拖动会从漂的位置再算。
+ * 所以每次手势结束时把有效门的 (x,y) **写回墙缝中心线上夹紧后的位置**：
+ * 存档和显示永远一致；axis 真的从竖墙翻成横墙时，门是平滑落到新墙上而不是跳。
+ * 失效的门（真不合法）一动不碰，让它留在原地画红叉。 */
+function reconcileDoors() {
+  for (const d of state.doors) {
+    const g = doorView(d, state.rooms, state.doors);
+    if (!g.ok) continue;
+    if (g.vertical) { d.x = g.gapLo + g.wallT / 2; d.y = g.pos; }
+    else { d.x = g.pos; d.y = g.gapLo + g.wallT / 2; }
+  }
 }
 
 /* ---------- 坐标转换 ---------- */
@@ -328,6 +679,137 @@ function snapToRooms(x, y, w, h, exclude) {
 /* ---------- 绘制 ---------- */
 const getCSS = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
+/* ---------- 画门 ----------
+ * 三种情况分开画：
+ *  1) 墙缝在屏幕上有厚度：先填底色把墙线断开（"这里是个洞"），再描一圈边。
+ *  2) 贴死模式（wallT = 0）或缩得太小：洞口是**零宽矩形**，fillRect 什么也填不出来、
+ *     strokeRect 画退化矩形各家浏览器表现不一致 —— 改画一条沿墙缝的粗线段，
+ *     两端各加一小横当"洞口边"。
+ *  3) 失效的门：原位画一个**和缩放无关**的红叉 + 「无效」，房间挪回去就自动复活。
+ * 颜色：通铺 = --accent 虚线（砖缝从这儿穿过去）；过门石 = --ink-soft 实线（一块石头）。
+ * ★ 红只留给"坏了"这一件事：过门石本身完全合法，抢红色用的话，同一种红在同一个画布上
+ *   就有了两个意思，用户会渐渐不信那个红（方案第六节的理由）。
+ * ★ 虚线画完立刻 setLineDash([]) 复位，否则后面画的东西全变虚线。 */
+function drawDoors(ctx, scale, offsetX, offsetY) {
+  if (!state.doors.length) return;
+  const px = (mm) => (mm - offsetX) * scale;
+  const py = (mm) => (mm - offsetY) * scale;
+  const C_ACCENT = getCSS("--accent"), C_STONE = getCSS("--ink-soft"),
+        C_PAPER = getCSS("--paper"), C_BAD = getCSS("--danger");
+  const FONT = " -apple-system, PingFang SC, sans-serif";
+
+  for (const d of state.doors) {
+    const g = doorView(d, state.rooms, state.doors);
+
+    if (!g.ok) {
+      /* 失效的门不删：拖房间的过程中红一下很正常，挪回去就该复活。
+       * 叉的大小按**像素**定，不随缩放变化——缩到很小的时候也要看得见。 */
+      const X = px(numOr(d.x, 0)), Y = py(numOr(d.y, 0)), a = 6.5;
+      ctx.save();
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(X - a, Y - a); ctx.lineTo(X + a, Y + a);
+      ctx.moveTo(X + a, Y - a); ctx.lineTo(X - a, Y + a);
+      ctx.strokeStyle = C_PAPER; ctx.lineWidth = 5.5; ctx.stroke();   // 垫一层底色，明暗两套都看得清
+      ctx.strokeStyle = C_BAD;   ctx.lineWidth = 2.6; ctx.stroke();
+      ctx.fillStyle = C_BAD;
+      ctx.font = "700 10px" + FONT;
+      ctx.textAlign = "center"; ctx.textBaseline = "top";
+      ctx.fillText("无效", X, Y + a + 3);
+      ctx.textAlign = "start"; ctx.textBaseline = "alphabetic";
+      ctx.restore();
+      continue;
+    }
+
+    const sel = d === state.selDoor;
+    const drag = state.pending && state.pending.door === d && state.pending.moved;
+    const vertical = g.vertical;
+    const x = vertical ? px(g.gapLo) : px(g.pos - g.width / 2);
+    const y = vertical ? py(g.pos - g.width / 2) : py(g.gapLo);
+    const w = vertical ? g.wallT * scale : g.width * scale;
+    const h = vertical ? g.width * scale : g.wallT * scale;
+    const color = d.threshold ? C_STONE : C_ACCENT;
+
+    ctx.save();
+    if (sel || drag) { ctx.shadowColor = C_ACCENT; ctx.shadowBlur = 10; }
+    ctx.strokeStyle = color;
+    ctx.lineWidth = sel ? 2.5 : 1.6;
+    if (!d.threshold) ctx.setLineDash([4, 3]);
+
+    if (Math.min(w, h) >= 2.5) {
+      ctx.fillStyle = d.threshold ? C_STONE : C_PAPER;
+      ctx.fillRect(x, y, w, h);      // 把墙线断开
+      ctx.strokeRect(x, y, w, h);
+    } else {
+      const cx = x + w / 2, cy = y + h / 2;      // 贴死时就是墙缝那条中心线
+      const half = (vertical ? h : w) / 2;
+      ctx.lineCap = "butt";
+      ctx.lineWidth = sel ? 4.5 : 3.4;
+      ctx.beginPath();
+      if (vertical) { ctx.moveTo(cx, cy - half); ctx.lineTo(cx, cy + half); }
+      else          { ctx.moveTo(cx - half, cy); ctx.lineTo(cx + half, cy); }
+      ctx.stroke();
+      ctx.setLineDash([]);
+      const t = 4.5;                  // 洞口两端的小横：垂直于墙，暗示"洞到这里为止"
+      ctx.beginPath();
+      if (vertical) {
+        ctx.moveTo(cx - t, cy - half); ctx.lineTo(cx + t, cy - half);
+        ctx.moveTo(cx - t, cy + half); ctx.lineTo(cx + t, cy + half);
+      } else {
+        ctx.moveTo(cx - half, cy - t); ctx.lineTo(cx - half, cy + t);
+        ctx.moveTo(cx + half, cy - t); ctx.lineTo(cx + half, cy + t);
+      }
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+
+    /* 宽度数字：窗口够大才画（沿用房间名"W>55 才画"的习惯）。
+     * 竖墙上的洞口又窄又长，字横着写会溢出到房间里去 → 转 90° 顺着墙写。 */
+    if (g.width * scale >= DOOR_LABEL_MIN_PX) {
+      ctx.font = "600 10px" + FONT;
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      const label = String(Math.round(g.width));
+      /* 数字必须**垫一层纸色**再填。门洞线是 3.4px 的粗线、通铺还是虚线，
+       * 同色数字直接压上去，虚线的洞从笔画缝里透出来 —— 竖墙那位还会被转 90°，
+       * 远看就是一条糊掉的珠子，宽度根本读不出来。
+       * 用"先描粗一圈纸色、再填色"的老办法（画失效门的 ✗ 就是这么干的，
+       * 见本函数开头）：C_PAPER 取自 CSS 变量，明暗两套主题都自动对。 */
+      const put = (tx, ty) => {
+        ctx.strokeStyle = C_PAPER; ctx.lineWidth = 3; ctx.lineJoin = "round";
+        ctx.strokeText(label, tx, ty);
+        ctx.fillStyle = color;
+        ctx.fillText(label, tx, ty);
+      };
+      if (vertical) {
+        ctx.save();
+        ctx.translate(x + w / 2, y + h / 2);
+        ctx.rotate(-Math.PI / 2);
+        put(0, 0);
+        ctx.restore();
+      } else {
+        put(x + w / 2, y + h / 2);
+      }
+      ctx.textAlign = "start"; ctx.textBaseline = "alphabetic";
+    }
+    ctx.restore();
+  }
+}
+
+/* 手指底下有没有门。判定 =「门洞矩形外扩 slopMM 后包含该点」，
+ * 贴死模式的门厚 0、失效的门退化成 (x,y) 上一个点，靠外扩照样点得中
+ * （失效的门也得能点中，否则没法在清单里删掉它）。
+ * 多个叠着时按数组**倒序**取第一个——和 hitTest 一致：后画的在上层。 */
+function doorHitTest(mx, my, slopMM) {
+  for (let i = state.doors.length - 1; i >= 0; i--) {
+    const d = state.doors[i];
+    const g = doorView(d, state.rooms, state.doors);
+    const r = g.ok ? g.rect : { x: numOr(d.x, 0), y: numOr(d.y, 0), w: 0, h: 0 };
+    if (mx >= r.x - slopMM && mx <= r.x + r.w + slopMM &&
+        my >= r.y - slopMM && my <= r.y + r.h + slopMM) return d;
+  }
+  return null;
+}
+
 function draw() {
   const dpr = window.devicePixelRatio || 1;
   // 画布最小给它 160px：容器宽度偶尔会算成 0（页面还没排好时），减 8 就成了负数
@@ -355,7 +837,12 @@ function draw() {
     state.view = computeView(boxW, boxH);
   const offPx = recenterIfNeeded(boxW, boxH);   // 偏了就这一帧扶正
   const { scale, offsetX, offsetY } = state.view;
+  /* 两个轴各有一个换算函数。**不要拿 px 去算 y**——这个 bug 真出现过：
+   * 画布是竖的、户型是横的时，纵向会多出居中留白，offsetY 比 offsetX 小一大截
+   * （实测差 1734mm），房间就整体画高了近 2 米，而命中判定用的是对的 offsetY，
+   * 于是"看到的"和"点得到的"对不上。 */
   const px = (mm) => (mm - offsetX) * scale;
+  const py = (mm) => (mm - offsetY) * scale;
 
   // 网格
   let step = 1000;
@@ -370,13 +857,13 @@ function draw() {
     const p = px(x); ctx.moveTo(p, 0); ctx.lineTo(p, boxH);
   }
   for (let y = y0; y <= y1; y += step) {
-    const p = (y - offsetY) * scale; ctx.moveTo(0, p); ctx.lineTo(boxW, p);
+    const p = py(y); ctx.moveTo(0, p); ctx.lineTo(boxW, p);
   }
   ctx.stroke();
 
   // 房间
   state.rooms.forEach((r) => {
-    const X = px(r.x), Y = px(r.y);
+    const X = px(r.x), Y = py(r.y);
     const W = r.w * scale, H = r.h * scale;
     const sel = r === state.selected;
     const dragging = state.pending && state.pending.room === r && state.pending.moved;
@@ -408,6 +895,9 @@ function draw() {
     }
   });
 
+  // ★ 门画在房间**之后**，否则被房间盖住
+  drawDoors(ctx, scale, offsetX, offsetY);
+
   if (!state.rooms.length) {
     ctx.fillStyle = getCSS("--ink-soft");
     ctx.font = "14px -apple-system, PingFang SC, sans-serif";
@@ -417,15 +907,17 @@ function draw() {
   }
 
   // 光标
-  canvas.style.cursor = (state.pending && (state.pending.room || state.pending.mode === "pan")) ? "grabbing"
+  const pd = state.pending;
+  canvas.style.cursor = (pd && (pd.room || pd.door || pd.mode === "pan")) ? "grabbing"
                        : (state.rooms.length ? "grab" : "default");
 
   $("#hint").textContent = state.rooms.length
-    ? ("空白处拖动画布 · 滚轮或「＋ －」缩放 · 乱了就点「适应画面」复位"
+    ? ("点两间房中间那道墙开门 · 按住门顺着墙拖 · 空白处拖动画布 · ＋－缩放"
        + (state.gapMode === "zero" ? " · 房间靠近时直接贴上去（间隙 0）"
                                    : ` · 房间靠近时自动留 ${state.wall}mm 墙`))
     : "点下面「＋ 添加房间」开始";
   renderRoomList();
+  renderDoorList();
   // 版本行顺带报一下居中情况（排查用：扶正了多少、往哪边偏的）
   if (offPx > 0.5 || _offDx || _offDy) {
     const dir = [];
@@ -459,20 +951,50 @@ canvas.addEventListener("pointerdown", (e) => {
   const px0 = e.clientX - b.left, py0 = e.clientY - b.top;
   const { x, y } = toMM(e);
   const slopMM = HIT_SLOP_PX / state.view.scale;
-  const hit = hitTest(x, y, slopMM);
+
+  /* ★ 四级命中，顺序不能反——墙就贴在房间的边上，先判房间的话永远点不到墙：
+   *   ① 已有的门 → 拖这道门（必须排最前，否则会在同一位置再叠一道重叠的门）
+   *   ② 两间房中间的墙 → 候选，**抬手时才真开**（见 endPointer）
+   *   ③ 房间 → 选中 + 拖动（原逻辑）
+   *   ④ 都没点到 → 平移画布（原逻辑）
+   * 点墙的容差按屏幕像素换算，所以放大缩小手感一致；
+   * 真机上小房间难点的兜底是「房间清单永远能选中任何房间」，要调就调 WALL_SLOP_PX。 */
+  const dHit = doorHitTest(x, y, slopMM);
+  const wHit = dHit ? null
+    : findWallGap(state.rooms, x, y, WALL_SLOP_PX / state.view.scale,
+                  MIN_DOOR_MM, state.doors, state.doorW);
+  const rHit = (dHit || wHit) ? null : hitTest(x, y, slopMM);
 
   // 立刻高亮，给视觉反馈
-  state.selected = hit || null;
+  if (dHit) setSel(null, dHit);
+  else if (wHit) setSel(null, null);     // 墙上还没门，先清掉选中
+  else setSel(rHit, null);
   renderEditor();
   draw();
-  if (hit && navigator.vibrate) { try { navigator.vibrate(6); } catch (err) {} }
+  if ((dHit || rHit) && navigator.vibrate) { try { navigator.vibrate(6); } catch (err) {} }
 
+  const common = { room:null, sx:x, sy:y, moved:false, startTime:Date.now(), pointerId:e.pointerId };
+  if (dHit) {
+    const g = doorView(dHit, state.rooms, state.doors);
+    const ax = g.ok ? { vertical:g.vertical, lo:g.lo, hi:g.hi } : null;
+    state.pending = Object.assign(common, {
+      mode:"door", door:dHit, vertical:!!g.vertical, pos0: g.ok ? g.pos : null,
+      // 拖动区间在**按下时**就算好、整段拖动不变：拖到头就停住，不会滑过邻居的门
+      free: ax ? freeRangeOnWall(ax, state.doors, dHit, g.pos) : null,
+    });
+    return;
+  }
+  if (wHit) {
+    // 平移要用的初始量先备着：手指一动超过阈值，这一档就转成平移画布
+    state.pending = Object.assign(common, { mode:"wall", gap:wHit,
+      px:px0, py:py0, ox:state.view.offsetX, oy:state.view.offsetY });
+    return;
+  }
   // 按住房间＝挪这一间；按住空白处＝挪整张画布
-  state.pending = hit
-    ? { mode:"room", room:hit, sx:x, sy:y, rx:hit.x, ry:hit.y,
-        moved:false, startTime:Date.now(), pointerId:e.pointerId }
-    : { mode:"pan", room:null, px:px0, py:py0, ox:state.view.offsetX, oy:state.view.offsetY,
-        moved:false, startTime:Date.now(), pointerId:e.pointerId };
+  state.pending = rHit
+    ? Object.assign(common, { mode:"room", room:rHit, rx:rHit.x, ry:rHit.y })
+    : Object.assign(common, { mode:"pan",
+        px:px0, py:py0, ox:state.view.offsetX, oy:state.view.offsetY });
 });
 
 canvas.addEventListener("pointermove", (e) => {
@@ -481,15 +1003,37 @@ canvas.addEventListener("pointermove", (e) => {
   e.preventDefault();
 
   // 拖画布：图跟着手指走，位置随你摆
-  if (p.mode === "pan") {
+  if (p.mode === "pan" || p.mode === "wall") {
     const b = canvas.getBoundingClientRect();
     const dxPx = (e.clientX - b.left) - p.px;
     const dyPx = (e.clientY - b.top) - p.py;
     if (!p.moved && Math.hypot(dxPx, dyPx) < DRAG_THRESHOLD_PX) return;
     p.moved = true;
+    /* ★ 从墙上起手、往外拖 = 他是想挪画布，不是想开门 —— 这一档就此转成平移，
+     * 抬手时 endPointer 看到 mode 已经不是 "wall"，就不会凭空多出一道门。
+     * （"按下就开门、拖出去再删掉"的做法会先写一次数据再撤销：会闪，还多一条"删错了"的岔路。
+     *   抬手才开门只差几十毫秒，代价是精细摆门要走"点一下、再拖一下"两步。） */
+    p.mode = "pan";
     state.manualView = true;              // 自己挪过的，就别再自动扶正了
     state.view.offsetX = p.ox - dxPx / state.view.scale;
     state.view.offsetY = p.oy - dyPx / state.view.scale;
+    draw();
+    return;
+  }
+
+  if (p.mode === "door") {
+    if (p.pos0 === null || !p.free) return;      // 失效的门拖不动，先把它挪回墙上才有救
+    const { x, y } = toMM(e);
+    const along = p.vertical ? y : x;
+    const start = p.vertical ? p.sy : p.sx;
+    if (!p.moved && Math.abs(along - start) * state.view.scale < DRAG_THRESHOLD_PX) return;
+    p.moved = true;
+    /* 用**相对位移**，不是"门心跟手指"：抓在洞口边上的时候门不会跳一下。
+     * 吸附 DOOR_SNAP_MM 之后夹进 p.free——拖到头就停住，中途绝不产生一个红色的门。 */
+    let pos = p.pos0 + (along - start);
+    pos = Math.round(pos / DOOR_SNAP_MM) * DOOR_SNAP_MM;
+    pos = Math.min(Math.max(pos, p.free.lo), p.free.hi);
+    if (p.vertical) p.door.y = pos; else p.door.x = pos;
     draw();
     return;
   }
@@ -538,22 +1082,68 @@ canvas.addEventListener("wheel", (e) => {
 $("#zin").onclick  = () => { const s = canvasCssSize(); zoomAt(1.25, s.w / 2, s.h / 2); };
 $("#zout").onclick = () => { const s = canvasCssSize(); zoomAt(1 / 1.25, s.w / 2, s.h / 2); };
 
+/* 点墙开一道门。位置用 findWallGap 挑中的那一点（已经夹进共用段），
+ * 宽度用「新门默认」，放不下就退到这道墙能容纳的最大值——
+ * 先开出来、再让他改宽度，比"点了没反应"强。 */
+function openDoorOnWall(w) {
+  const span = w.hi - w.lo;
+  let width = Math.round(w.w);
+  if (width > span) width = Math.floor(span);
+  if (width < MIN_DOOR_MM) return;              // findWallGap 已经筛过，兜底而已
+  const pos = clampPos(w.lo, w.hi, width, w.pos);
+  const nd = {
+    id: "d" + (++state.seq),
+    a: w.a.id, b: w.b.id,
+    x: w.vertical ? (w.gapLo + w.gapHi) / 2 : pos,
+    y: w.vertical ? pos : (w.gapLo + w.gapHi) / 2,
+    width, threshold: !!state.doorThreshold,
+  };
+  // 撞上同一道墙上已有的门 → 不新建，直接把那道选出来（他多半就是想改那道）
+  const clash = sameWallDoorClash(nd, w, pos, width, state.doors);
+  if (clash) { setSel(null, clash); renderEditor(); renderDoorList(); draw(); return; }
+  if (!doorView(nd, state.rooms, state.doors).ok) return;   // 兜底：宁可不开，也不开一道红门
+  state.doors.push(nd);
+  /* 没有撤销，所以误开的门补救成本必须是 2 次点击 → 新门立刻选中、编辑区就在下面。 */
+  setSel(null, nd);
+  reconcileDoors();
+  saveSketch();
+  renderEditor(); renderDoorList(); draw();
+}
+
 function endPointer(e) {
   const p = state.pending;
   state.pending = null;
   if (!p) { draw(); return; }
 
+  /* ★ 开门在**抬手**做，不在按下做：这是本条交互的安全设计。
+   * 从墙上起手想平移画布很常见，按下就开门的话每拖一次画布就多一道门。
+   * 拖过阈值的那些已经在 pointermove 里转成 mode="pan"，到不了这里。 */
+  if (p.mode === "wall") {
+    if (!p.moved) openDoorOnWall(p.gap);
+    return;
+  }
+
   // 长按未移动 → 滚到编辑面板并聚焦（手机上调数值方便）
-  if (!p.moved && p.room && Date.now() - p.startTime > 350) {
+  const longPress = !p.moved && Date.now() - p.startTime > 350;
+  if (longPress && p.room) {
     const ed = document.getElementById("editor");
     if (ed && ed.style.display !== "none") {
       ed.scrollIntoView({ behavior: "smooth", block: "nearest" });
       setTimeout(() => { const n = document.getElementById("rName"); if (n) n.focus(); }, 250);
     }
   }
+  if (longPress && p.door) {          // 门也一样：长按直接去改宽度
+    const card = document.getElementById("doorCard");
+    if (card) {
+      card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      setTimeout(() => { const n = document.getElementById("dW"); if (n) n.focus(); }, 250);
+    }
+  }
 
+  if (p.moved && p.door) { reconcileDoors(); saveSketch(); }
   // ★ 视图冻结：只在房间被拖出屏幕外时才重算
   if (p.moved && p.room) {
+    reconcileDoors();      // 房间动过，把挂在墙上的门夹回共用段里
     saveSketch();          // 拖动结束就存一份，刷新不丢
     if (anyRoomOutside()) state.view = null;   // 拖出画面了就自动收回来
   }
@@ -564,12 +1154,34 @@ canvas.addEventListener("pointercancel", endPointer);
 
 /* ---------- 编辑面板 ---------- */
 function renderEditor() {
+  renderDoorEditor();        // 两个面板互斥，永远一起刷
   const box = $("#editor");
   if (!state.selected) { box.style.display = "none"; return; }
   box.style.display = "";
   $("#rName").value = state.selected.name;
   $("#rW").value = state.selected.w;
   $("#rH").value = state.selected.h;
+}
+
+/* ---------- 选中的门 ---------- */
+function renderDoorEditor() {
+  const box = $("#doorEditor");
+  if (!box) return;
+  const d = state.selDoor;
+  if (!d) { box.style.display = "none"; return; }
+  box.style.display = "";
+  const A = state.rooms.find((r) => r.id === d.a), B = state.rooms.find((r) => r.id === d.b);
+  const g = doorView(d, state.rooms, state.doors);
+  $("#doorTitle").textContent = (A && B) ? `${A.name} ↔ ${B.name}` : "这道门指向的房间没了";
+  $("#dW").value = Math.round(numOr(d.width, 0));
+  /* 「离起点」显示的是 pos - lo：导出时 from 取的是"起点更大的那间房"，于是
+   * house.html 算出来的 at === pos - lo，两个工具显示的是同一个数字。 */
+  $("#dAt").value = g.ok ? Math.round(g.pos - g.lo) : "";
+  $("#dFlat").className  = d.threshold ? "ghost" : "primary";
+  $("#dStone").className = d.threshold ? "primary" : "ghost";
+  $("#doorTip").textContent = g.ok
+    ? `这堵共用墙是 ${Math.round(g.lo)}~${Math.round(g.hi)}mm，洞口得整体落在里面`
+    : `⚠ ${g.why}`;
 }
 
 /* ---------- 房间清单：一眼看出有没有房间跑到很远的地方 ---------- */
@@ -595,10 +1207,109 @@ function renderRoomList() {
     d.className = "room-line" + (r === state.selected ? " on" : "") + (r === far ? " far" : "");
     d.textContent = `${r.name}　x ${Math.round(r.x)}　y ${Math.round(r.y)}　${Math.round(r.w)}×${Math.round(r.h)}`
       + (r === far ? "　← 这间离得太远，把画面撑小了" : "");
-    d.onclick = () => { state.selected = r; renderEditor(); draw(); };
+    d.onclick = () => { setSel(r, null); renderEditor(); draw(); };
     box.appendChild(d);
   });
 }
+
+/* ---------- 门洞清单 ---------- */
+let _doorKey = "";
+function renderDoorList() {
+  const box = $("#doorList");
+  if (!box) return;
+  const rows = state.doors.map((d) => {
+    const g = doorView(d, state.rooms, state.doors);
+    const A = state.rooms.find((r) => r.id === d.a), B = state.rooms.find((r) => r.id === d.b);
+    return { d, g, A, B };
+  });
+  /* 记忆化：拖动时每帧都会走一次 draw。key 里带上「离起点」的显示值，
+   * 房间一挪、共用段变了、数字跟着变，这一行就得重建。 */
+  const key = JSON.stringify(rows.map((o) => [o.d.id, o.A && o.A.name, o.B && o.B.name,
+    Math.round(numOr(o.d.width, 0)), !!o.d.threshold, o.g.ok,
+    o.g.ok ? Math.round(o.g.pos - o.g.lo) : o.g.why, o.d === state.selDoor]));
+  if (key === _doorKey) return;
+  _doorKey = key;
+  box.innerHTML = "";
+  if (!state.doors.length) {
+    const e = document.createElement("div");
+    e.className = "room-line empty";
+    e.textContent = "还没有门洞，点两间房中间那道墙开一道";
+    box.appendChild(e);
+    return;
+  }
+  rows.forEach((o) => {
+    const el = document.createElement("div");
+    el.className = "room-line" + (o.d === state.selDoor ? " on" : "") + (o.g.ok ? "" : " far");
+    const name = (o.A && o.B) ? `${o.A.name} ↔ ${o.B.name}` : "（房间已删除）";
+    el.textContent = o.g.ok
+      ? `${name}　宽 ${Math.round(numOr(o.d.width, 0))}　离起点 ${Math.round(o.g.pos - o.g.lo)}　${o.d.threshold ? "过门石" : "通铺"}`
+      : `${name}　⚠ ${o.g.why}`;
+    el.onclick = () => { setSel(null, o.d); renderEditor(); draw(); };
+    box.appendChild(el);
+  });
+}
+
+/* ---------- 门洞面板 ---------- */
+/* 新门默认值的显示器。改任何一道门的宽度/类型时顺手更新 state.doorW/doorThreshold，
+ * 这里就跟着变——目的是「照上一道门来」，省得每开一道门都重设一遍。 */
+function syncDoorUI() {
+  const w = $("#doorW"); if (w) w.value = state.doorW;
+  const k = $("#doorKind"); if (k) k.value = state.doorThreshold ? "stone" : "flat";
+}
+function rememberDoor(w, threshold) {
+  if (w >= MIN_DOOR_MM) state.doorW = w;
+  state.doorThreshold = !!threshold;
+  syncDoorUI();
+}
+$("#doorW").addEventListener("input", (e) => {
+  const v = parseInt(e.target.value, 10);
+  if (v >= MIN_DOOR_MM) { state.doorW = v; saveSoon(); }
+});
+$("#doorW").addEventListener("change", syncDoorUI);   // 打太小了就把真实值写回去
+$("#doorKind").addEventListener("change", (e) => {
+  state.doorThreshold = e.target.value === "stone";
+  saveSoon();
+});
+
+$("#dW").addEventListener("input", (e) => {
+  const d = state.selDoor;
+  const v = parseInt(e.target.value, 10);
+  if (!d || !(v >= MIN_DOOR_MM)) return;
+  d.width = v;
+  rememberDoor(v, d.threshold);
+  reconcileDoors(); draw(); saveSoon(); renderDoorList();
+});
+$("#dW").addEventListener("change", renderDoorEditor);
+$("#dAt").addEventListener("input", (e) => {
+  const d = state.selDoor;
+  const v = parseInt(e.target.value, 10);
+  if (!d || !isFinite(v)) return;
+  const g = doorView(d, state.rooms, state.doors);
+  if (!g.ok) return;
+  /* 夹紧而不丢弃：门口蹭到墙边只是「挪回来」的事，不该报错。
+   * 打字过程中不做回写（"1" 会被夹成最小值、输入框跟人抢），失焦时才显示真实值。 */
+  const pos = clampPos(g.lo, g.hi, numOr(d.width, 0), g.lo + v);
+  if (g.vertical) d.y = pos; else d.x = pos;
+  reconcileDoors(); draw(); saveSoon(); renderDoorList();
+});
+$("#dAt").addEventListener("change", renderDoorEditor);
+
+function setDoorKind(stone) {
+  const d = state.selDoor;
+  if (!d) return;
+  d.threshold = stone;
+  rememberDoor(numOr(d.width, 0), stone);
+  saveSketch(); draw(); renderDoorEditor(); renderDoorList();
+}
+$("#dFlat").onclick  = () => setDoorKind(false);
+$("#dStone").onclick = () => setDoorKind(true);
+$("#dDel").onclick = () => {
+  const d = state.selDoor;
+  if (!d) return;
+  state.doors = state.doors.filter((x) => x !== d);
+  setSel(state.selected, null);
+  saveSketch(); draw(); renderEditor(); renderDoorList();
+};
 
 $("#rName").addEventListener("input", (e) => {
   if (state.selected) { state.selected.name = e.target.value; draw(); saveSoon(); }
@@ -612,12 +1323,18 @@ $("#rH").addEventListener("input", (e) => {
   if (state.selected && v > 0) { state.selected.h = v; draw(); if (anyRoomOutside()) { state.view = null; draw(); } saveSoon(); }
 });
 $("#del").onclick = () => {
-  if (!state.selected) return;
-  state.rooms = state.rooms.filter(r => r !== state.selected);
-  state.selected = null;
+  const r = state.selected;
+  if (!r) return;
+  /* 门是「两间房之间」的东西，房间没了门就悬空了。house.html 也是这么连坐的
+   * （house.html:938-939），这里跟着一起删，并且**删之前说清楚要连坐几道**。 */
+  const gone = state.doors.filter((d) => d.a === r.id || d.b === r.id);
+  if (gone.length && !confirm(`删掉「${r.name}」？挂在它上面的 ${gone.length} 道门也会一起删掉。`)) return;
+  state.doors = state.doors.filter((d) => d.a !== r.id && d.b !== r.id);
+  state.rooms = state.rooms.filter((x) => x !== r);
+  setSel(null, null);
   state.view = null;   // 少了一间，视野重新收拾一遍
   saveSketch();
-  draw(); renderEditor();
+  draw(); renderEditor(); renderDoorList();
 };
 
 /* ---------- 工具栏 ---------- */
@@ -631,7 +1348,7 @@ $("#add").onclick = () => {
     x, y, w: 3000, h: 3000,
   };
   state.rooms.push(r);
-  state.selected = r;
+  setSel(r, null);
   state.view = null;   // 新房间加进来，重算视野
   saveSketch();
   draw(); renderEditor();
@@ -674,10 +1391,12 @@ $("#fit").onclick = () => {
   try { canvas.scrollIntoView({ behavior: "smooth", block: "center" }); } catch (e) {}
 };
 $("#clear").onclick = () => {
-  if (!confirm("清空所有房间？")) return;
-  state.rooms = []; state.selected = null; state.view = null; state.pending = null;
+  if (!confirm("清空所有房间和门洞？")) return;
+  state.rooms = []; state.doors = [];
+  setSel(null, null);
+  state.view = null; state.pending = null;
   saveSketch();      // 清空也要存，免得刷新又冒出来
-  draw(); renderEditor();
+  draw(); renderEditor(); renderDoorList();
 };
 
 /* ---------- 导出 ---------- */
@@ -704,25 +1423,9 @@ function overlapNames(rooms) {
 $("#apply").onclick = () => {
   if (!state.rooms.length) { alert("先加几间房"); return; }
 
-  // 先把后果说清楚：几间房被换掉、几道门会被清掉
-  const house = readHouse();
-  const nR = house ? house.rooms.length : 0;
-  const nD = house && Array.isArray(house.doors) ? house.doors.length : 0;
-  const gapTxt = state.gapMode === "zero" ? "贴死（间隙 0）" : `留墙厚 ${state.wall}mm`;
-  const L = [`草图里有 ${state.rooms.length} 间房，要写进 house.html。`,
-             `房间之间：${gapTxt}，这个设置会一起带过去。`];
-  if (nR || nD) {
-    L.push("", `house.html 现在存着 ${nR} 间房、${nD} 道门。应用之后：`);
-    if (nR) L.push(`· 那 ${nR} 间房 → 换成草图这 ${state.rooms.length} 间`);
-    if (nD) L.push(`· 那 ${nD} 道门 → 全部清掉，门洞得回 house.html 重设`);
-    L.push("", "这一步写下去就撤不回来了。");
-  } else {
-    L.push("", "house.html 里还没排过户型，写进去不会覆盖别的东西。");
-  }
-  const ov = overlapNames(state.rooms);
-  if (ov.length) L.push("", `⚠ 草图里有房间叠在一起（${ov.join("、")}），写进去 house.html 会报「重叠」、出不了图。`);
-  if (!confirm(L.join("\n") + "\n\n确定应用吗？")) return;
-
+  /* ① 先把房间算出来（整体平移到原点 + 取整）。
+   *    门的换算必须用**导出后**这套坐标，不能用草图坐标——两张图原点不一样，
+   *    而且 house.html 会按取整后的数再验一遍，差半毫米就可能判不合法。 */
   const minX = Math.min(...state.rooms.map(r => r.x));
   const minY = Math.min(...state.rooms.map(r => r.y));
   const rooms = state.rooms.map((r, i) => ({
@@ -733,15 +1436,65 @@ $("#apply").onclick = () => {
     w: Math.round(r.w),
     h: Math.round(r.h),
   }));
+  const idMap = {};
+  state.rooms.forEach((r, i) => { idMap[r.id] = rooms[i].id; });
+
+  /* ② 再把门换算过去。放不下的（墙比门窄、房间不再相邻、洞口压着第三间房……）
+   *    会被丢进 dropped，下面逐条报给用户听，不闷声吞掉。 */
+  const { list: doors, dropped } = exportDoors(rooms, state.doors, idMap);
+
+  /* ③ 这时候才弹确认：几间房、几道门，**两个方向都说清楚**。
+   *    尤其「草图里 0 道门」必须明说会清空，否则用户以为门还在——
+   *    老存档没有 doors 字段时，那就是静默清空。 */
   let existing = null;
   try { existing = JSON.parse(localStorage.getItem(STORE_KEY) || "null"); } catch (e) {}
+  const house = readHouse();
+  const nR = house ? house.rooms.length : 0;
+  const nD = house && Array.isArray(house.doors) ? house.doors.length : 0;
+  const gapTxt = state.gapMode === "zero" ? "贴死（间隙 0）" : `留墙厚 ${state.wall}mm`;
+  const L = [`草图里有 ${state.rooms.length} 间房、${state.doors.length} 道门，要写进 house.html。`,
+             `房间之间：${gapTxt}，这个设置会一起带过去。`];
+  if (nR || nD) {
+    L.push("", `house.html 现在存着 ${nR} 间房、${nD} 道门。应用之后：`);
+    if (nR) L.push(`· 那 ${nR} 间房 → 换成草图这 ${state.rooms.length} 间`);
+    if (nD || doors.length) {
+      L.push(doors.length ? `· 那 ${nD} 道门 → 换成草图这 ${doors.length} 道`
+                          : `· 那 ${nD} 道门 → 全部清掉（草图里一道门都没画）`);
+    }
+    L.push("", "这一步写下去就撤不回来了。");
+  } else {
+    L.push("", "house.html 里还没排过户型，写进去不会覆盖别的东西。");
+  }
+  if (dropped.length) {
+    L.push("", `⚠ 有 ${dropped.length} 道门放不回两间房中间，会被丢掉：`);
+    for (const x of dropped.slice(0, 5)) {
+      const nm = (id) => (state.rooms.find(r => r.id === id) || {}).name || "?";
+      L.push(`  ${nm(x.d.a)} ↔ ${nm(x.d.b)}（${x.why}）`);
+    }
+    if (dropped.length > 5) L.push(`  …… 还有 ${dropped.length - 5} 道`);
+  }
+  const ov = overlapNames(state.rooms);
+  if (ov.length) L.push("", `⚠ 草图里有房间叠在一起（${ov.join("、")}），写进去 house.html 会报「重叠」、出不了图。`);
+  /* 起铺基准房是 house.html 的设置，存的是 id（r1/r2…），可导出时 id 会按下标重排成 r1..rN。
+   * 房间顺序一变，基准房就会**悄悄**指到另一间房，整屋砖缝跟着错位，而且不报错。 */
+  const oldBaseId = existing && existing.settings && existing.settings.baseRoom;
+  if (oldBaseId && house) {
+    const oldName = (house.rooms.find(r => r.id === oldBaseId) || {}).name;
+    const k = parseInt(String(oldBaseId).replace(/\D/g, ""), 10);
+    if (oldName && !(rooms[k - 1] && rooms[k - 1].name === oldName)) {
+      L.push("", `⚠ house.html 的「起铺基准房」是「${oldName}」，在草图这套顺序里对不上号了，` +
+                 `会悄悄退回用「${rooms[0].name}」——整屋砖缝会跟着挪。导出后请回 house.html 重新选一次。`);
+    }
+  }
+  if (!confirm(L.join("\n") + "\n\n确定应用吗？")) return;
+
   const data = {
     // 保留 house.html 原来的设置（砖规格、起铺基准那些），只把墙厚换成草图现在这个值
     settings: Object.assign({
       floorTile: null, direction: "horizontal", grout: 2,
       baseRoom: null, baseMode: "center", nudgeX: 0, nudgeY: 0, showCuts: false, wall: 240,
     }, (existing && existing.settings) || {}, { wall: gapMM() }),
-    seq: 100, rooms, doors: [],
+    seq: 100, rooms, doors,
   };
   try {
     localStorage.setItem(STORE_KEY, JSON.stringify(data));
@@ -753,6 +1506,7 @@ $("#apply").onclick = () => {
 window.addEventListener("resize", () => { state.view = null; draw(); });
 loadSketch();          // 打开就接着上次的户型继续摆
 syncWallUI();
+syncDoorUI();
 $("#ver").textContent = "版本 " + BUILD;
 draw(); renderEditor();
 </script>
