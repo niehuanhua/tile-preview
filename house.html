@@ -173,9 +173,13 @@ select{min-height:40px; padding:7px 8px; border:1px solid var(--line); border-ra
             <button data-v="center">居中对称</button><button data-v="edge">靠一边</button>
           </div>
         </div>
-        <div class="custom-inputs">
-          <label class="field mini"><span>整网右移（mm）</span><input type="text" inputmode="numeric" id="nudgeX" placeholder="0"></label>
-          <label class="field mini"><span>整网下移（mm）</span><input type="text" inputmode="numeric" id="nudgeY" placeholder="0"></label>
+        <!-- 整网偏移跟砖规格无关（引擎 basePhase 无条件吃这两个值），所以是普通常显行，
+             不用 .custom-inputs 那种「默认藏起来、由 JS 放出来」的写法 -->
+        <div class="set-row"><span class="set-label">整网右移（mm）</span>
+          <input type="text" inputmode="numeric" id="nudgeX" placeholder="0">
+        </div>
+        <div class="set-row"><span class="set-label">整网下移（mm）</span>
+          <input type="text" inputmode="numeric" id="nudgeY" placeholder="0">
         </div>
       </div>
     </div>
