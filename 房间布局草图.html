@@ -136,7 +136,7 @@ input:focus{outline:2px solid var(--accent); border-color:var(--accent)}
 </div>
 
 <script>
-const BUILD = "2026-09-16 19:30";  // 版本号：手机上看看对不对，就知道是不是旧页面了
+const BUILD = "2026-09-16 20:02";  // 版本号：手机上看看对不对，就知道是不是旧页面了
 
 const STORE_KEY = "houseTileV1";   // house.html 的存档（导出时往这里写）
 const SKETCH_KEY = "houseSketchV1"; // 草图自己的存档（和 house.html 分开，互不干扰）
@@ -158,6 +158,7 @@ const state = {
   pending: null,      // 交互中状态
   gapMode: "wall",    // "wall" = 房间之间留一个墙厚；"zero" = 贴死，间隙 0（两间连通）
   wall: WALL_DEFAULT, // 墙厚（mm）
+  manualView: false,  // 用户自己拖过/缩放过画布 → 不再自动扶正，尊重手动位置
 };
 /* 当前该留多大缝：贴死模式就是 0 */
 const gapMM = () => (state.gapMode === "zero" ? 0 : Math.max(0, Number(state.wall) || 0));
@@ -235,6 +236,24 @@ function hitTest(mx, my, slopMM) {
   return null;
 }
 
+/* 居中自检：只要用户没自己挪过画布，发现图偏了就把它扶正。
+ * 真机上画布尺寸可能被各种东西带偏（地址栏、边框、缩放），这道保险兜住。 */
+let _offDx = 0, _offDy = 0;      // 最近一次扶正是往哪个方向挪的（排查用）
+function recenterIfNeeded(boxW, boxH) {
+  const v = state.view;
+  if (state.manualView || !v || !state.rooms.length) return 0;
+  const bb = bbox(state.rooms);
+  if (!(bb.w > 0 && bb.h > 0)) return 0;
+  const cx = (bb.x + bb.w / 2 - v.offsetX) * v.scale;
+  const cy = (bb.y + bb.h / 2 - v.offsetY) * v.scale;
+  const dx = boxW / 2 - cx, dy = boxH / 2 - cy;   // dy>0：内容偏上；dx>0：内容偏左
+  if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return 0;
+  v.offsetX -= dx / v.scale;
+  v.offsetY -= dy / v.scale;
+  _offDx = dx; _offDy = dy;
+  return Math.hypot(dx, dy);
+}
+
 /* 有没有房间跑到画布外面去了（有就说明视野该重算了） */
 function anyRoomOutside() {
   if (!state.view) return false;
@@ -307,6 +326,7 @@ function draw() {
   // 画布尺寸变了这份视图就作废（旋屏、手机键盘弹出、首帧排版迟了），重新居中
   if (!state.view || state.view.forW !== boxW || state.view.forH !== boxH)
     state.view = computeView(boxW, boxH);
+  const offPx = recenterIfNeeded(boxW, boxH);   // 偏了就这一帧扶正
   const { scale, offsetX, offsetY } = state.view;
   const px = (mm) => (mm - offsetX) * scale;
 
@@ -379,6 +399,13 @@ function draw() {
                                    : ` · 房间靠近时自动留 ${state.wall}mm 墙`))
     : "点下面「＋ 添加房间」开始";
   renderRoomList();
+  // 版本行顺带报一下居中情况（排查用：扶正了多少、往哪边偏的）
+  if (offPx > 0.5 || _offDx || _offDy) {
+    const dir = [];
+    if (Math.abs(_offDy) >= 1) dir.push(_offDy > 0 ? `内容偏上 ${Math.abs(_offDy).toFixed(0)}px` : `内容偏下 ${Math.abs(_offDy).toFixed(0)}px`);
+    if (Math.abs(_offDx) >= 1) dir.push(_offDx > 0 ? `偏左 ${Math.abs(_offDx).toFixed(0)}px` : `偏右 ${Math.abs(_offDx).toFixed(0)}px`);
+    $("#ver").textContent = "版本 " + BUILD + "　（已自动扶正：" + (dir.join("，") || "居中") + "）";
+  }
 }
 
 /* ---------- 触摸/指针交互 ---------- */
@@ -418,6 +445,7 @@ canvas.addEventListener("pointermove", (e) => {
     const dyPx = (e.clientY - b.top) - p.py;
     if (!p.moved && Math.hypot(dxPx, dyPx) < DRAG_THRESHOLD_PX) return;
     p.moved = true;
+    state.manualView = true;              // 自己挪过的，就别再自动扶正了
     state.view.offsetX = p.ox - dxPx / state.view.scale;
     state.view.offsetY = p.oy - dyPx / state.view.scale;
     draw();
@@ -450,6 +478,7 @@ function canvasCssSize() {
            h: canvas.clientHeight || parseFloat(canvas.style.height) || 0 };
 }
 function zoomAt(factor, cxPx, cyPx) {
+  state.manualView = true;               // 自己缩放过的，也别自动扶正
   const v = state.view;
   const mmX = cxPx / v.scale + v.offsetX;      // 锚点现在是哪个毫米位置
   const mmY = cyPx / v.scale + v.offsetY;
@@ -594,7 +623,10 @@ $("#wallCustom").addEventListener("input", (e) => {
 
 /* 适应画面：连画两帧。第一帧可能刚把画布尺寸改了（比如首帧排版），
  * 第二帧按稳定下来的尺寸重新居中，图就一定是正的。 */
-$("#fit").onclick = () => { state.view = null; draw(); state.view = null; draw(); };
+$("#fit").onclick = () => {
+  state.manualView = false;              // 交回自动扶正
+  state.view = null; draw(); state.view = null; draw();
+};
 $("#clear").onclick = () => {
   if (!confirm("清空所有房间？")) return;
   state.rooms = []; state.selected = null; state.view = null; state.pending = null;
