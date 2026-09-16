@@ -256,6 +256,28 @@ test("门洞 · 四个相邻方向都能反推出洞口矩形", () => {
   check("门洞超出共用段 → 明确报错", out.ok === false && /超出/.test(out.why), out.why);
 });
 
+test("门洞 · 两间房贴在一起（间隙 0）也允许加门洞", () => {
+  // 客餐厅一体那种：两间房中间没有墙，但想在图上标个开口位置（以后装推拉门）
+  const A = { id:"a", name:"A", x:0, y:0, w:2000, h:2000 };
+  const B = { id:"b", name:"B", x:2000, y:0, w:1500, h:2000 };   // 紧贴 A 右边，间隙 0
+  const r = E.doorRect(A, B, 1000, 900);
+  check("间隙 0 不再报错", r.ok, r.why);
+  check("洞厚 = 0", r.ok && r.wallT === 0, r.ok ? String(r.wallT) : r.why);
+  check("洞口就压在两间房的交界线上", r.ok && near(r.rect.x, 2000) && near(r.rect.w, 0),
+        r.ok ? JSON.stringify(r.rect) : r.why);
+  // 整屋算一遍：不能崩、不能出 NaN，0 厚门洞也不该占铺贴面积
+  const p = E.housePlan({
+    settings:{ floorTile:{ preset:"800×800", w:800, h:800 }, direction:"horizontal",
+               grout:2, baseRoom:"a", baseMode:"center", nudgeX:0, nudgeY:0 },
+    rooms:[A, B],
+    doors:[{ id:"d1", from:"a", to:"b", at:1000, width:900, threshold:false }],
+  });
+  check("全屋照样算得出来", p.ok, p.errors.join("；"));
+  check("铺贴面积 = 两间房之和（0 厚门洞不占面积）",
+        near(p.summary.areaMM, 2000 * 2000 + 1500 * 2000, 1), String(p.summary.areaMM));
+  check("砖面合计仍是有限数（没出 NaN）", isFinite(p.summary.tiledArea), String(p.summary.tiledArea));
+});
+
 /* ============================================================
  * 五、下料清单与极端输入
  * ============================================================ */

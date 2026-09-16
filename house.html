@@ -477,7 +477,9 @@ const Engine = (() => {
     const vertical = useV && (!useH || yOv >= xOv);
     const gap = vertical ? vGap : hGap;
     const wallT = gap[1] - gap[0];
-    if (wallT <= 1e-6) return { ok:false, why:"两间房贴在一起了（中间没有墙），不需要门洞" };
+    /* wallT = 0 是允许的：两间房连通（中间没有墙，比如客餐厅一体、或以后装推拉门），
+     * 这时门洞只是标个位置，洞厚为 0，不占铺贴面积（latticeSegments 遇到 0 长度区间返回空）。 */
+    if (wallT < 0) return { ok:false, why:"这两间房的间隙算出来是负数，请检查一下坐标" };
     const lo = vertical ? Math.max(A.y, B.y) : Math.max(A.x, B.x);
     const hi = vertical ? Math.min(A.y + A.h, B.y + B.h) : Math.min(A.x + A.w, B.x + B.w);
     const start = vertical ? A.y : A.x;
@@ -1282,7 +1284,8 @@ function renderStatuses(plan){
   plan.rooms.forEach((rm) => rm.warn.forEach((w) => rb.appendChild(el("div", "st warn", `${rm.name}：${w}`))));
   const db = $("#doorStatuses"); db.innerHTML = "";
   plan.doors.forEach((d) => db.appendChild(el("div", "st ok",
-    `${d.fromName} → ${d.toName}：${d.threshold ? "过门石（这里断开）" : "通铺（缝穿过去）"}，洞宽 ${Math.round(d.width)}`)));
+    `${d.fromName} → ${d.toName}：${d.threshold ? "过门石（这里断开）" : "通铺（缝穿过去）"}，洞宽 ${Math.round(d.width)}`
+    + (d.wallT > 0 ? "" : "（这两间房贴在一起、中间没有墙，这个门洞只是标个位置）"))));
 }
 
 function renderCutList(plan){
