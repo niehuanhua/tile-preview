@@ -172,14 +172,9 @@ button{cursor:pointer; touch-action:manipulation}
 .add-btn{flex:1; min-height:50px; border-radius:12px; border:1px solid var(--accent); background:var(--accent-soft); color:var(--accent); font-size:16px; font-weight:800}
 .app-foot{margin-top:18px; text-align:center; font-size:12px; color:var(--ink-soft)}
 /* ---- 本项目新增（复用不了的几处）---- */
-.plan-plot{position:relative; margin-top:10px}
-.plan-plot canvas{display:block; width:100%; border:1px solid var(--line); border-radius:10px; background:var(--joint);
-  touch-action:none; cursor:grab}
-.plan-plot canvas.dragging{cursor:grabbing}
-.plan-undo{position:absolute; top:8px; right:8px; z-index:2; min-height:36px; padding:0 12px;
-  border:1px solid var(--accent); background:var(--accent-soft); color:var(--accent);
-  border-radius:8px; font:inherit; font-size:13px; font-weight:800; box-shadow:0 2px 8px rgba(0,0,0,.12)}
-.plan-undo[hidden]{display:none}
+/* 图只看不摸：不加 touch-action:none，手指在图上来回划照样能滚页面 */
+.plan-plot{margin-top:10px}
+.plan-plot canvas{display:block; width:100%; border:1px solid var(--line); border-radius:10px; background:var(--joint)}
 .room-row{display:flex; flex-direction:column; gap:8px; border:1px solid var(--line); border-radius:8px; padding:8px; margin-top:8px}
 .room-top{display:flex; align-items:center; gap:8px}
 .room-tag{flex:none; font-size:12px; color:var(--ink-soft); font-weight:700}
@@ -235,9 +230,6 @@ select{min-height:40px; padding:7px 8px; border:1px solid var(--line); border-ra
           <label class="field mini"><span>整网右移（mm）</span><input type="text" inputmode="numeric" id="nudgeX" placeholder="0"></label>
           <label class="field mini"><span>整网下移（mm）</span><input type="text" inputmode="numeric" id="nudgeY" placeholder="0"></label>
         </div>
-        <div class="custom-inputs">
-          <label class="field mini"><span>墙厚（拖动吸附用，mm）</span><input type="text" inputmode="numeric" id="wallThk" placeholder="240"></label>
-        </div>
       </div>
     </div>
   </section>
@@ -249,11 +241,9 @@ select{min-height:40px; padding:7px 8px; border:1px solid var(--line); border-ra
       <div class="plan-plot">
         <canvas id="housePlan"></canvas>
         <p class="plot-empty" id="planEmpty">先把地砖规格和房间尺寸填好</p>
-        <button type="button" class="plan-undo" id="dragUndo" hidden>↩ 撤销这次拖动</button>
       </div>
       <div class="plan-legend">浅色缝＝砖缝（全屋同一张网）ㆍ白框＝墙（房间之间的空档）ㆍ虚线框＝门洞（标「过门石」的门口在这里断开）<br>
-        👆 <b>按住房间直接在图上拖动</b>：靠到隔壁房间的墙边会自动吸附对齐（墙厚可在设置里改），拖完可在下面精确改数字。<br>
-        拖歪了不用慌：<b>点图右上角「↩ 撤销这次拖动」</b>就回到拖动前；手指还没松开时按 <b>Esc</b>（电脑）可以当场放弃。房间坐标不会再被自动拉回原点。</div>
+        这张图只作看图用。<b>要挪房间，去下面「房间」卡片里改「离原点左 / 离原点上」的数字</b>，改完图上立刻跟着变。</div>
       <div class="statuses" id="statuses"></div>
     </section>
 
@@ -493,60 +483,6 @@ const Engine = (() => {
     return { ok:true, rect, vertical, wallT, span:{ lo, hi }, at:c };
   };
 
-  /* ---- 拖动吸附：给"正在拖的房间"找一个吸附位置 ----
-   * 优先级：**贴墙**（对方边缘 ± 墙厚）> **对齐**（两边齐平 / 直接贴死）> **10mm 网格**。
-   * 返回 { x, y, guides, onGridX, onGridY }：
-   *   guides 是给绘图用的提示线（axis + at + 跟谁对齐），拖动时画出来，
-   *   onGridX/Y 表示这一轴没吸到房间、退成了网格吸附（不画提示线）。
-   * 纯函数、不碰 DOM，整段可以在 node 里测。 */
-  const snapRoom = (rooms, id, want, opts) => {
-    const o = opts || {};
-    const wall = numOr(o.wall, 240);
-    const tol = numOr(o.tol, 8);              // 吸附阈值（mm，调用方按屏幕像素折算后传进来）
-    const grid = numOr(o.grid, 10);
-    const me = (rooms || []).find(r => r.id === id);
-    const out = { x:numOr(want && want.x, 0), y:numOr(want && want.y, 0), guides:[], onGridX:false, onGridY:false };
-    if (!me) return out;
-    const R = roomRect(me);
-    if (!(R.w > 0 && R.h > 0)) return out;
-    const others = (rooms || []).filter(r => r.id !== id).map(r => ({ id:r.id, rect:roomRect(r) }))
-                                .filter(x => x.rect.w > 0 && x.rect.h > 0);
-    // 一个轴上收集所有候选位置，挑最近的
-    const best = (axis, wantV, size) => {
-      let pick = null;
-      others.forEach(({ id:oid, rect }) => {
-        const cands = axis === "x"
-          ? [ [rect.x, "align", 0], [rect.x + rect.w, "align", 0],
-              [rect.x + rect.w + wall, "wall", wall], [rect.x - size - wall, "wall", -wall],
-              [rect.x + rect.w - size, "align", 0], [rect.x - size, "align", 0] ]
-          : [ [rect.y, "align", 0], [rect.y + rect.h, "align", 0],
-              [rect.y + rect.h + wall, "wall", wall], [rect.y - size - wall, "wall", -wall],
-              [rect.y + rect.h - size, "align", 0], [rect.y - size, "align", 0] ];
-        cands.forEach(([v, kind]) => {
-          const d = Math.abs(v - wantV);
-          if (d <= tol && (!pick || d < pick.d)) pick = { v, d, kind, with:oid, gap:kind === "wall" ? wall : 0 };
-        });
-      });
-      return pick;
-    };
-    const bx = best("x", out.x, R.w);
-    const by = best("y", out.y, R.h);
-    if (bx) { out.x = bx.v; out.guides.push({ axis:"x", at:bx.v, kind:bx.kind, with:bx.with, gap:bx.gap }); }
-    else { out.x = Math.round(out.x / grid) * grid; out.onGridX = true; }
-    if (by) { out.y = by.v; out.guides.push({ axis:"y", at:by.v, kind:by.kind, with:by.with, gap:by.gap }); }
-    else { out.y = Math.round(out.y / grid) * grid; out.onGridY = true; }
-    return out;
-  };
-
-  /* 把所有房间整体平移，让最小坐标回到 0（拖到原点左边/上边之后整理一下，数字不至于变负数） */
-  const reOrigin = (rooms) => {
-    const rs = (rooms || []).map(roomRect).filter(r => r.w > 0 && r.h > 0);
-    if (!rs.length) return { dx:0, dy:0, moved:false };
-    const dx = -Math.min(...rs.map(r => r.x)), dy = -Math.min(...rs.map(r => r.y));
-    if (dx === 0 && dy === 0) return { dx:0, dy:0, moved:false };
-    return { dx, dy, moved:true };
-  };
-
   /* ---- 总入口：算全屋 ---- */
   const housePlan = (state) => {
     const out = { ok:false, errors:[], warnings:[], rooms:[], doors:[], region:[], summary:null, grid:null, tile:null };
@@ -686,8 +622,7 @@ const Engine = (() => {
   };
 
   return { numOr, mod, roomRect, roomName, roomsBBox, rectOverlapArea, basePhase,
-           latticeSegments, toLocal, doorRect, housePlan,
-           snapRoom, reOrigin };
+           latticeSegments, toLocal, doorRect, housePlan };
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = Engine;
 /*ENGINE-END*/
@@ -1136,28 +1071,6 @@ function drawJoints(ctx, ax, ay, s, W, H, groutPx){
 }
 
 /* ---------------- 画全屋平面图 ---------------- */
-let planView = null;          // { s, OX, OY, bb, pad, cssW, cssH } —— 拖动时把屏幕坐标换算回毫米要用
-let dragGuides = [];          // 拖动中的对齐提示线
-let dragId = null;            // 正在拖的房间
-let dragView = null;          // 拖动开始时冻结的视图（拖动中不许重算比例，否则房间会"跑"）
-let undoRooms = null;         // 拖动前的房间快照（只留最近一次，用来「回到拖动前」）
-
-/* 撤销这次拖动：把房间位置退回开始拖动那一刻（坐标原样退回，不做任何归零） */
-function restoreSnapshot(snap){
-  if (!snap) return;
-  snap.forEach((r) => {
-    const t = state.rooms.find((q) => q.id === r.id);
-    if (t) { t.x = r.x; t.y = r.y; }
-  });
-}
-function hideUndo(){ const b = $("#dragUndo"); if (b) b.hidden = true; }
-function showUndo(){ const b = $("#dragUndo"); if (b) b.hidden = false; }
-function undoDrag(){
-  if (!undoRooms) return;
-  restoreSnapshot(undoRooms); undoRooms = null;
-  hideUndo(); save(); syncAllRoomInputs(); update();
-}
-
 function drawPlan(plan){
   const cv = $("#housePlan"), empty = $("#planEmpty");
   if (!plan.ok || !plan.rooms.length) {
@@ -1165,9 +1078,8 @@ function drawPlan(plan){
     empty.textContent = plan.errors[0] || "先把地砖规格和房间尺寸填好";
     return;
   }
-  const bbLive = Engine.roomsBBox(plan.rooms.map((r) => r.rect));
-  const bb = (dragId && dragView) ? dragView.bb : bbLive;   // 拖动中冻结视图，房间才跟得住手指
-  const pad = (dragId && dragView) ? dragView.pad : 220;    // mm：四周留白，好看清墙
+  const bb = Engine.roomsBBox(plan.rooms.map((r) => r.rect));
+  const pad = 220;                                          // mm：四周留白，好看清墙
   const maxW = cv.parentElement.clientWidth || 320, maxH = 520;
   const s = Math.min(maxW / (bb.w + pad * 2), maxH / (bb.h + pad * 2));
   const cssW = Math.max(1, Math.round((bb.w + pad * 2) * s));
@@ -1233,35 +1145,6 @@ function drawPlan(plan){
 
   chipRow(ctx, chips, cssW, cssH);
 
-  // 拖动中：高亮正在拖的房间 + 画对齐提示线（贴墙＝蓝实线、对齐＝蓝虚线）
-  if (dragId) {
-    const rm = plan.rooms.find((r) => r.id === dragId);
-    if (rm) {
-      ctx.save();
-      ctx.strokeStyle = cssVar("--accent"); ctx.lineWidth = 2.5;
-      ctx.strokeRect(OX + rm.rect.x * s + 1, OY + rm.rect.y * s + 1,
-                     Math.max(0, rm.rect.w * s - 2), Math.max(0, rm.rect.h * s - 2));
-      ctx.restore();
-    }
-    dragGuides.forEach((gd) => {
-      ctx.save();
-      ctx.strokeStyle = cssVar("--accent");
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash(gd.kind === "wall" ? [] : [6, 4]);
-      ctx.beginPath();
-      if (gd.axis === "x") {
-        const px = OX + gd.at * s;
-        ctx.moveTo(px, 0); ctx.lineTo(px, cssH);
-      } else {
-        const py = OY + gd.at * s;
-        ctx.moveTo(0, py); ctx.lineTo(cssW, py);
-      }
-      ctx.stroke();
-      ctx.restore();
-    });
-  }
-
-  planView = { s, OX, OY, bb, pad, cssW, cssH };
   $("#planSub").textContent =
     `全屋 ${(bb.w / 1000).toFixed(2)} × ${(bb.h / 1000).toFixed(2)} m　` +
     `砖 ${plan.tile.x}×${plan.tile.y}　以「${plan.grid.baseName}」为准起铺`;
@@ -1354,115 +1237,6 @@ function update(){
   renderCutList(plan);
   renderRoomDetails(plan);
 }
-/* 拖动中只重画平面图（不重建房间/门洞/清单那些 DOM，手机上才跟手） */
-let rafPending = false;
-function redrawSoon(){
-  if (rafPending) return;
-  rafPending = true;
-  requestAnimationFrame(() => { rafPending = false; drawPlan(recompute()); });
-}
-
-/* ---------------- 拖动房间（带对齐吸附）---------------- */
-function pxToMm(px, py){
-  if (!planView) return null;
-  const { s, bb, pad } = planView;
-  return { x: px / s + bb.x - pad, y: py / s + bb.y - pad };
-}
-function hitRoom(mm){
-  for (let i = state.rooms.length - 1; i >= 0; i--) {          // 后画的在上，从后往前找
-    const r = state.rooms[i], R = Engine.roomRect(r);
-    if (!(R.w > 0 && R.h > 0)) continue;
-    if (mm.x >= R.x && mm.x <= R.x + R.w && mm.y >= R.y && mm.y <= R.y + R.h) return { room:r, rect:R };
-  }
-  return null;
-}
-function syncRoomInputs(id){
-  const idx = state.rooms.findIndex((r) => r.id === id);
-  if (idx < 0) return;
-  const row = document.querySelectorAll("#roomRows .room-row")[idx];
-  if (!row) return;
-  const ins = row.querySelectorAll(".room-fields input");
-  const r = state.rooms[idx];
-  if (ins[0]) ins[0].value = r.x != null ? r.x : "";
-  if (ins[1]) ins[1].value = r.y != null ? r.y : "";
-}
-function syncAllRoomInputs(){ state.rooms.forEach((r) => syncRoomInputs(r.id)); }
-
-function bindPlanDrag(){
-  const cv = $("#housePlan");
-  let drag = null;
-  const ptOf = (e) => {
-    const b = cv.getBoundingClientRect();
-    return { px: e.clientX - b.left, py: e.clientY - b.top };
-  };
-  cv.addEventListener("pointerdown", (e) => {
-    if (!planView) return;
-    const mm = pxToMm(ptOf(e).px, ptOf(e).py);
-    const hit = hitRoom(mm);
-    if (!hit) return;
-    drag = { id: hit.room.id, gx: mm.x - hit.rect.x, gy: mm.y - hit.rect.y, moved:false };
-    dragId = hit.room.id;
-    dragView = planView ? { bb:{ ...planView.bb }, pad:planView.pad } : null;   // 冻结视图
-    undoRooms = JSON.parse(JSON.stringify(state.rooms));   // 记下拖动前的样子
-    hideUndo();
-    cv.classList.add("dragging");
-    try { cv.setPointerCapture(e.pointerId); } catch (err) {}
-    e.preventDefault();
-  });
-  cv.addEventListener("pointermove", (e) => {
-    if (!drag) return;
-    const { px, py } = ptOf(e);
-    const mm = pxToMm(px, py);
-    if (!mm) return;
-    const want = { x: mm.x - drag.gx, y: mm.y - drag.gy };
-    const view = dragView ? { s:planView.s } : planView;      // 用冻结后的比例换算阈值
-    const tol = 9 / (view && view.s ? view.s : 1);          // 9 屏幕像素折算成毫米
-    const sn = Engine.snapRoom(state.rooms, drag.id, want, { wall: state.settings.wall, tol, grid: 10 });
-    const room = state.rooms.find((r) => r.id === drag.id);
-    if (!room) return;
-    if (room.x !== sn.x || room.y !== sn.y) drag.moved = true;
-    room.x = sn.x; room.y = sn.y;
-    dragGuides = sn.guides;
-    syncRoomInputs(drag.id);
-    redrawSoon();
-    e.preventDefault();
-  });
-  /* restore=true → 放弃这次拖动、退回原位；false → 认下这次拖动 */
-  const finish = (restore) => {
-    if (!drag) return;
-    const moved = drag.moved;
-    drag = null; dragId = null; dragGuides = []; dragView = null;
-    cv.classList.remove("dragging");
-    if (restore) {                      // Esc 或手指拒：当场退回去，连存盘都不用
-      restoreSnapshot(undoRooms); undoRooms = null;
-      syncAllRoomInputs(); update();
-      return;
-    }
-    if (moved) {
-      showUndo();          // 刚拖完：给一次「回到拖动前」的机会
-      save();
-      syncAllRoomInputs();
-    } else {
-      undoRooms = null;    // 没真的挪动，不留快照
-    }
-    update();
-  };
-  cv.addEventListener("pointerup", () => finish(false));
-  cv.addEventListener("pointercancel", () => finish(false));
-  cv.addEventListener("pointerleave", () => { if (drag) finish(false); });
-  // 电脑上的两条退路：拖动中按 Esc 当场放弃；拖完后 Ctrl/⌘+Z 退回去
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && drag) { finish(true); return; }
-    if ((e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z")) {
-      const t = (e.target && e.target.tagName || "").toLowerCase();
-      if (t === "input" || t === "textarea" || t === "select") return;   // 让输入框自己撤字
-      if (drag || !undoRooms) return;
-      e.preventDefault(); undoDrag();
-    }
-  });
-  const ub = $("#dragUndo");
-  if (ub) ub.addEventListener("click", () => undoDrag());
-}
 
 /* ---------------- 启动 ---------------- */
 (function init(){
@@ -1510,13 +1284,6 @@ function bindPlanDrag(){
     save(); renderDoors(); update();
   };
 
-  const wallInp = $("#wallThk");
-  wallInp.value = state.settings.wall != null ? state.settings.wall : "";
-  wallInp.addEventListener("input", () => {
-    state.settings.wall = parseMM(wallInp.value) || 240;
-    save(); update();
-  });
-  bindPlanDrag();
   renderSettings(); renderRooms(); renderDoors(); update();
 })();
 
