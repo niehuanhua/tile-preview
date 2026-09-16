@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#F2F1ED">
+<title>瓷砖排版小工具</title>
+<style>
+:root{
+  --paper:#F2F1ED; --card:#FFFFFF; --ink:#26292E; --ink-soft:#6A6F76;
+  --line:#DFDCD4; --accent:#2B5E9B; --accent-soft:#E3EBF5;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#17181B; --card:#202226; --ink:#ECEDEF; --ink-soft:#9CA2AA;
+    --line:#34373D; --accent:#7FA9DC; --accent-soft:#243246;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0; background:var(--paper); color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  font-size:16px; line-height:1.5;}
+.wrap{max-width:640px; margin:0 auto; padding:0 14px calc(40px + env(safe-area-inset-bottom));}
+header{padding:22px 2px 10px}
+header h1{margin:0; font-size:22px; font-weight:800}
+header p{margin:6px 0 0; color:var(--ink-soft); font-size:13px}
+a.card{display:block; text-decoration:none; color:inherit; background:var(--card);
+  border:1px solid var(--line); border-radius:12px; padding:14px; margin-top:12px}
+a.card h2{margin:0 0 4px; font-size:17px; color:var(--accent)}
+a.card p{margin:0; font-size:13px; color:var(--ink-soft)}
+a.card:active{background:var(--accent-soft)}
+.tip{margin-top:16px; padding:10px 12px; background:var(--card); border:1px solid var(--line);
+  border-radius:10px; font-size:13px; color:var(--ink-soft)}
+.tip b{color:var(--ink)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>瓷砖排版小工具</h1>
+    <p>点一个进去用 · 手机上存个书签，以后点开就是它</p>
+  </header>
+
+  <a class="card" href="index.html">
+    <h2>卫生间墙地砖</h2>
+    <p>单面墙 / 单块地面的排砖，管地漏找坡、蹲便器裁砖、门窗洞口</p>
+  </a>
+
+  <a class="card" href="house.html">
+    <h2>全屋通铺</h2>
+    <p>一整层房子共用一张砖网，砖缝从客厅一直对到卧室，门口不断缝</p>
+  </a>
+
+  <a class="card" href="%E6%88%BF%E9%97%B4%E5%B8%83%E5%B1%80%E8%8D%89%E5%9B%BE.html">
+    <h2>房间布局草图</h2>
+    <p>先在图上把房间拖着摆好（可留墙厚，也可贴死），再一键导给「全屋通铺」</p>
+  </a>
+
+  <div class="tip">
+    <b>看不到刚改好的新版本？</b><br>
+    手机浏览器爱存旧页面：iPhone 长按地址栏右边的刷新按钮，选「重新加载」；安卓在地址末尾加上 <b>?v=2</b> 再回车。
+  </div>
+</div>
+</body>
+</html>

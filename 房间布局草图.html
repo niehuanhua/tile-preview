@@ -55,6 +55,10 @@ input{width:100%; min-height:42px; padding:8px 10px; border:1px solid var(--line
   border-radius:8px; background:var(--card); color:var(--ink); font:inherit; font-variant-numeric:tabular-nums;}
 input:focus{outline:2px solid var(--accent); border-color:var(--accent)}
 .dim-grid{display:grid; grid-template-columns:1fr 1fr; gap:8px}
+.room-line{display:block; padding:8px 10px; margin-top:6px; border:1px solid var(--line); border-radius:8px;
+  font-size:13px; font-variant-numeric:tabular-nums; cursor:pointer}
+.room-line.on{border-color:var(--accent); background:var(--accent-soft); color:var(--accent); font-weight:700}
+.room-line.empty{border-style:dashed; color:var(--ink-soft); cursor:default}
 .ok-banner{margin-top:10px; padding:10px 12px; background:#E4F0E7; color:var(--ok);
   border-radius:8px; font-size:13px; font-weight:700; text-align:center}
 @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]) .ok-banner{background:#1F3327;} }
@@ -73,6 +77,8 @@ input:focus{outline:2px solid var(--accent); border-color:var(--accent)}
     <div class="btn-row">
       <button class="primary" id="add">＋ 添加房间</button>
       <button class="ghost" id="fit">适应画面</button>
+      <button class="ghost" id="zin">＋ 放大</button>
+      <button class="ghost" id="zout">－ 缩小</button>
       <button class="ghost" id="clear">清空</button>
     </div>
   </section>
@@ -113,6 +119,12 @@ input:focus{outline:2px solid var(--accent); border-color:var(--accent)}
     <div class="btn-row">
       <button class="ghost" id="del" style="color:var(--danger)">删除这间</button>
     </div>
+  </section>
+
+  <section class="card">
+    <h2>房间清单</h2>
+    <div id="roomList"></div>
+    <p class="hint" style="text-align:left">点一行就选中那间房。要是哪间的坐标离得特别远，画面会被它撑得很大——改掉数字就行。</p>
   </section>
 
   <section class="card">
@@ -182,16 +194,22 @@ function bbox(rooms) {
   return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
 }
 
+/* 适应画面：让全部房间刚好装进画布，四周各留 6% 空白，并把画面中心对准户型中心。
+ * （原来是固定留 800mm，户型小的时候留白占比过大，图会缩得看不清） */
 function computeView(cssW, cssH) {
-  if (!state.rooms.length) return { scale: 0.05, offsetX: -1000, offsetY: -1000 };
+  if (!state.rooms.length) return { scale:0.05, offsetX:-1000, offsetY:-1000, forW:cssW, forH:cssH };
   const bb = bbox(state.rooms);
-  const pad = 800;
-  const w = bb.w + pad * 2, h = bb.h + pad * 2;
-  let scale = Math.min(cssW / w, cssH / h);
+  const margin = 0.06;
+  const availW = cssW * (1 - margin * 2), availH = cssH * (1 - margin * 2);
+  let scale = Math.min(availW / bb.w, availH / bb.h);
   scale = Math.max(0.005, Math.min(scale, 0.3));
-  const offsetX = bb.x - pad - (cssW / scale - w) / 2;
-  const offsetY = bb.y - pad - (cssH / scale - h) / 2;
-  return { scale, offsetX, offsetY };
+  // forW/forH：记下这份视图是为多大的画布算的。画布一变（旋屏、键盘弹出、首帧排版迟了），
+  // 原来的居中就作废了，draw() 看到尺寸对不上会重算，图就不会歪在一边。
+  return {
+    scale, forW: cssW, forH: cssH,
+    offsetX: bb.x + bb.w / 2 - (cssW / scale) / 2,
+    offsetY: bb.y + bb.h / 2 - (cssH / scale) / 2,
+  };
 }
 
 function toMM(e) {
@@ -211,6 +229,19 @@ function hitTest(mx, my, slopMM) {
         my >= r.y - slop && my <= r.y + r.h + slop) return r;
   }
   return null;
+}
+
+/* 有没有房间跑到画布外面去了（有就说明视野该重算了） */
+function anyRoomOutside() {
+  if (!state.view) return false;
+  const { w: cw, h: ch } = canvasCssSize();
+  const { scale, offsetX, offsetY } = state.view;
+  return state.rooms.some((r) => {
+    if (!(r.w > 0 && r.h > 0)) return false;
+    const l = (r.x - offsetX) * scale, t = (r.y - offsetY) * scale;
+    const rr = (r.x + r.w - offsetX) * scale, bb = (r.y + r.h - offsetY) * scale;
+    return l < -1 || t < -1 || rr > cw + 1 || bb > ch + 1;
+  });
 }
 
 /* ---------- 吸附 ---------- */
@@ -249,19 +280,29 @@ const getCSS = (name) => getComputedStyle(document.documentElement).getPropertyV
 
 function draw() {
   const dpr = window.devicePixelRatio || 1;
-  const cssW = canvas.parentElement.clientWidth - 8;
-  const cssH = Math.max(300, Math.min(window.innerHeight * 0.55, 520));
+  // 画布最小给它 160px：容器宽度偶尔会算成 0（页面还没排好时），减 8 就成了负数
+  const cssW = Math.max(160, (canvas.parentElement.clientWidth || 0) - 8);
+  // 手机上有地址栏，innerHeight 会把地址栏算进去，量出来偏大；visualViewport 才是真正看得见的高度
+  const vh = (window.visualViewport && window.visualViewport.height) || window.innerHeight || 800;
+  const cssH = Math.max(300, Math.min(vh * 0.55, 520));
   canvas.style.width = cssW + "px";
   canvas.style.height = cssH + "px";
-  canvas.width = Math.round(cssW * dpr);
-  canvas.height = Math.round(cssH * dpr);
+
+  /* 设完尺寸再量一次真实显示区（内容盒，不含 1px 边框）：
+   * 位图就是铺在这块区域上的，视图必须按它来算，否则内容会整体偏上/偏下。 */
+  const boxW = canvas.clientWidth || cssW;
+  const boxH = canvas.clientHeight || cssH;
+  canvas.width = Math.round(boxW * dpr);
+  canvas.height = Math.round(boxH * dpr);
   const ctx = canvas.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
   ctx.fillStyle = getCSS("--paper");
-  ctx.fillRect(0, 0, cssW, cssH);
+  ctx.fillRect(0, 0, boxW, boxH);
 
-  if (!state.view) state.view = computeView(cssW, cssH);
+  // 画布尺寸变了这份视图就作废（旋屏、手机键盘弹出、首帧排版迟了），重新居中
+  if (!state.view || state.view.forW !== boxW || state.view.forH !== boxH)
+    state.view = computeView(boxW, boxH);
   const { scale, offsetX, offsetY } = state.view;
   const px = (mm) => (mm - offsetX) * scale;
 
@@ -273,12 +314,12 @@ function draw() {
   ctx.beginPath();
   const x0 = Math.floor(offsetX / step) * step;
   const y0 = Math.floor(offsetY / step) * step;
-  const x1 = offsetX + cssW / scale, y1 = offsetY + cssH / scale;
+  const x1 = offsetX + boxW / scale, y1 = offsetY + boxH / scale;
   for (let x = x0; x <= x1; x += step) {
-    const p = px(x); ctx.moveTo(p, 0); ctx.lineTo(p, cssH);
+    const p = px(x); ctx.moveTo(p, 0); ctx.lineTo(p, boxH);
   }
   for (let y = y0; y <= y1; y += step) {
-    const p = (y - offsetY) * scale; ctx.moveTo(0, p); ctx.lineTo(cssW, p);
+    const p = (y - offsetY) * scale; ctx.moveTo(0, p); ctx.lineTo(boxW, p);
   }
   ctx.stroke();
 
@@ -320,19 +361,20 @@ function draw() {
     ctx.fillStyle = getCSS("--ink-soft");
     ctx.font = "14px -apple-system, PingFang SC, sans-serif";
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText("点下面「＋ 添加房间」开始", cssW / 2, cssH / 2);
+    ctx.fillText("点下面「＋ 添加房间」开始", boxW / 2, boxH / 2);
     ctx.textAlign = "start";
   }
 
   // 光标
-  canvas.style.cursor = (state.pending && state.pending.room) ? "grabbing"
+  canvas.style.cursor = (state.pending && (state.pending.room || state.pending.mode === "pan")) ? "grabbing"
                        : (state.rooms.length ? "grab" : "default");
 
   $("#hint").textContent = state.rooms.length
-    ? (state.gapMode === "zero"
-        ? "按住房间拖动 · 点房间改长宽 · 靠近时直接贴上去（间隙 0）"
-        : `按住房间拖动 · 点房间改长宽 · 靠近时自动留 ${state.wall}mm 墙`)
+    ? ("空白处拖动画布 · 滚轮或「＋ －」缩放 · 乱了就点「适应画面」复位"
+       + (state.gapMode === "zero" ? " · 房间靠近时直接贴上去（间隙 0）"
+                                   : ` · 房间靠近时自动留 ${state.wall}mm 墙`))
     : "点下面「＋ 添加房间」开始";
+  renderRoomList();
 }
 
 /* ---------- 触摸/指针交互 ---------- */
@@ -340,6 +382,8 @@ canvas.addEventListener("pointerdown", (e) => {
   e.preventDefault();
   try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
 
+  const b = canvas.getBoundingClientRect();
+  const px0 = e.clientX - b.left, py0 = e.clientY - b.top;
   const { x, y } = toMM(e);
   const slopMM = HIT_SLOP_PX / state.view.scale;
   const hit = hitTest(x, y, slopMM);
@@ -350,22 +394,33 @@ canvas.addEventListener("pointerdown", (e) => {
   draw();
   if (hit && navigator.vibrate) { try { navigator.vibrate(6); } catch (err) {} }
 
-  state.pending = {
-    room: hit || null,
-    sx: x, sy: y,
-    rx: hit ? hit.x : 0,
-    ry: hit ? hit.y : 0,
-    moved: false,
-    startTime: Date.now(),
-    pointerId: e.pointerId,
-  };
+  // 按住房间＝挪这一间；按住空白处＝挪整张画布
+  state.pending = hit
+    ? { mode:"room", room:hit, sx:x, sy:y, rx:hit.x, ry:hit.y,
+        moved:false, startTime:Date.now(), pointerId:e.pointerId }
+    : { mode:"pan", room:null, px:px0, py:py0, ox:state.view.offsetX, oy:state.view.offsetY,
+        moved:false, startTime:Date.now(), pointerId:e.pointerId };
 });
 
 canvas.addEventListener("pointermove", (e) => {
   const p = state.pending;
-  if (!p || !p.room) return;
+  if (!p) return;
   e.preventDefault();
 
+  // 拖画布：图跟着手指走，位置随你摆
+  if (p.mode === "pan") {
+    const b = canvas.getBoundingClientRect();
+    const dxPx = (e.clientX - b.left) - p.px;
+    const dyPx = (e.clientY - b.top) - p.py;
+    if (!p.moved && Math.hypot(dxPx, dyPx) < DRAG_THRESHOLD_PX) return;
+    p.moved = true;
+    state.view.offsetX = p.ox - dxPx / state.view.scale;
+    state.view.offsetY = p.oy - dyPx / state.view.scale;
+    draw();
+    return;
+  }
+
+  if (!p.room) return;
   const { x, y } = toMM(e);
   const dx = x - p.sx;
   const dy = y - p.sy;
@@ -385,6 +440,29 @@ canvas.addEventListener("pointermove", (e) => {
   draw();
 });
 
+/* ---------- 缩放：滚轮（电脑）/ ＋－按钮（手机），以手指那个点为锚 ---------- */
+function canvasCssSize() {
+  return { w: canvas.clientWidth || parseFloat(canvas.style.width) || 0,
+           h: canvas.clientHeight || parseFloat(canvas.style.height) || 0 };
+}
+function zoomAt(factor, cxPx, cyPx) {
+  const v = state.view;
+  const mmX = cxPx / v.scale + v.offsetX;      // 锚点现在是哪个毫米位置
+  const mmY = cyPx / v.scale + v.offsetY;
+  const ns = Math.max(0.002, Math.min(v.scale * factor, 2));
+  v.scale = ns;
+  v.offsetX = mmX - cxPx / ns;                 // 缩完之后，这个点还停在原处
+  v.offsetY = mmY - cyPx / ns;
+  draw();
+}
+canvas.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const b = canvas.getBoundingClientRect();
+  zoomAt(e.deltaY < 0 ? 1.15 : 1 / 1.15, e.clientX - b.left, e.clientY - b.top);
+}, { passive: false });
+$("#zin").onclick  = () => { const s = canvasCssSize(); zoomAt(1.25, s.w / 2, s.h / 2); };
+$("#zout").onclick = () => { const s = canvasCssSize(); zoomAt(1 / 1.25, s.w / 2, s.h / 2); };
+
 function endPointer(e) {
   const p = state.pending;
   state.pending = null;
@@ -402,15 +480,7 @@ function endPointer(e) {
   // ★ 视图冻结：只在房间被拖出屏幕外时才重算
   if (p.moved && p.room) {
     saveSketch();          // 拖动结束就存一份，刷新不丢
-    const r = p.room;
-    const v = state.view;
-    const cw = canvas.clientWidth, ch = canvas.clientHeight;
-    const rx = (r.x - v.offsetX) * v.scale;
-    const ry = (r.y - v.offsetY) * v.scale;
-    const rw = r.w * v.scale, rh = r.h * v.scale;
-    if (rx + rw < 0 || ry + rh < 0 || rx > cw || ry > ch) {
-      state.view = null;
-    }
+    if (anyRoomOutside()) state.view = null;   // 拖出画面了就自动收回来
   }
   draw();
 }
@@ -427,21 +497,48 @@ function renderEditor() {
   $("#rH").value = state.selected.h;
 }
 
+/* ---------- 房间清单：一眼看出有没有房间跑到很远的地方 ---------- */
+let _listKey = "";
+function renderRoomList() {
+  const box = $("#roomList");
+  if (!box) return;
+  const key = JSON.stringify(state.rooms.map((r) => [r.name, Math.round(r.x), Math.round(r.y),
+    Math.round(r.w), Math.round(r.h), r === state.selected]));
+  if (key === _listKey) return;        // 没变化就不重建（拖动时每帧都会走一次 draw）
+  _listKey = key;
+  box.innerHTML = "";
+  if (!state.rooms.length) {
+    const d = document.createElement("div");
+    d.className = "room-line empty";
+    d.textContent = "还没有房间，点上面「＋ 添加房间」";
+    box.appendChild(d);
+    return;
+  }
+  state.rooms.forEach((r) => {
+    const d = document.createElement("div");
+    d.className = "room-line" + (r === state.selected ? " on" : "");
+    d.textContent = `${r.name}　x ${Math.round(r.x)}　y ${Math.round(r.y)}　${Math.round(r.w)}×${Math.round(r.h)}`;
+    d.onclick = () => { state.selected = r; renderEditor(); draw(); };
+    box.appendChild(d);
+  });
+}
+
 $("#rName").addEventListener("input", (e) => {
   if (state.selected) { state.selected.name = e.target.value; draw(); saveSoon(); }
 });
 $("#rW").addEventListener("input", (e) => {
   const v = parseInt(e.target.value, 10);
-  if (state.selected && v > 0) { state.selected.w = v; draw(); saveSoon(); }
+  if (state.selected && v > 0) { state.selected.w = v; draw(); if (anyRoomOutside()) { state.view = null; draw(); } saveSoon(); }
 });
 $("#rH").addEventListener("input", (e) => {
   const v = parseInt(e.target.value, 10);
-  if (state.selected && v > 0) { state.selected.h = v; draw(); saveSoon(); }
+  if (state.selected && v > 0) { state.selected.h = v; draw(); if (anyRoomOutside()) { state.view = null; draw(); } saveSoon(); }
 });
 $("#del").onclick = () => {
   if (!state.selected) return;
   state.rooms = state.rooms.filter(r => r !== state.selected);
   state.selected = null;
+  state.view = null;   // 少了一间，视野重新收拾一遍
   saveSketch();
   draw(); renderEditor();
 };
