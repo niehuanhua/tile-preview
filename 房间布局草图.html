@@ -28,6 +28,7 @@ body{margin:0; background:var(--paper); color:var(--ink);
 header{padding:18px 2px 8px}
 header h1{margin:0; font-size:22px; font-weight:800}
 header p{margin:4px 0 0; color:var(--ink-soft); font-size:13px}
+header p.ver{margin-top:6px; font-size:12px; color:var(--accent); font-weight:700}
 .card{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; margin-top:12px;}
 .card h2{margin:0 0 8px; font-size:16px}
 .canvas-wrap{display:flex; justify-content:center; overflow:hidden}
@@ -69,6 +70,7 @@ input:focus{outline:2px solid var(--accent); border-color:var(--accent)}
   <header>
     <h1>房间布局草图</h1>
     <p>拖拽摆放房间、填上长宽，一键导出给 house.html</p >
+    <p class="ver" id="ver"></p>
   </header>
 
   <section class="card">
@@ -134,6 +136,8 @@ input:focus{outline:2px solid var(--accent); border-color:var(--accent)}
 </div>
 
 <script>
+const BUILD = "2026-09-16 19:30";  // 版本号：手机上看看对不对，就知道是不是旧页面了
+
 const STORE_KEY = "houseTileV1";   // house.html 的存档（导出时往这里写）
 const SKETCH_KEY = "houseSketchV1"; // 草图自己的存档（和 house.html 分开，互不干扰）
 const WALL_DEFAULT = 240;        // 默认墙厚（mm），界面上可以改成 0 或别的值
@@ -588,7 +592,9 @@ $("#wallCustom").addEventListener("input", (e) => {
   if (isFinite(v) && v >= 0) { state.wall = v; saveSoon(); draw(); }
 });
 
-$("#fit").onclick = () => { state.view = null; draw(); };
+/* 适应画面：连画两帧。第一帧可能刚把画布尺寸改了（比如首帧排版），
+ * 第二帧按稳定下来的尺寸重新居中，图就一定是正的。 */
+$("#fit").onclick = () => { state.view = null; draw(); state.view = null; draw(); };
 $("#clear").onclick = () => {
   if (!confirm("清空所有房间？")) return;
   state.rooms = []; state.selected = null; state.view = null; state.pending = null;
@@ -669,6 +675,7 @@ $("#apply").onclick = () => {
 window.addEventListener("resize", () => { state.view = null; draw(); });
 loadSketch();          // 打开就接着上次的户型继续摆
 syncWallUI();
+$("#ver").textContent = "版本 " + BUILD;
 draw(); renderEditor();
 </script>
 </body>
