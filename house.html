@@ -1186,18 +1186,23 @@ function drawPlan(plan){
   // 每间房：按**同一张网**铺砖（这是"通铺"的关键，缝在门口自然连成一条线）
   plan.rooms.forEach((rm) => {
     const W = rm.rect.w * s, H = rm.rect.h * s;
+    const TX = OX + rm.rect.x * s, TY = OY + rm.rect.y * s;  // 本房间左上角在画布上的位置
     ctx.save();
-    ctx.translate(OX + rm.rect.x * s, OY + rm.rect.y * s);
+    ctx.translate(TX, TY);
     paintTiles(ctx, rm.ax, rm.ay, s, W, H);
     drawJoints(ctx, rm.ax, rm.ay, s, W, H, plan.tile.grout * s);
     ctx.strokeStyle = cssVar("--ink-soft"); ctx.lineWidth = 1;
     ctx.strokeRect(0.5, 0.5, Math.max(0, W - 1), Math.max(0, H - 1));
-    if (plan.settingsShowCuts) paintCuts(ctx, rm.ax, rm.ay, s, W, H, null, { sink: chips });
+    // 尺寸线就地画（此刻画布已平移到本房间左上角，坐标是"房间内"的，所以线是对的）；
+    // 但数字要交给 chipRow 在**全局**画布上统一排开，得先把房间内坐标换算回画布坐标，
+    // 否则每间房的数字都会少加一次自己的偏移，飘到左上角的别的房间上去。
+    if (plan.settingsShowCuts)
+      paintCuts(ctx, rm.ax, rm.ay, s, W, H, (x, y) => ({ x: TX + x, y: TY + y }), { sink: chips });
     ctx.restore();
     // 房间名（放在房间左上角内侧）
     chips.push({ ghost:false, txt:rm.name, color:cssVar("--accent"),
-                 ax:OX + (rm.rect.x + Math.min(600, rm.rect.w / 2)) * s,
-                 ay:OY + (rm.rect.y + Math.min(450, rm.rect.h / 2)) * s });
+                 ax:TX + Math.min(600, rm.rect.w / 2) * s,
+                 ay:TY + Math.min(450, rm.rect.h / 2) * s });
   });
 
   // 通铺门口那一段也要铺上砖（不然门口露白底，看着像断了）
