@@ -143,7 +143,7 @@ input:focus{outline:2px solid var(--accent); border-color:var(--accent)}
 </div>
 
 <script>
-const BUILD = "2026-09-16 20:30";  // 版本号：手机上看看对不对，就知道是不是旧页面了
+const BUILD = "2026-09-16 20:52";  // 版本号：手机上看看对不对，就知道是不是旧页面了
 
 const STORE_KEY = "houseTileV1";   // house.html 的存档（导出时往这里写）
 const SKETCH_KEY = "houseSketchV1"; // 草图自己的存档（和 house.html 分开，互不干扰）
@@ -334,7 +334,7 @@ function draw() {
   const cssW = Math.max(160, (canvas.parentElement.clientWidth || 0) - 8);
   // 手机上有地址栏，innerHeight 会把地址栏算进去，量出来偏大；visualViewport 才是真正看得见的高度
   const vh = (window.visualViewport && window.visualViewport.height) || window.innerHeight || 800;
-  const cssH = Math.max(300, Math.min(vh * 0.55, 520));
+  const cssH = Math.max(280, Math.min(vh * 0.5, 470));   // 留点余地，好让画布一屏装得下
   canvas.style.width = cssW + "px";
   canvas.style.height = cssH + "px";
 
@@ -670,6 +670,8 @@ $("#wallCustom").addEventListener("input", (e) => {
 $("#fit").onclick = () => {
   state.manualView = false;              // 交回自动扶正
   state.view = null; draw(); state.view = null; draw();
+  // 顺手把画布挪到屏幕正中：手机上画布比一屏高一点，不滚的话顶上那截看不见
+  try { canvas.scrollIntoView({ behavior: "smooth", block: "center" }); } catch (e) {}
 };
 $("#clear").onclick = () => {
   if (!confirm("清空所有房间？")) return;
