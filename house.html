@@ -16,10 +16,6 @@
   --chip:#ECEAE4;       /* 未选中的选项块 */
   --tile:#DAD6CE;       /* 砖块（图上） */
   --joint:#FFFFFF;      /* 砖缝（图上） */
-  --r3d-joint:#8B8D90;  /* 砖缝（三维图上）：用中性灰，避免低分辨率下出现亮白格子 */
-  --column:#C9B8A2;     /* 包管立柱（图上） */
-  --fixture:#B7C3CC;    /* 洁具（蹲便器）轮廓：冷灰蓝，和暖褐的"柱"分得开 */
-  --open:#F3F1EC;       /* 门窗洞口底色（图上） */
   --accent:#2B5E9B;     /* 操作蓝：墨斗线 */
   --accent-soft:#E3EBF5;
   --ok:#2E7D46;         /* 成功绿 */
@@ -32,8 +28,7 @@
 @media (prefers-color-scheme: dark){
   :root:not([data-theme="light"]){
     --paper:#17181B; --card:#202226; --ink:#ECEDEF; --ink-soft:#9CA2AA;
-    --line:#34373D; --chip:#2A2D32; --tile:#4A4E55; --joint:#1B1C20; --r3d-joint:#2D3138;
-    --column:#6E6050; --fixture:#5A6672; --open:#1B1C20;
+    --line:#34373D; --chip:#2A2D32; --tile:#4A4E55; --joint:#1B1C20;
     --accent:#7FA9DC; --accent-soft:#243246;
     --ok:#74C28C; --ok-soft:#1F3327;
     --warn:#E2A44E; --warn-soft:#3A2E1B;
@@ -42,8 +37,7 @@
 }
 :root[data-theme="dark"]{
   --paper:#17181B; --card:#202226; --ink:#ECEDEF; --ink-soft:#9CA2AA;
-  --line:#34373D; --chip:#2A2D32; --tile:#4A4E55; --joint:#1B1C20; --r3d-joint:#2D3138;
-  --column:#6E6050; --fixture:#5A6672; --open:#1B1C20;
+  --line:#34373D; --chip:#2A2D32; --tile:#4A4E55; --joint:#1B1C20;
   --accent:#7FA9DC; --accent-soft:#243246;
   --ok:#74C28C; --ok-soft:#1F3327;
   --warn:#E2A44E; --warn-soft:#3A2E1B;
@@ -69,15 +63,6 @@ button{cursor:pointer; touch-action:manipulation}
 .app-head h1{margin:0; font-size:24px; font-weight:800; letter-spacing:.5px}
 .app-head p{margin:2px 0 0; color:var(--ink-soft); font-size:13px}
 
-/* 图例 */
-.legend{display:flex; flex-wrap:wrap; gap:8px 16px; margin:10px 2px 14px; font-size:12px; color:var(--ink-soft)}
-.legend .lg{display:inline-flex; align-items:center; gap:6px}
-.legend i{font-style:normal; display:inline-flex; align-items:center; justify-content:center; border-radius:5px; box-sizing:border-box}
-.sw-cut{background:#fff; color:var(--danger); border:1px solid var(--danger); font-weight:700; font-size:11px; min-width:28px; height:18px; padding:0 4px}
-.sw-edge{background:var(--accent); color:#fff; font-weight:700; font-size:11px; width:20px; height:18px}
-.sw-col{width:16px; height:14px; background:linear-gradient(90deg, rgba(0,0,0,.22), rgba(0,0,0,0) 32%, rgba(0,0,0,0) 68%, rgba(0,0,0,.22)), var(--column); border:1px solid var(--line)}
-.sw-open{width:16px; height:14px; background:var(--open); border:1px dashed var(--ink-soft)}
-
 /* ---------- 顶部设置区（吸顶、可收起） ---------- */
 .settings{position:sticky; top:0; z-index:20; margin:0 -14px; padding:0 14px; background:var(--paper);}
 .settings-box{background:var(--card); border:1px solid var(--line); border-radius:12px; overflow:hidden;}
@@ -95,47 +80,28 @@ button{cursor:pointer; touch-action:manipulation}
 .chip{border:1px solid var(--line); background:var(--chip); border-radius:8px; padding:8px 12px; min-height:42px; font-size:15px; font-variant-numeric:tabular-nums;}
 .chip.on{background:var(--accent-soft); border-color:var(--accent); color:var(--accent); font-weight:700}
 .custom-inputs{display:none; gap:8px; margin-top:8px}
-.custom-inputs.show{display:flex}
 .seg{display:flex; flex-wrap:wrap; gap:6px}
 .seg button{flex:1; min-width:52px; min-height:42px; padding:0 6px; border:1px solid var(--line); background:var(--chip); border-radius:8px; font-size:14px}
 .seg button.on{background:var(--accent-soft); border-color:var(--accent); color:var(--accent); font-weight:700}
 
 /* ---------- 卡片 ---------- */
 .card{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; margin-top:14px;}
-.card-head{display:flex; align-items:center; gap:8px}
 .card-name{flex:1; border:none; background:none; padding:4px 0; min-height:40px; font-size:18px; font-weight:800;}
 .card-name:focus{outline:2px solid var(--accent); border-radius:6px}
 .icon-btn{flex:none; width:40px; height:40px; border:1px solid var(--line); background:var(--chip); border-radius:8px; font-size:15px; color:var(--ink-soft)}
 .icon-btn:active{background:var(--danger-soft); color:var(--danger); border-color:var(--danger)}
 .card-sub{margin:0 0 10px; font-size:13px; color:var(--ink-soft); font-variant-numeric:tabular-nums}
-.dim-grid{display:grid; grid-template-columns:1fr 1fr; gap:8px}
-.dim-grid .field, .feat-inputs .field{min-width:0}
 .field{display:block}
 .field>span{display:block; font-size:12px; color:var(--ink-soft); margin-bottom:3px}
 .field.mini{flex:1; min-width:0}
 .field.mini>span{font-size:11px}
 .field.mini input{min-height:40px; padding:7px 8px; font-size:15px}
 
-/* 门 / 窗 / 立柱 折叠区 */
-.feat{margin-top:10px; border:1px solid var(--line); border-radius:10px; overflow:hidden}
-.feat summary{display:flex; align-items:center; gap:8px; list-style:none; padding:10px 12px; min-height:44px; background:var(--chip); font-size:15px; font-weight:700; cursor:pointer}
-.feat summary::-webkit-details-marker{display:none}
-.feat summary::after{content:"▾"; margin-left:auto; color:var(--ink-soft); font-size:12px}
-.feat[open] summary::after{transform:rotate(180deg)}
-.feat-val{margin-left:2px; font-size:12px; font-weight:400; color:var(--ink-soft)}
-.feat-val.lit{color:var(--accent); font-weight:700}
-.feat-body{padding:12px; display:flex; flex-direction:column; gap:10px}
 .switch-row{display:flex; align-items:center; justify-content:space-between; gap:10px; min-height:32px; font-size:15px}
 .switch{appearance:none; -webkit-appearance:none; flex:none; width:52px; height:30px; border-radius:15px; background:var(--line); position:relative; transition:background .15s; border:none; min-height:0; padding:0}
 .switch::after{content:""; position:absolute; top:3px; left:3px; width:24px; height:24px; border-radius:50%; background:#fff; transition:left .15s; box-shadow:0 1px 2px rgba(0,0,0,.25)}
 .switch:checked{background:var(--accent)}
 .switch:checked::after{left:25px}
-.feat-inputs{display:none; grid-template-columns:1fr 1fr; gap:8px}
-.feat-inputs.show{display:grid}
-.feat-inputs .wide{grid-column:1 / -1}
-.col-row{display:flex; flex-direction:column; gap:8px; border:1px solid var(--line); border-radius:8px; padding:8px}
-.col-top{display:flex; align-items:center; gap:8px}
-.col-tag{flex:none; font-size:12px; color:var(--ink-soft); font-weight:700}
 .seg.mini{gap:4px}
 .seg.mini button{flex:0 1 auto; min-width:0; min-height:30px; padding:0 9px; font-size:12px; border-radius:7px}
 .mini-add{border:1px dashed var(--accent); color:var(--accent); background:none; border-radius:8px; min-height:42px; font-size:14px; font-weight:700}
@@ -151,25 +117,8 @@ button{cursor:pointer; touch-action:manipulation}
 .st.info{color:var(--ink-soft); background:var(--chip)}
 
 /* 示意图 */
-.plot{margin-top:10px; background:var(--card); display:flex; justify-content:center}
-.plot canvas{display:block; max-width:100%}
 .plot-empty{margin:6px 0 2px; font-size:13px; color:var(--ink-soft); text-align:center}
 
-/* 增加墙 / 地面 */
-.add-row{display:flex; gap:10px; margin-top:16px}
-.room-net{margin-top:18px; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px}
-.rn-title{font-size:16px; margin:0 0 4px}
-.rn-sub{margin:0 0 10px; font-size:13px; color:var(--ink-soft)}
-.rn-plot{display:flex; justify-content:center; position:relative; overflow-x:auto}
-.rn-plot canvas{display:block}
-.rn-plot .plot-empty{position:absolute; top:50%; left:0; right:0; transform:translateY(-50%); margin:0; font-size:13px; color:var(--ink-soft); text-align:center}
-
-/* 三维整屋图 */
-.r3d-plot{position:relative; display:flex; justify-content:center; background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:hidden}
-.r3d-plot canvas{display:block; width:100%; height:auto; touch-action:none; cursor:grab}
-.r3d-plot canvas:active{cursor:grabbing}
-.r3d-plot .plot-empty{position:absolute; top:50%; left:0; right:0; transform:translateY(-50%); margin:0; font-size:13px; color:var(--ink-soft); text-align:center; padding:0 12px}
-.add-btn{flex:1; min-height:50px; border-radius:12px; border:1px solid var(--accent); background:var(--accent-soft); color:var(--accent); font-size:16px; font-weight:800}
 .app-foot{margin-top:18px; text-align:center; font-size:12px; color:var(--ink-soft)}
 /* ---- 本项目新增（复用不了的几处）---- */
 /* 图只看不摸：不加 touch-action:none，手指在图上来回划照样能滚页面 */
@@ -181,8 +130,6 @@ button{cursor:pointer; touch-action:manipulation}
 .room-fields{display:grid; grid-template-columns:1fr 1fr; gap:8px}
 .cut-list{margin-top:10px; padding:10px 12px; background:var(--chip); border-radius:8px;
   font-variant-numeric:tabular-nums; font-size:14px; line-height:1.7; white-space:pre-wrap; word-break:break-word}
-.cut-list b{color:var(--ink)}
-.cut-list .dim{color:var(--danger); font-weight:700}
 .plan-legend{margin-top:8px; font-size:12px; color:var(--ink-soft)}
 select{min-height:40px; padding:7px 8px; border:1px solid var(--line); border-radius:8px;
   background:var(--card); color:var(--ink); width:100%; font:inherit}
