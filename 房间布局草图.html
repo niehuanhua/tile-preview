@@ -1,0 +1,578 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#F2F1ED">
+<title>房间布局草图</title>
+<style>
+:root{
+  --paper:#F2F1ED; --card:#FFFFFF; --ink:#26292E; --ink-soft:#6A6F76;
+  --line:#DFDCD4; --chip:#ECEAE4; --accent:#2B5E9B; --accent-soft:#E3EBF5;
+  --ok:#2E7D46; --danger:#C0362C; --danger-soft:#F8E4E2;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#17181B; --card:#202226; --ink:#ECEDEF; --ink-soft:#9CA2AA;
+    --line:#34373D; --chip:#2A2D32;
+    --accent:#7FA9DC; --accent-soft:#243246;
+    --ok:#74C28C; --danger:#E5796F; --danger-soft:#3C2320;
+  }
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0; background:var(--paper); color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  font-size:16px; line-height:1.5;}
+.wrap{max-width:640px; margin:0 auto; padding:0 14px calc(40px + env(safe-area-inset-bottom));}
+header{padding:18px 2px 8px}
+header h1{margin:0; font-size:22px; font-weight:800}
+header p{margin:4px 0 0; color:var(--ink-soft); font-size:13px}
+.card{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; margin-top:12px;}
+.card h2{margin:0 0 8px; font-size:16px}
+.canvas-wrap{display:flex; justify-content:center; overflow:hidden}
+canvas{
+  display:block;
+  touch-action:none;
+  user-select:none;
+  -webkit-user-select:none;
+  -webkit-touch-callout:none;
+  -webkit-tap-highlight-color:transparent;
+  border:1px solid var(--line);
+  border-radius:8px;
+  cursor:grab;
+}
+.btn-row{display:flex; flex-wrap:wrap; gap:8px; margin-top:10px}
+button{font:inherit; color:inherit; cursor:pointer; touch-action:manipulation;}
+button.primary, button.ghost { min-height:42px; padding:0 14px; border-radius:8px; font-weight:700; font-size:14px; flex:1; }
+button.primary{background:var(--accent-soft); color:var(--accent); border:1px solid var(--accent);}
+button.ghost{background:var(--chip); color:var(--ink); border:1px solid var(--line);}
+button:active{transform:translateY(1px)}
+.hint{margin:10px 0 0; font-size:13px; color:var(--ink-soft); text-align:center}
+.field{display:block; margin-bottom:8px}
+.field>span{display:block; font-size:12px; color:var(--ink-soft); margin-bottom:3px}
+input{width:100%; min-height:42px; padding:8px 10px; border:1px solid var(--line);
+  border-radius:8px; background:var(--card); color:var(--ink); font:inherit; font-variant-numeric:tabular-nums;}
+input:focus{outline:2px solid var(--accent); border-color:var(--accent)}
+.dim-grid{display:grid; grid-template-columns:1fr 1fr; gap:8px}
+.ok-banner{margin-top:10px; padding:10px 12px; background:#E4F0E7; color:var(--ok);
+  border-radius:8px; font-size:13px; font-weight:700; text-align:center}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]) .ok-banner{background:#1F3327;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>房间布局草图</h1>
+    <p>拖拽摆放房间、填上长宽，一键导出给 house.html</p >
+  </header>
+
+  <section class="card">
+    <div class="canvas-wrap"><canvas id="cv"></canvas></div>
+    <p class="hint" id="hint">点下面「＋ 添加房间」开始</p >
+    <div class="btn-row">
+      <button class="primary" id="add">＋ 添加房间</button>
+      <button class="ghost" id="fit">适应画面</button>
+      <button class="ghost" id="clear">清空</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>房间之间留多大缝</h2>
+    <label class="field"><span>间隙</span>
+      <select id="gapMode">
+        <option value="wall">留一个墙厚（两间房之间有墙）</option>
+        <option value="zero">贴死 · 间隙 0（两间房连通，中间没墙）</option>
+      </select>
+    </label>
+    <div id="wallBox">
+      <label class="field"><span>墙厚（mm）</span>
+        <select id="wallPreset">
+          <option value="100">100（薄隔墙）</option>
+          <option value="120">120（薄隔墙）</option>
+          <option value="200">200（加气块）</option>
+          <option value="240" selected>240（一砖墙）</option>
+          <option value="370">370（一砖半）</option>
+          <option value="custom">自己填…</option>
+        </select>
+      </label>
+      <label class="field" id="wallCustomBox" style="display:none">
+        <span>自己填墙厚（mm）</span>
+        <input type="text" inputmode="numeric" id="wallCustom" placeholder="240">
+      </label>
+    </div>
+  </section>
+
+  <section class="card" id="editor" style="display:none">
+    <h2>选中房间</h2>
+    <label class="field"><span>名称</span><input type="text" id="rName"></label>
+    <div class="dim-grid">
+      <label class="field"><span>长（mm）</span><input type="text" inputmode="numeric" id="rW"></label>
+      <label class="field"><span>宽（mm）</span><input type="text" inputmode="numeric" id="rH"></label>
+    </div>
+    <div class="btn-row">
+      <button class="ghost" id="del" style="color:var(--danger)">删除这间</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <button class="primary" id="apply" style="width:100%">应用到 house.html</button>
+    <div class="ok-banner" id="ok" style="display:none">已写入！打开 house.html 就能看到。</div>
+  </section>
+</div>
+
+<script>
+const STORE_KEY = "houseTileV1";   // house.html 的存档（导出时往这里写）
+const SKETCH_KEY = "houseSketchV1"; // 草图自己的存档（和 house.html 分开，互不干扰）
+const WALL_DEFAULT = 240;        // 默认墙厚（mm），界面上可以改成 0 或别的值
+const SNAP_GRID = 100;           // 网格吸附（mm）
+const SNAP_ROOM = 500;           // 房间吸附触发距离（mm）
+const HIT_SLOP_PX = 12;          // 手指命中半径（屏幕像素）
+const DRAG_THRESHOLD_PX = 8;     // 拖动触发阈值（屏幕像素）
+
+
+const canvas = document.getElementById("cv");
+const $ = (s) => document.querySelector(s);
+
+const state = {
+  seq: 0,
+  rooms: [],          // { id, name, x, y, w, h }
+  selected: null,
+  view: null,         // { scale, offsetX, offsetY }
+  pending: null,      // 交互中状态
+  gapMode: "wall",    // "wall" = 房间之间留一个墙厚；"zero" = 贴死，间隙 0（两间连通）
+  wall: WALL_DEFAULT, // 墙厚（mm）
+};
+/* 当前该留多大缝：贴死模式就是 0 */
+const gapMM = () => (state.gapMode === "zero" ? 0 : Math.max(0, Number(state.wall) || 0));
+
+/* ---------- 草图存档（刷新不丢）---------- */
+function saveSketch() {
+  try {
+    localStorage.setItem(SKETCH_KEY, JSON.stringify({
+      seq: state.seq, rooms: state.rooms, gapMode: state.gapMode, wall: state.wall,
+    }));
+  } catch (e) {}
+}
+let _saveTimer = null;
+const saveSoon = () => { clearTimeout(_saveTimer); _saveTimer = setTimeout(saveSketch, 300); };
+
+function loadSketch() {
+  let d = null;
+  try { d = JSON.parse(localStorage.getItem(SKETCH_KEY) || "null"); } catch (e) {}
+  if (!d || !Array.isArray(d.rooms)) return;
+  const ok = d.rooms.filter((r) => r && typeof r.id === "string" &&
+    [r.x, r.y, r.w, r.h].every((v) => typeof v === "number" && isFinite(v)) && r.w > 0 && r.h > 0);
+  if (!ok.length) return;
+  state.rooms = ok.map((r) => ({ id: r.id, name: r.name || "房间", x: r.x, y: r.y, w: r.w, h: r.h }));
+  // 编号接着已有的往下排，免得新加的房间 id 跟旧的重号
+  const nums = state.rooms.map((r) => parseInt(String(r.id).replace(/\D/g, ""), 10)).filter((n) => isFinite(n));
+  state.seq = Math.max(Number(d.seq) || 0, ...nums, 0);
+  if (d.gapMode === "zero" || d.gapMode === "wall") state.gapMode = d.gapMode;
+  if (typeof d.wall === "number" && isFinite(d.wall) && d.wall >= 0) state.wall = d.wall;
+}
+
+/* ---------- 坐标转换 ---------- */
+function bbox(rooms) {
+  if (!rooms.length) return null;
+  const x0 = Math.min(...rooms.map(r => r.x));
+  const y0 = Math.min(...rooms.map(r => r.y));
+  const x1 = Math.max(...rooms.map(r => r.x + r.w));
+  const y1 = Math.max(...rooms.map(r => r.y + r.h));
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+
+function computeView(cssW, cssH) {
+  if (!state.rooms.length) return { scale: 0.05, offsetX: -1000, offsetY: -1000 };
+  const bb = bbox(state.rooms);
+  const pad = 800;
+  const w = bb.w + pad * 2, h = bb.h + pad * 2;
+  let scale = Math.min(cssW / w, cssH / h);
+  scale = Math.max(0.005, Math.min(scale, 0.3));
+  const offsetX = bb.x - pad - (cssW / scale - w) / 2;
+  const offsetY = bb.y - pad - (cssH / scale - h) / 2;
+  return { scale, offsetX, offsetY };
+}
+
+function toMM(e) {
+  const rect = canvas.getBoundingClientRect();
+  const px = e.clientX - rect.left;
+  const py = e.clientY - rect.top;
+  const { scale, offsetX, offsetY } = state.view;
+  return { x: px / scale + offsetX, y: py / scale + offsetY };
+}
+
+/* 命中检测：带手指半径外扩 */
+function hitTest(mx, my, slopMM) {
+  const slop = slopMM || 0;
+  for (let i = state.rooms.length - 1; i >= 0; i--) {
+    const r = state.rooms[i];
+    if (mx >= r.x - slop && mx <= r.x + r.w + slop &&
+        my >= r.y - slop && my <= r.y + r.h + slop) return r;
+  }
+  return null;
+}
+
+/* ---------- 吸附 ---------- */
+function snapToRooms(x, y, w, h, exclude) {
+  let bestX = x, bestY = y;
+  let bestDx = SNAP_ROOM, bestDy = SNAP_ROOM;
+  const g = gapMM();          // 贴死模式就是 0，两间房直接挨上
+  for (const o of state.rooms) {
+    if (o === exclude) continue;
+    const candsX = [
+      o.x + o.w + g,     // 我在它右边，中间留 g
+      o.x - g - w,       // 我在它左边，中间留 g
+      o.x,               // 两边左对齐
+      o.x + o.w - w,     // 两边右对齐
+    ];
+    for (const c of candsX) {
+      const d = Math.abs(x - c);
+      if (d < bestDx) { bestDx = d; bestX = c; }
+    }
+    const candsY = [
+      o.y + o.h + g,
+      o.y - g - h,
+      o.y,
+      o.y + o.h - h,
+    ];
+    for (const c of candsY) {
+      const d = Math.abs(y - c);
+      if (d < bestDy) { bestDy = d; bestY = c; }
+    }
+  }
+  return { x: bestDx < SNAP_ROOM ? bestX : x, y: bestDy < SNAP_ROOM ? bestY : y };
+}
+
+/* ---------- 绘制 ---------- */
+const getCSS = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+function draw() {
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = canvas.parentElement.clientWidth - 8;
+  const cssH = Math.max(300, Math.min(window.innerHeight * 0.55, 520));
+  canvas.style.width = cssW + "px";
+  canvas.style.height = cssH + "px";
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  ctx.fillStyle = getCSS("--paper");
+  ctx.fillRect(0, 0, cssW, cssH);
+
+  if (!state.view) state.view = computeView(cssW, cssH);
+  const { scale, offsetX, offsetY } = state.view;
+  const px = (mm) => (mm - offsetX) * scale;
+
+  // 网格
+  let step = 1000;
+  while (step * scale < 22) step *= 2;
+  ctx.strokeStyle = "rgba(120,120,120,0.10)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  const x0 = Math.floor(offsetX / step) * step;
+  const y0 = Math.floor(offsetY / step) * step;
+  const x1 = offsetX + cssW / scale, y1 = offsetY + cssH / scale;
+  for (let x = x0; x <= x1; x += step) {
+    const p = px(x); ctx.moveTo(p, 0); ctx.lineTo(p, cssH);
+  }
+  for (let y = y0; y <= y1; y += step) {
+    const p = (y - offsetY) * scale; ctx.moveTo(0, p); ctx.lineTo(cssW, p);
+  }
+  ctx.stroke();
+
+  // 房间
+  state.rooms.forEach((r) => {
+    const X = px(r.x), Y = px(r.y);
+    const W = r.w * scale, H = r.h * scale;
+    const sel = r === state.selected;
+    const dragging = state.pending && state.pending.room === r && state.pending.moved;
+
+    if (dragging) {
+      ctx.save();
+      ctx.shadowColor = "rgba(43,94,155,0.45)";
+      ctx.shadowBlur = 14;
+      ctx.shadowOffsetY = 4;
+    }
+    
+    ctx.fillStyle = sel ? "rgba(43,94,155,0.30)" : "rgba(43,94,155,0.13)";
+    ctx.fillRect(X, Y, W, H);
+    ctx.strokeStyle = sel ? "#2B5E9B" : "rgba(43,94,155,0.55)";
+    ctx.lineWidth = sel ? 2.5 : 1.5;
+    ctx.strokeRect(X, Y, W, H);
+    
+    if (dragging) ctx.restore();
+    
+    if (W > 55 && H > 26) {
+      ctx.fillStyle = "#1B3D6B";
+      ctx.font = "700 13px -apple-system, PingFang SC, sans-serif";
+      ctx.textBaseline = "top";
+      ctx.fillText(r.name, X + 6, Y + 6);
+      if (W > 90 && H > 48) {
+        ctx.font = "600 11px -apple-system, PingFang SC, sans-serif";
+        ctx.fillText(`${Math.round(r.w)}×${Math.round(r.h)}`, X + 6, Y + 24);
+      }
+    }
+  });
+
+  if (!state.rooms.length) {
+    ctx.fillStyle = getCSS("--ink-soft");
+    ctx.font = "14px -apple-system, PingFang SC, sans-serif";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText("点下面「＋ 添加房间」开始", cssW / 2, cssH / 2);
+    ctx.textAlign = "start";
+  }
+
+  // 光标
+  canvas.style.cursor = (state.pending && state.pending.room) ? "grabbing"
+                       : (state.rooms.length ? "grab" : "default");
+
+  $("#hint").textContent = state.rooms.length
+    ? (state.gapMode === "zero"
+        ? "按住房间拖动 · 点房间改长宽 · 靠近时直接贴上去（间隙 0）"
+        : `按住房间拖动 · 点房间改长宽 · 靠近时自动留 ${state.wall}mm 墙`)
+    : "点下面「＋ 添加房间」开始";
+}
+
+/* ---------- 触摸/指针交互 ---------- */
+canvas.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
+
+  const { x, y } = toMM(e);
+  const slopMM = HIT_SLOP_PX / state.view.scale;
+  const hit = hitTest(x, y, slopMM);
+
+  // 立刻高亮，给视觉反馈
+  state.selected = hit || null;
+  renderEditor();
+  draw();
+  if (hit && navigator.vibrate) { try { navigator.vibrate(6); } catch (err) {} }
+
+  state.pending = {
+    room: hit || null,
+    sx: x, sy: y,
+    rx: hit ? hit.x : 0,
+    ry: hit ? hit.y : 0,
+    moved: false,
+    startTime: Date.now(),
+    pointerId: e.pointerId,
+  };
+});
+
+canvas.addEventListener("pointermove", (e) => {
+  const p = state.pending;
+  if (!p || !p.room) return;
+  e.preventDefault();
+
+  const { x, y } = toMM(e);
+  const dx = x - p.sx;
+  const dy = y - p.sy;
+  const distPx = Math.hypot(dx, dy) * state.view.scale;
+
+  // 没超过阈值：还在"试探阶段"，不移动
+  if (!p.moved && distPx < DRAG_THRESHOLD_PX) return;
+  p.moved = true;
+
+  let nx = p.rx + dx;
+  let ny = p.ry + dy;
+  nx = Math.round(nx / SNAP_GRID) * SNAP_GRID;
+  ny = Math.round(ny / SNAP_GRID) * SNAP_GRID;
+  const sn = snapToRooms(nx, ny, p.room.w, p.room.h, p.room);
+  p.room.x = sn.x;
+  p.room.y = sn.y;
+  draw();
+});
+
+function endPointer(e) {
+  const p = state.pending;
+  state.pending = null;
+  if (!p) { draw(); return; }
+
+  // 长按未移动 → 滚到编辑面板并聚焦（手机上调数值方便）
+  if (!p.moved && p.room && Date.now() - p.startTime > 350) {
+    const ed = document.getElementById("editor");
+    if (ed && ed.style.display !== "none") {
+      ed.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      setTimeout(() => { const n = document.getElementById("rName"); if (n) n.focus(); }, 250);
+    }
+  }
+
+  // ★ 视图冻结：只在房间被拖出屏幕外时才重算
+  if (p.moved && p.room) {
+    saveSketch();          // 拖动结束就存一份，刷新不丢
+    const r = p.room;
+    const v = state.view;
+    const cw = canvas.clientWidth, ch = canvas.clientHeight;
+    const rx = (r.x - v.offsetX) * v.scale;
+    const ry = (r.y - v.offsetY) * v.scale;
+    const rw = r.w * v.scale, rh = r.h * v.scale;
+    if (rx + rw < 0 || ry + rh < 0 || rx > cw || ry > ch) {
+      state.view = null;
+    }
+  }
+  draw();
+}
+canvas.addEventListener("pointerup", endPointer);
+canvas.addEventListener("pointercancel", endPointer);
+
+/* ---------- 编辑面板 ---------- */
+function renderEditor() {
+  const box = $("#editor");
+  if (!state.selected) { box.style.display = "none"; return; }
+  box.style.display = "";
+  $("#rName").value = state.selected.name;
+  $("#rW").value = state.selected.w;
+  $("#rH").value = state.selected.h;
+}
+
+$("#rName").addEventListener("input", (e) => {
+  if (state.selected) { state.selected.name = e.target.value; draw(); saveSoon(); }
+});
+$("#rW").addEventListener("input", (e) => {
+  const v = parseInt(e.target.value, 10);
+  if (state.selected && v > 0) { state.selected.w = v; draw(); saveSoon(); }
+});
+$("#rH").addEventListener("input", (e) => {
+  const v = parseInt(e.target.value, 10);
+  if (state.selected && v > 0) { state.selected.h = v; draw(); saveSoon(); }
+});
+$("#del").onclick = () => {
+  if (!state.selected) return;
+  state.rooms = state.rooms.filter(r => r !== state.selected);
+  state.selected = null;
+  saveSketch();
+  draw(); renderEditor();
+};
+
+/* ---------- 工具栏 ---------- */
+$("#add").onclick = () => {
+  const bb = bbox(state.rooms);
+  let x = 0, y = 0;
+  if (bb) { x = bb.x + bb.w + gapMM(); y = bb.y; }
+  const r = {
+    id: "r" + (++state.seq),
+    name: "房间" + (state.rooms.length + 1),
+    x, y, w: 3000, h: 3000,
+  };
+  state.rooms.push(r);
+  state.selected = r;
+  state.view = null;   // 新房间加进来，重算视野
+  saveSketch();
+  draw(); renderEditor();
+};
+
+/* ---------- 间隙 / 墙厚 ---------- */
+const WALL_PRESETS = [100, 120, 200, 240, 370];
+function syncWallUI() {
+  const isPreset = WALL_PRESETS.indexOf(state.wall) >= 0;
+  $("#gapMode").value = state.gapMode;
+  $("#wallBox").style.display = state.gapMode === "zero" ? "none" : "";
+  $("#wallPreset").value = isPreset ? String(state.wall) : "custom";
+  $("#wallCustomBox").style.display = isPreset ? "none" : "";
+  if (!isPreset) $("#wallCustom").value = state.wall;
+}
+$("#gapMode").addEventListener("change", (e) => {
+  state.gapMode = e.target.value === "zero" ? "zero" : "wall";
+  saveSketch(); syncWallUI(); draw();
+});
+$("#wallPreset").addEventListener("change", (e) => {
+  if (e.target.value === "custom") {   // 选了「自己填」：露出输入框，等他填
+    $("#wallCustomBox").style.display = "";
+    $("#wallCustom").focus();
+    return;
+  }
+  state.wall = parseInt(e.target.value, 10) || 0;
+  saveSketch(); syncWallUI(); draw();
+});
+$("#wallCustom").addEventListener("input", (e) => {
+  const v = parseInt(e.target.value, 10);
+  if (isFinite(v) && v >= 0) { state.wall = v; saveSoon(); draw(); }
+});
+
+$("#fit").onclick = () => { state.view = null; draw(); };
+$("#clear").onclick = () => {
+  if (!confirm("清空所有房间？")) return;
+  state.rooms = []; state.selected = null; state.view = null; state.pending = null;
+  saveSketch();      // 清空也要存，免得刷新又冒出来
+  draw(); renderEditor();
+};
+
+/* ---------- 导出 ---------- */
+/* 看看 house.html 里现在存着什么（好告诉用户会被改成啥样） */
+function readHouse() {
+  try {
+    const d = JSON.parse(localStorage.getItem(STORE_KEY) || "null");
+    if (d && Array.isArray(d.rooms)) return d;
+  } catch (e) {}
+  return null;
+}
+/* 草图里有没有房间叠在一起（叠了的话 house.html 会报「重叠」出不了图） */
+function overlapNames(rooms) {
+  const out = [];
+  for (let i = 0; i < rooms.length; i++) for (let j = i + 1; j < rooms.length; j++) {
+    const a = rooms[i], b = rooms[j];
+    const ox = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+    const oy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+    if (ox > 0 && oy > 0) out.push(`${a.name || "房间"} × ${b.name || "房间"}`);
+  }
+  return out;
+}
+
+$("#apply").onclick = () => {
+  if (!state.rooms.length) { alert("先加几间房"); return; }
+
+  // 先把后果说清楚：几间房被换掉、几道门会被清掉
+  const house = readHouse();
+  const nR = house ? house.rooms.length : 0;
+  const nD = house && Array.isArray(house.doors) ? house.doors.length : 0;
+  const gapTxt = state.gapMode === "zero" ? "贴死（间隙 0）" : `留墙厚 ${state.wall}mm`;
+  const L = [`草图里有 ${state.rooms.length} 间房，要写进 house.html。`,
+             `房间之间：${gapTxt}，这个设置会一起带过去。`];
+  if (nR || nD) {
+    L.push("", `house.html 现在存着 ${nR} 间房、${nD} 道门。应用之后：`);
+    if (nR) L.push(`· 那 ${nR} 间房 → 换成草图这 ${state.rooms.length} 间`);
+    if (nD) L.push(`· 那 ${nD} 道门 → 全部清掉，门洞得回 house.html 重设`);
+    L.push("", "这一步写下去就撤不回来了。");
+  } else {
+    L.push("", "house.html 里还没排过户型，写进去不会覆盖别的东西。");
+  }
+  const ov = overlapNames(state.rooms);
+  if (ov.length) L.push("", `⚠ 草图里有房间叠在一起（${ov.join("、")}），写进去 house.html 会报「重叠」、出不了图。`);
+  if (!confirm(L.join("\n") + "\n\n确定应用吗？")) return;
+
+  const minX = Math.min(...state.rooms.map(r => r.x));
+  const minY = Math.min(...state.rooms.map(r => r.y));
+  const rooms = state.rooms.map((r, i) => ({
+    id: "r" + (i + 1),
+    name: r.name,
+    x: Math.round(r.x - minX),
+    y: Math.round(r.y - minY),
+    w: Math.round(r.w),
+    h: Math.round(r.h),
+  }));
+  let existing = null;
+  try { existing = JSON.parse(localStorage.getItem(STORE_KEY) || "null"); } catch (e) {}
+  const data = {
+    // 保留 house.html 原来的设置（砖规格、起铺基准那些），只把墙厚换成草图现在这个值
+    settings: Object.assign({
+      floorTile: null, direction: "horizontal", grout: 2,
+      baseRoom: null, baseMode: "center", nudgeX: 0, nudgeY: 0, showCuts: false, wall: 240,
+    }, (existing && existing.settings) || {}, { wall: gapMM() }),
+    seq: 100, rooms, doors: [],
+  };
+  try {
+    localStorage.setItem(STORE_KEY, JSON.stringify(data));
+    $("#ok").style.display = "";
+    setTimeout(() => { $("#ok").style.display = "none"; }, 2500);
+  } catch (e) { alert("写入失败：" + e.message); }
+};
+
+window.addEventListener("resize", () => { state.view = null; draw(); });
+loadSketch();          // 打开就接着上次的户型继续摆
+syncWallUI();
+draw(); renderEditor();
+</script>
+</body>
+</html>
