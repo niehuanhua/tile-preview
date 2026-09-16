@@ -65,6 +65,7 @@ input:focus{outline:2px solid var(--accent); border-color:var(--accent)}
   font-size:13px; font-variant-numeric:tabular-nums; cursor:pointer}
 .room-line.on{border-color:var(--accent); background:var(--accent-soft); color:var(--accent); font-weight:700}
 .room-line.empty{border-style:dashed; color:var(--ink-soft); cursor:default}
+.room-line.far{border-color:var(--danger); background:var(--danger-soft); color:var(--danger); font-weight:700}
 .ok-banner{margin-top:10px; padding:10px 12px; background:#E4F0E7; color:var(--ok);
   border-radius:8px; font-size:13px; font-weight:700; text-align:center}
 @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]) .ok-banner{background:#1F3327;} }
@@ -142,7 +143,7 @@ input:focus{outline:2px solid var(--accent); border-color:var(--accent)}
 </div>
 
 <script>
-const BUILD = "2026-09-16 20:22";  // 版本号：手机上看看对不对，就知道是不是旧页面了
+const BUILD = "2026-09-16 20:30";  // 版本号：手机上看看对不对，就知道是不是旧页面了
 
 const STORE_KEY = "houseTileV1";   // house.html 的存档（导出时往这里写）
 const SKETCH_KEY = "houseSketchV1"; // 草图自己的存档（和 house.html 分开，互不干扰）
@@ -258,6 +259,26 @@ function recenterIfNeeded(boxW, boxH) {
   v.offsetY -= dy / v.scale;
   _offDx = dx; _offDy = dy;
   return Math.hypot(dx, dy);
+}
+
+/* 找出「跑丢的房间」：户型框里大部分是空地，说明有一间被拖到很远的地方，
+ * 它把画面撑得老大，剩下的房间就挤成一小条了。返回离大伙最远的那间。 */
+function farRoom() {
+  if (state.rooms.length < 2) return null;
+  const bb = bbox(state.rooms);
+  const sumArea = state.rooms.reduce((a, r) => a + r.w * r.h, 0);
+  if (!(bb.w > 0 && bb.h > 0) || bb.w * bb.h <= sumArea * 8) return null;  // 还算紧凑
+  let worst = null, worstD = -1;
+  state.rooms.forEach((r) => {
+    const cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+    let minD = Infinity;
+    state.rooms.forEach((o) => {
+      if (o === r) return;
+      minD = Math.min(minD, Math.hypot(cx - (o.x + o.w / 2), cy - (o.y + o.h / 2)));
+    });
+    if (minD > worstD) { worstD = minD; worst = r; }
+  });
+  return worst;
 }
 
 /* 有没有房间跑到画布外面去了（有就说明视野该重算了） */
@@ -417,9 +438,13 @@ function draw() {
   if (bbD) {
     const cx0 = (bbD.x + bbD.w / 2 - state.view.offsetX) * state.view.scale;
     const cy0 = (bbD.y + bbD.h / 2 - state.view.offsetY) * state.view.scale;
+    const top = (bbD.y - state.view.offsetY) * state.view.scale;
+    const bot = (bbD.y + bbD.h - state.view.offsetY) * state.view.scale;
     $("#diag").textContent =
-      `画布 ${Math.round(boxW)}×${Math.round(boxH)}　位图 ${canvas.width}×${canvas.height}　dpr ${dpr}`
-      + `　内容中心 ${Math.round(cx0)},${Math.round(cy0)}　画布中心 ${Math.round(boxW / 2)},${Math.round(boxH / 2)}`;
+      `画布 ${Math.round(boxW)}×${Math.round(boxH)}　户型 ${Math.round(bbD.w)}×${Math.round(bbD.h)}mm`
+      + `　图上 y ${Math.round(top)}~${Math.round(bot)}`
+      + `　中心 ${Math.round(cy0)}/${Math.round(boxH / 2)}（内容/画布）`
+      + `　横 ${Math.round(cx0)}/${Math.round(boxW / 2)}`;
   } else {
     $("#diag").textContent = `画布 ${Math.round(boxW)}×${Math.round(boxH)}　位图 ${canvas.width}×${canvas.height}　dpr ${dpr}`;
   }
@@ -564,10 +589,12 @@ function renderRoomList() {
     box.appendChild(d);
     return;
   }
+  const far = farRoom();
   state.rooms.forEach((r) => {
     const d = document.createElement("div");
-    d.className = "room-line" + (r === state.selected ? " on" : "");
-    d.textContent = `${r.name}　x ${Math.round(r.x)}　y ${Math.round(r.y)}　${Math.round(r.w)}×${Math.round(r.h)}`;
+    d.className = "room-line" + (r === state.selected ? " on" : "") + (r === far ? " far" : "");
+    d.textContent = `${r.name}　x ${Math.round(r.x)}　y ${Math.round(r.y)}　${Math.round(r.w)}×${Math.round(r.h)}`
+      + (r === far ? "　← 这间离得太远，把画面撑小了" : "");
     d.onclick = () => { state.selected = r; renderEditor(); draw(); };
     box.appendChild(d);
   });
