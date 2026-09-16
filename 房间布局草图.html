@@ -29,6 +29,7 @@ header{padding:18px 2px 8px}
 header h1{margin:0; font-size:22px; font-weight:800}
 header p{margin:4px 0 0; color:var(--ink-soft); font-size:13px}
 header p.ver{margin-top:6px; font-size:12px; color:var(--accent); font-weight:700}
+header p.diag{margin-top:3px; font-size:11px; color:var(--ink-soft); font-variant-numeric:tabular-nums}
 .card{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; margin-top:12px;}
 .card h2{margin:0 0 8px; font-size:16px}
 .canvas-wrap{display:flex; justify-content:center; overflow:hidden}
@@ -39,7 +40,11 @@ canvas{
   -webkit-user-select:none;
   -webkit-touch-callout:none;
   -webkit-tap-highlight-color:transparent;
-  border:1px solid var(--line);
+  /* 用 outline 代替 border：border 会占掉 1px，让"程序以为的画布大小"
+     和"图真正铺的那块区域"差着一丁点，这也是图对不齐的嫌疑之一 */
+  outline:1px solid var(--line);
+  outline-offset:-1px;
+  border:0;
   border-radius:8px;
   cursor:grab;
 }
@@ -71,6 +76,7 @@ input:focus{outline:2px solid var(--accent); border-color:var(--accent)}
     <h1>房间布局草图</h1>
     <p>拖拽摆放房间、填上长宽，一键导出给 house.html</p >
     <p class="ver" id="ver"></p>
+    <p class="diag" id="diag"></p>
   </header>
 
   <section class="card">
@@ -136,7 +142,7 @@ input:focus{outline:2px solid var(--accent); border-color:var(--accent)}
 </div>
 
 <script>
-const BUILD = "2026-09-16 20:02";  // 版本号：手机上看看对不对，就知道是不是旧页面了
+const BUILD = "2026-09-16 20:22";  // 版本号：手机上看看对不对，就知道是不是旧页面了
 
 const STORE_KEY = "houseTileV1";   // house.html 的存档（导出时往这里写）
 const SKETCH_KEY = "houseSketchV1"; // 草图自己的存档（和 house.html 分开，互不干扰）
@@ -405,6 +411,17 @@ function draw() {
     if (Math.abs(_offDy) >= 1) dir.push(_offDy > 0 ? `内容偏上 ${Math.abs(_offDy).toFixed(0)}px` : `内容偏下 ${Math.abs(_offDy).toFixed(0)}px`);
     if (Math.abs(_offDx) >= 1) dir.push(_offDx > 0 ? `偏左 ${Math.abs(_offDx).toFixed(0)}px` : `偏右 ${Math.abs(_offDx).toFixed(0)}px`);
     $("#ver").textContent = "版本 " + BUILD + "　（已自动扶正：" + (dir.join("，") || "居中") + "）";
+  }
+  // 诊断行：把画布尺寸和内容中心都摆出来，真机上对不上一眼就能看出来
+  const bbD = state.rooms.length ? bbox(state.rooms) : null;
+  if (bbD) {
+    const cx0 = (bbD.x + bbD.w / 2 - state.view.offsetX) * state.view.scale;
+    const cy0 = (bbD.y + bbD.h / 2 - state.view.offsetY) * state.view.scale;
+    $("#diag").textContent =
+      `画布 ${Math.round(boxW)}×${Math.round(boxH)}　位图 ${canvas.width}×${canvas.height}　dpr ${dpr}`
+      + `　内容中心 ${Math.round(cx0)},${Math.round(cy0)}　画布中心 ${Math.round(boxW / 2)},${Math.round(boxH / 2)}`;
+  } else {
+    $("#diag").textContent = `画布 ${Math.round(boxW)}×${Math.round(boxH)}　位图 ${canvas.width}×${canvas.height}　dpr ${dpr}`;
   }
 }
 
