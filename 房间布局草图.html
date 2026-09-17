@@ -187,7 +187,7 @@ input:focus{outline:2px solid var(--accent); border-color:var(--accent)}
 </div>
 
 <script>
-const BUILD = "2026-09-17 22:33";  // 版本号：手机上看看对不对，就知道是不是旧页面了
+const BUILD = "2026-09-17 22:52";  // 版本号：手机上看看对不对，就知道是不是旧页面了
 
 const STORE_KEY = "houseTileV1";   // house.html 的存档（导出时往这里写）
 const SKETCH_KEY = "houseSketchV1"; // 草图自己的存档（和 house.html 分开，互不干扰）
@@ -917,6 +917,14 @@ function doorHitTest(mx, my, slopMM) {
   return null;
 }
 
+/* 一间房的面积文字。房间尺寸存的是毫米，mm² → m² 要除以 1e6。
+ * 保留 2 位小数 + `m²`，和 house.html 里「铺贴面积」的写法**逐字一致**——
+ * 两个工具对同一间房报出的数字格式一样，搬到一起看才不会让人犯嘀咕。
+ * 画布和房间清单都调这一个函数，省得哪天只改了一处、两边对不上。 */
+function areaLabel(r) {
+  return (r.w * r.h / 1e6).toFixed(2) + " m²";
+}
+
 function draw() {
   const dpr = window.devicePixelRatio || 1;
   // 画布最小给它 160px：容器宽度偶尔会算成 0（页面还没排好时），减 8 就成了负数
@@ -998,6 +1006,11 @@ function draw() {
       if (W > 90 && H > 48) {
         ctx.font = "600 11px -apple-system, PingFang SC, sans-serif";
         ctx.fillText(`${Math.round(r.w)}×${Math.round(r.h)}`, X + 6, Y + 24);
+        /* 面积再往下占一行。11px 的字画在 Y+40、到 Y+53 结束，所以房间至少
+         * 要有 56px 高才放得下——留 3px 边，和上面名字那行（Y+6 起、26px 就放）
+         * 是同一种松紧。门槛没定更高：矮房间（阳台这种 1200mm 进深的）也想知道
+         * 自己多大，能放下就给它放。 */
+        if (H > 56) ctx.fillText(areaLabel(r), X + 6, Y + 40);
       }
     }
   });
@@ -1326,7 +1339,9 @@ function renderRoomList() {
   state.rooms.forEach((r) => {
     const d = document.createElement("div");
     d.className = "room-line" + (r === state.selected ? " on" : "") + (r === far ? " far" : "");
-    d.textContent = `${r.name}　x ${Math.round(r.x)}　y ${Math.round(r.y)}　${Math.round(r.w)}×${Math.round(r.h)}`
+    /* 面积不用另外进上面那个 _listKey：它是由 w/h 算出来的，
+     * 而 w/h 本来就在 key 里，尺寸一变 key 就变、这行必然重建。 */
+    d.textContent = `${r.name}　x ${Math.round(r.x)}　y ${Math.round(r.y)}　${Math.round(r.w)}×${Math.round(r.h)}　${areaLabel(r)}`
       + (r === far ? "　← 这间离得太远，把画面撑小了" : "");
     d.onclick = () => { setSel(r, null); renderEditor(); draw(); };
     box.appendChild(d);

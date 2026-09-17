@@ -91,6 +91,10 @@ button{cursor:pointer; touch-action:manipulation}
 .icon-btn{flex:none; width:40px; height:40px; border:1px solid var(--line); background:var(--chip); border-radius:8px; font-size:15px; color:var(--ink-soft)}
 .icon-btn:active{background:var(--danger-soft); color:var(--danger); border-color:var(--danger)}
 .card-sub{margin:0 0 10px; font-size:13px; color:var(--ink-soft); font-variant-numeric:tabular-nums}
+/* 平面图卡片上那一排小按钮。用 .chips 那套 chip 的样子，
+ * 开着的时候是 .on（蓝底蓝字加粗），和设置面板里的开关长得不一样、
+ * 但表达的是同一件事——一边点，两边一起变。 */
+.plan-tools{display:flex; flex-wrap:wrap; gap:8px; margin:0 0 10px}
 .field{display:block}
 .field>span{display:block; font-size:12px; color:var(--ink-soft); margin-bottom:3px}
 .field.mini{flex:1; min-width:0}
@@ -188,6 +192,9 @@ select{min-height:40px; padding:7px 8px; border:1px solid var(--line); border-ra
   <main id="cards">
     <section class="card">
       <h2 class="card-title">全屋平面图</h2>
+      <div class="plan-tools">
+        <button class="chip" id="cutToggle" aria-pressed="false">标注尺寸</button>
+      </div>
       <p class="card-sub" id="planSub"></p>
       <div class="plan-plot">
         <canvas id="housePlan"></canvas>
@@ -1089,9 +1096,13 @@ function drawPlan(plan){
     ctx.setLineDash(d.threshold ? [] : [5, 4]);
     ctx.strokeRect(x, y, w, h);
     ctx.restore();
-    chips.push({ ghost:false, txt:(d.threshold ? "过门石 " : "通铺 ") + `${Math.round(d.width)}`,
-                 color:d.threshold ? cssVar("--danger") : cssVar("--accent"),
-                 ax:x + w / 2, ay:y + h / 2 });
+    // 「过门石 900」这行小字跟着「标注尺寸」按钮一起收起来——它和裁砖尺寸是
+    // 同一类东西：图上多出来的小字。红框 / 蓝虚线框照画不误，门口开在哪、
+    // 是哪种，一眼还是看得见；洞宽也不会丢，下面「门洞」卡片里每道门都写着。
+    if (plan.settingsShowCuts)
+      chips.push({ ghost:false, txt:(d.threshold ? "过门石 " : "通铺 ") + `${Math.round(d.width)}`,
+                   color:d.threshold ? cssVar("--danger") : cssVar("--accent"),
+                   ax:x + w / 2, ay:y + h / 2 });
   });
 
   chipRow(ctx, chips, cssW, cssH);
@@ -1189,6 +1200,30 @@ function update(){
   renderRoomDetails(plan);
 }
 
+/* 「标注尺寸」的开关：裁砖尺寸线 + 过门石标签，一起显示、一起收。两个控件都走这里，
+ * 所以两边永远一致——在哪边点都一样。
+ *
+ * 为什么刷新两个控件的活儿要单独一个函数：renderSettings() 只重建设置面板里
+ * 那些 chip / 分段按钮，**不重建**那个开关（开关是 init 里建一次的），
+ * 所以按钮的高亮态没地方顺手跟着刷。分开写，两边都调它，才不会漏。 */
+function syncCutUI(){
+  const on = !!state.settings.showCuts;
+  const btn = $("#cutToggle");
+  if (btn) {
+    btn.classList.toggle("on", on);
+    // aria-pressed 是给读屏软件听的。视觉上有蓝色高亮，看不见颜色的用户得靠它。
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+  const sw = $("#cutSwitch");
+  if (sw) sw.checked = on;
+}
+function setShowCuts(v){
+  state.settings.showCuts = !!v;
+  save();
+  syncCutUI();
+  update();
+}
+
 /* ---------------- 启动 ---------------- */
 (function init(){
   // 设置面板展开/收起（与卫生间工具同一套交互）
@@ -1216,13 +1251,24 @@ function update(){
   $("#nudgeX").addEventListener("input", (e) => { state.settings.nudgeX = parseMM(e.target.value) || 0; save(); update(); });
   $("#nudgeY").addEventListener("input", (e) => { state.settings.nudgeY = parseMM(e.target.value) || 0; save(); update(); });
   $("#nudgeX").value = state.settings.nudgeX || ""; $("#nudgeY").value = state.settings.nudgeY || "";
-  // 平面图上标裁砖尺寸（默认关，字会很多）
+  // 平面上这些「小字标注」的显示/隐藏（默认关，字会很多）
+  //
+  // 管两样东西：裁砖的尺寸线（paintCuts），和「过门石 900」这种门洞标签。
+  // 都是图上多出来的小字，一起开关才说得通——只收一半，剩下那一半照样挤。
+  //
+  // 这件事有**两个**控件：平面图卡片上的「标注尺寸」按钮（一眼看得见），
+  // 和这里设置面板最底下那个开关（原来就有，位置深、不好找）。
+  // 两个都读写同一个 state.settings.showCuts，但谁也别自己写 state——
+  // 一律走 setShowCuts()，由它把两边一起刷新。否则迟早出现
+  // 「按钮亮着、开关是关的」这种自相矛盾的画面。
   const cutSw = el("label", "switch-row");
-  cutSw.appendChild(el("span", null, "在平面图上标出裁砖尺寸（字多，看细节时再开）"));
-  const ccb = el("input", "switch"); ccb.type = "checkbox"; ccb.checked = !!state.settings.showCuts;
-  ccb.addEventListener("change", () => { state.settings.showCuts = ccb.checked; save(); update(); });
+  cutSw.appendChild(el("span", null, "在平面图上标出尺寸：裁砖多大、过门石多宽（字多，看细节时再开）"));
+  const ccb = el("input", "switch"); ccb.type = "checkbox"; ccb.id = "cutSwitch";
+  ccb.checked = !!state.settings.showCuts;
+  ccb.addEventListener("change", () => setShowCuts(ccb.checked));
   cutSw.appendChild(ccb);
   $("#settingsBody").appendChild(cutSw);
+  $("#cutToggle").onclick = () => setShowCuts(!state.settings.showCuts);
   // 添加按钮
   $("#addRoom").onclick = () => {
     state.rooms.push({ id:"r" + (state.seq++), name:"房间 " + state.rooms.length, x:null, y:null, w:null, h:null });
@@ -1236,6 +1282,7 @@ function update(){
   };
 
   renderSettings(); renderRooms(); renderDoors(); update();
+  syncCutUI();   // 上次是开着的话，把按钮的高亮补上（HTML 里默认是关的样子）
 })();
 
 </script>
