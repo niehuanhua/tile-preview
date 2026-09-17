@@ -54,6 +54,9 @@ button.primary, button.ghost { min-height:42px; padding:0 14px; border-radius:8p
 button.primary{background:var(--accent-soft); color:var(--accent); border:1px solid var(--accent);}
 button.ghost{background:var(--chip); color:var(--ink); border:1px solid var(--line);}
 button:active{transform:translateY(1px)}
+/* 撤销按钮空栈时置灰。按钮亮着却按下去没反应，用户会以为程序坏了。
+ * 放在 button:active 之后（同权重，后面的赢），挡掉禁用态的下压动画。 */
+button:disabled{opacity:.4; cursor:default; transform:none}
 .hint{margin:10px 0 0; font-size:13px; color:var(--ink-soft); text-align:center}
 .field{display:block; margin-bottom:8px}
 .field>span{display:block; font-size:12px; color:var(--ink-soft); margin-bottom:3px}
@@ -88,6 +91,10 @@ input:focus{outline:2px solid var(--accent); border-color:var(--accent)}
       <button class="ghost" id="fit">适应画面</button>
       <button class="ghost" id="zin">＋ 放大</button>
       <button class="ghost" id="zout">－ 缩小</button>
+      <!-- 紧挨着「清空」：清空是破坏性操作、永远排最后，撤销就贴在它旁边，
+           手滑点完清空之后手指正好在旁边。初始态写死 disabled，
+           别指望 JS 跑到才置灰——启动那一小会儿按钮会是亮的、点下去没反应。 -->
+      <button class="ghost" id="undo" disabled>↶ 撤销</button>
       <button class="ghost" id="clear">清空</button>
     </div>
   </section>
@@ -180,7 +187,7 @@ input:focus{outline:2px solid var(--accent); border-color:var(--accent)}
 </div>
 
 <script>
-const BUILD = "2026-09-16 23:40";  // 版本号：手机上看看对不对，就知道是不是旧页面了
+const BUILD = "2026-09-17 22:33";  // 版本号：手机上看看对不对，就知道是不是旧页面了
 
 const STORE_KEY = "houseTileV1";   // house.html 的存档（导出时往这里写）
 const SKETCH_KEY = "houseSketchV1"; // 草图自己的存档（和 house.html 分开，互不干扰）
@@ -499,17 +506,117 @@ function setSel(room, door) {
 const gapMM = () => (state.gapMode === "zero" ? 0 : Math.max(0, Number(state.wall) || 0));
 
 /* ---------- 草图存档（刷新不丢）---------- */
+/* 落盘的那份数据。撤销快照存的就是这一串，两边共用同一个函数，
+ * 否则加了一个字段只改一处，撤销前后就会对不上。 */
+function sketchJSON() {
+  return JSON.stringify({
+    seq: state.seq, rooms: state.rooms, doors: state.doors,
+    doorW: state.doorW, doorThreshold: state.doorThreshold,
+    gapMode: state.gapMode, wall: state.wall,
+  });
+}
 function saveSketch() {
-  try {
-    localStorage.setItem(SKETCH_KEY, JSON.stringify({
-      seq: state.seq, rooms: state.rooms, doors: state.doors,
-      doorW: state.doorW, doorThreshold: state.doorThreshold,
-      gapMode: state.gapMode, wall: state.wall,
-    }));
-  } catch (e) {}
+  try { localStorage.setItem(SKETCH_KEY, sketchJSON()); } catch (e) {}
 }
 let _saveTimer = null;
 const saveSoon = () => { clearTimeout(_saveTimer); _saveTimer = setTimeout(saveSketch, 300); };
+
+/* ---------- 撤销 ----------
+ * 一次撤销 = 用户的一次动作（拖一次房间、改一次数字、删一间房），不是一次数据写入。
+ * 做法是整份数据的快照：动作开始 beginStep() 拍一张捏在手里，动作结束 commitStep()
+ * 跟现在比对，真变了才压栈。不做「反向操作」——那要为每种动作各写一套逆运算，
+ * 改一处漏一处就会出现「撤销完数据更乱」。
+ *
+ * 已知限制：栈只在内存里，刷新/关掉页面就没了。
+ * state.view（缩放平移）刻意不进快照：缩放是看图的动作、不是误操作，
+ * 撤销顺手把用户的缩放也还原了会很烦。 */
+const UNDO_MAX = 20;         // 栈上限，够了；再多用户也记不住自己撤到哪儿了
+const EDIT_IDLE_MS = 700;    // 输入框停手多久算「这一段打完了」
+let undoStack = [];          // 栈顶 = 上一步**之前**的样子
+let _pendSnap = null;        // 本次动作开始时的快照
+let _editTimer = null;
+
+function syncUndoUI() { const b = $("#undo"); if (b) b.disabled = undoStack.length === 0; }
+
+function commitStep() {
+  clearTimeout(_editTimer); _editTimer = null;
+  if (_pendSnap === null) return;          // 没有待结算的：按了房间但没拖动之类，什么都不做
+  if (sketchJSON() !== _pendSnap) {        // 真变了才压栈，空操作自动过滤掉
+    undoStack.push(_pendSnap);
+    if (undoStack.length > UNDO_MAX) undoStack.shift();
+  }
+  _pendSnap = null;
+  syncUndoUI();
+}
+
+function beginStep() {
+  clearTimeout(_editTimer); _editTimer = null;
+  /* ★ 先把上一步结算掉，绝不直接扔。这一句是整套设计里最要紧的一行，别省：
+   * 在输入框里打完字直接点画布，事件顺序是「画布 pointerdown 先跑」→「输入框 blur 后跑」。
+   * 不先结算的话，这里拍下的快照会把「打字前」那份直接覆盖掉，那一步就永远撤销不了了。 */
+  if (_pendSnap !== null) commitStep();
+  _pendSnap = sketchJSON();
+}
+
+/* 输入框专用：每敲一个字符触发一次 input，绝不能直接 beginStep()——
+ * 打「3000」会压进 4 条记录。这里只在第一下按键时拍快照，停手 0.7 秒才算一段打完。 */
+function editStep() {
+  if (_pendSnap === null) beginStep();
+  clearTimeout(_editTimer);
+  _editTimer = setTimeout(commitStep, EDIT_IDLE_MS);
+}
+
+function applySnap(s) {
+  const d = JSON.parse(s);
+  /* 选中态不进快照，但必须按 id 重新绑：state.rooms 整组换成了反序列化出来的**新对象**，
+   * 旧的 state.selected 还指着已经不在册的旧对象，编辑器面板会对着它改数据（改了不生效）。 */
+  const selId = state.selected && state.selected.id;
+  const selDoorId = state.selDoor && state.selDoor.id;
+  state.rooms = d.rooms;
+  state.doors = sanitizeDoors(d.doors, state.rooms.map((r) => r.id));
+  state.seq = d.seq; state.doorW = d.doorW; state.doorThreshold = d.doorThreshold;
+  state.gapMode = d.gapMode; state.wall = d.wall;
+  setSel(state.rooms.find((r) => r.id === selId) || null,
+         state.doors.find((x) => x.id === selDoorId) || null);
+  reconcileDoors();
+  /* 房间可能原地复活了、而当时的视野是按空户型算的（撤销「清空」就是这种），
+   * 那就重新扶正。anyRoomOutside() 第一行是 if (!state.view) return false;，视野本来就空时不会炸。
+   * 正常拖一下再撤销时视野完全不动。 */
+  if (!state.rooms.length || anyRoomOutside()) state.view = null;
+  /* 两份清单有「内容没变就不重建」的短路缓存，而它们的 key 不含 gapMode/wall/doorW/doorThreshold。
+   * 撤销一步只改了这些字段时，key 会逐字相同、清单提前 return，行上的点击闭包就还指着撤销前的旧对象。
+   * 清掉缓存强制重建，比往 key 里塞字段更省事。 */
+  _listKey = ""; _doorKey = "";
+  syncWallUI(); syncDoorUI();
+  saveSketch();                // ★ 撤销结果必须落盘，否则刷新一下被撤销的改动又回来了
+  draw();                      // draw() 内部会刷两份清单，不用再单独调
+  renderEditor();
+}
+
+function undo() {
+  /* 手指还按在画布上拖房间时点了撤销：state.pending 里的 room/door 指着被换掉的旧对象。
+   * 直接扔掉这个手势，让下面的 commitStep() 把它的「拖之前」压进栈——于是这一拖本身
+   * 也变成一步可以撤销的改动，而不会留下一个指向不存在对象的 pending。 */
+  if (state.pending) state.pending = null;
+  commitStep();                // 刚在输入框打完字马上按撤销：先结算，否则要等 0.7 秒、按钮还是灰的
+  const s = undoStack.pop();
+  if (s) applySnap(s);
+  syncUndoUI();
+}
+
+/* 按钮本身。手机上只有这一条路——没有键盘，Ctrl+Z 够不着。
+ * 置灰状态下浏览器不会派发 click，所以这里不用再判一次空栈。 */
+$("#undo").onclick = undo;
+
+/* 桌面端的顺手键。手机上用不到，但台式机上 Ctrl/⌘+Z 很自然。
+ * 焦点在输入框里时不接管，否则会抢掉输入框自己的撤销。 */
+window.addEventListener("keydown", (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "z") return;
+  const t = e.target;
+  if (t && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName)) return;
+  e.preventDefault();
+  undo();
+});
 
 function loadSketch() {
   let d = null;
@@ -946,6 +1053,10 @@ function draw() {
 canvas.addEventListener("pointerdown", (e) => {
   e.preventDefault();
   try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
+  /* 一次手势 = 一步。快照在这拍、在 endPointer 收；中途 pointermove 每帧都在改
+   * state.rooms/doors，但快照是手势开头拍的，所以拖一次房间只算一步。
+   * 按一下没拖（空操作）靠 commitStep() 的比对过滤掉，不会白占一格。 */
+  beginStep();
 
   const b = canvas.getBoundingClientRect();
   const px0 = e.clientX - b.left, py0 = e.clientY - b.top;
@@ -1092,7 +1203,11 @@ function openDoorOnWall(w) {
   if (width < MIN_DOOR_MM) return;              // findWallGap 已经筛过，兜底而已
   const pos = clampPos(w.lo, w.hi, width, w.pos);
   const nd = {
-    id: "d" + (++state.seq),
+    /* ★ 编号先算出来、**别在这里自增**：下面有两条会放弃开门的岔路（撞上已有的门、
+     * doorView 不合法），在这里自增的话，那两种情况下 seq 也白白变大了 —— 而 seq 在
+     * 撤销快照里，于是「点了一下、什么都没开出来」也会占掉一格撤销记录，
+     * 按下去看着像没反应。真建成了再自增。 */
+    id: "d" + (state.seq + 1),
     a: w.a.id, b: w.b.id,
     x: w.vertical ? (w.gapLo + w.gapHi) / 2 : pos,
     y: w.vertical ? pos : (w.gapLo + w.gapHi) / 2,
@@ -1102,8 +1217,10 @@ function openDoorOnWall(w) {
   const clash = sameWallDoorClash(nd, w, pos, width, state.doors);
   if (clash) { setSel(null, clash); renderEditor(); renderDoorList(); draw(); return; }
   if (!doorView(nd, state.rooms, state.doors).ok) return;   // 兜底：宁可不开，也不开一道红门
+  state.seq++;
   state.doors.push(nd);
-  /* 没有撤销，所以误开的门补救成本必须是 2 次点击 → 新门立刻选中、编辑区就在下面。 */
+  /* 开错了能撤销，但「新门立刻选中」这条照旧留着：编辑区就在下面，想改宽度/位置
+   * 不用再点一次，撤销只是最后一道保险。 */
   setSel(null, nd);
   reconcileDoors();
   saveSketch();
@@ -1113,13 +1230,16 @@ function openDoorOnWall(w) {
 function endPointer(e) {
   const p = state.pending;
   state.pending = null;
-  if (!p) { draw(); return; }
+  if (!p) { commitStep(); draw(); return; }
 
   /* ★ 开门在**抬手**做，不在按下做：这是本条交互的安全设计。
    * 从墙上起手想平移画布很常见，按下就开门的话每拖一次画布就多一道门。
    * 拖过阈值的那些已经在 pointermove 里转成 mode="pan"，到不了这里。 */
   if (p.mode === "wall") {
     if (!p.moved) openDoorOnWall(p.gap);
+    /* ★ 结算必须在这条之后：开门就发生在上一条里。放到函数开头去的话，
+     * 那时门还没建、快照跟当前状态一模一样，这一步会被当成空操作丢掉，开出来的门撤销不了。 */
+    commitStep();
     return;
   }
 
@@ -1147,6 +1267,7 @@ function endPointer(e) {
     saveSketch();          // 拖动结束就存一份，刷新不丢
     if (anyRoomOutside()) state.view = null;   // 拖出画面了就自动收回来
   }
+  commitStep();   // 正常结尾：这一拖/这一点算一步
   draw();
 }
 canvas.addEventListener("pointerup", endPointer);
@@ -1262,16 +1383,20 @@ function rememberDoor(w, threshold) {
   syncDoorUI();
 }
 $("#doorW").addEventListener("input", (e) => {
+  editStep();       // 输入框一律用 editStep：一段连续打字 = 一步，不能直接 beginStep
   const v = parseInt(e.target.value, 10);
   if (v >= MIN_DOOR_MM) { state.doorW = v; saveSoon(); }
 });
 $("#doorW").addEventListener("change", syncDoorUI);   // 打太小了就把真实值写回去
 $("#doorKind").addEventListener("change", (e) => {
+  beginStep();
   state.doorThreshold = e.target.value === "stone";
   saveSoon();
+  commitStep();
 });
 
 $("#dW").addEventListener("input", (e) => {
+  editStep();
   const d = state.selDoor;
   const v = parseInt(e.target.value, 10);
   if (!d || !(v >= MIN_DOOR_MM)) return;
@@ -1281,6 +1406,7 @@ $("#dW").addEventListener("input", (e) => {
 });
 $("#dW").addEventListener("change", renderDoorEditor);
 $("#dAt").addEventListener("input", (e) => {
+  editStep();
   const d = state.selDoor;
   const v = parseInt(e.target.value, 10);
   if (!d || !isFinite(v)) return;
@@ -1296,49 +1422,59 @@ $("#dAt").addEventListener("change", renderDoorEditor);
 
 function setDoorKind(stone) {
   const d = state.selDoor;
-  if (!d) return;
+  if (!d) return;                  // ★ beginStep 必须在守卫之后，否则没选中也白拍一张
+  beginStep();
   d.threshold = stone;
   rememberDoor(numOr(d.width, 0), stone);
   saveSketch(); draw(); renderDoorEditor(); renderDoorList();
+  commitStep();
 }
 $("#dFlat").onclick  = () => setDoorKind(false);
 $("#dStone").onclick = () => setDoorKind(true);
 $("#dDel").onclick = () => {
   const d = state.selDoor;
-  if (!d) return;
+  if (!d) return;                  // ★ 同上，守卫在前
+  beginStep();
   state.doors = state.doors.filter((x) => x !== d);
   setSel(state.selected, null);
   saveSketch(); draw(); renderEditor(); renderDoorList();
+  commitStep();
 };
 
 $("#rName").addEventListener("input", (e) => {
+  editStep();
   if (state.selected) { state.selected.name = e.target.value; draw(); saveSoon(); }
 });
 $("#rW").addEventListener("input", (e) => {
+  editStep();
   const v = parseInt(e.target.value, 10);
   if (state.selected && v > 0) { state.selected.w = v; draw(); if (anyRoomOutside()) { state.view = null; draw(); } saveSoon(); }
 });
 $("#rH").addEventListener("input", (e) => {
+  editStep();
   const v = parseInt(e.target.value, 10);
   if (state.selected && v > 0) { state.selected.h = v; draw(); if (anyRoomOutside()) { state.view = null; draw(); } saveSoon(); }
 });
 $("#del").onclick = () => {
   const r = state.selected;
-  if (!r) return;
+  if (!r) return;                  // ★ 守卫在前
   /* 门是「两间房之间」的东西，房间没了门就悬空了。house.html 也是这么连坐的
    * （house.html:938-939），这里跟着一起删，并且**删之前说清楚要连坐几道**。 */
   const gone = state.doors.filter((d) => d.a === r.id || d.b === r.id);
   if (gone.length && !confirm(`删掉「${r.name}」？挂在它上面的 ${gone.length} 道门也会一起删掉。`)) return;
+  beginStep();                     // ★ 确认之后才拍：点了取消就干净退出，不留半张快照
   state.doors = state.doors.filter((d) => d.a !== r.id && d.b !== r.id);
   state.rooms = state.rooms.filter((x) => x !== r);
   setSel(null, null);
   state.view = null;   // 少了一间，视野重新收拾一遍
   saveSketch();
   draw(); renderEditor(); renderDoorList();
+  commitStep();
 };
 
 /* ---------- 工具栏 ---------- */
 $("#add").onclick = () => {
+  beginStep();
   const bb = bbox(state.rooms);
   let x = 0, y = 0;
   if (bb) { x = bb.x + bb.w + gapMM(); y = bb.y; }
@@ -1352,6 +1488,7 @@ $("#add").onclick = () => {
   state.view = null;   // 新房间加进来，重算视野
   saveSketch();
   draw(); renderEditor();
+  commitStep();
 };
 
 /* ---------- 间隙 / 墙厚 ---------- */
@@ -1365,19 +1502,24 @@ function syncWallUI() {
   if (!isPreset) $("#wallCustom").value = state.wall;
 }
 $("#gapMode").addEventListener("change", (e) => {
+  beginStep();
   state.gapMode = e.target.value === "zero" ? "zero" : "wall";
   saveSketch(); syncWallUI(); draw();
+  commitStep();
 });
 $("#wallPreset").addEventListener("change", (e) => {
   if (e.target.value === "custom") {   // 选了「自己填」：露出输入框，等他填
     $("#wallCustomBox").style.display = "";
     $("#wallCustom").focus();
-    return;
+    return;                            // ★ 这条分支不动任何数据，提前走，不拍快照
   }
+  beginStep();                         // ★ 必须在这之后：上面那条 return 之前拍会留一张空快照
   state.wall = parseInt(e.target.value, 10) || 0;
   saveSketch(); syncWallUI(); draw();
+  commitStep();
 });
 $("#wallCustom").addEventListener("input", (e) => {
+  editStep();
   const v = parseInt(e.target.value, 10);
   if (isFinite(v) && v >= 0) { state.wall = v; saveSoon(); draw(); }
 });
@@ -1392,11 +1534,13 @@ $("#fit").onclick = () => {
 };
 $("#clear").onclick = () => {
   if (!confirm("清空所有房间和门洞？")) return;
+  beginStep();       // ★ 确认之后才拍
   state.rooms = []; state.doors = [];
   setSel(null, null);
   state.view = null; state.pending = null;
   saveSketch();      // 清空也要存，免得刷新又冒出来
   draw(); renderEditor(); renderDoorList();
+  commitStep();      // 清空是破坏性操作，这一步必须能撤销回来
 };
 
 /* ---------- 导出 ---------- */
@@ -1507,6 +1651,7 @@ window.addEventListener("resize", () => { state.view = null; draw(); });
 loadSketch();          // 打开就接着上次的户型继续摆
 syncWallUI();
 syncDoorUI();
+syncUndoUI();          // 撤销栈是空的（刷新就清空）→ 按钮该是灰的，跟 HTML 里的初始态对一遍
 $("#ver").textContent = "版本 " + BUILD;
 draw(); renderEditor();
 </script>
