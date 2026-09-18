@@ -60,9 +60,13 @@ button:disabled{opacity:.4; cursor:default; transform:none}
 .hint{margin:10px 0 0; font-size:13px; color:var(--ink-soft); text-align:center}
 .field{display:block; margin-bottom:8px}
 .field>span{display:block; font-size:12px; color:var(--ink-soft); margin-bottom:3px}
-input{width:100%; min-height:42px; padding:8px 10px; border:1px solid var(--line);
+input,textarea{width:100%; min-height:42px; padding:8px 10px; border:1px solid var(--line);
   border-radius:8px; background:var(--card); color:var(--ink); font:inherit; font-variant-numeric:tabular-nums;}
-input:focus{outline:2px solid var(--accent); border-color:var(--accent)}
+input:focus,textarea:focus{outline:2px solid var(--accent); border-color:var(--accent)}
+/* 批量贴尺寸的框：要能一眼看出「一行就是一间房」，所以不折行、长了就横向滚。
+   折行的话用户没法判断自己到底是写了一行还是两行。 */
+textarea{min-height:112px; resize:vertical; line-height:1.65; white-space:pre; overflow-x:auto}
+.hint.bad{color:var(--danger)}
 .dim-grid{display:grid; grid-template-columns:1fr 1fr; gap:8px}
 .room-line{display:block; padding:8px 10px; margin-top:6px; border:1px solid var(--line); border-radius:8px;
   font-size:13px; font-variant-numeric:tabular-nums; cursor:pointer}
@@ -97,6 +101,18 @@ input:focus{outline:2px solid var(--accent); border-color:var(--accent)}
       <button class="ghost" id="undo" disabled>↶ 撤销</button>
       <button class="ghost" id="clear">清空</button>
     </div>
+  </section>
+
+  <section class="card">
+    <h2>批量贴尺寸</h2>
+    <p class="hint" style="text-align:left">量完房一口气贴进来，不用一间一间加。<b>一行一间房</b>，先长后宽，单位毫米。名字可以省。</p>
+    <textarea id="batchText" spellcheck="false" autocapitalize="off" autocomplete="off"
+      placeholder="客厅 4200x3600&#10;主卧 3300x3000&#10;次卧 3300x3000"></textarea>
+    <div class="btn-row">
+      <button class="primary" id="batchAdd">加进草图</button>
+      <button class="ghost" id="batchClear">清掉输入框</button>
+    </div>
+    <p class="hint" style="text-align:left" id="batchTip">分隔符 x、×、*、逗号、空格都认；新房间会先摆在户型右边，再自己拖到位。</p>
   </section>
 
   <section class="card">
@@ -187,7 +203,7 @@ input:focus{outline:2px solid var(--accent); border-color:var(--accent)}
 </div>
 
 <script>
-const BUILD = "2026-09-17 22:52";  // 版本号：手机上看看对不对，就知道是不是旧页面了
+const BUILD = "2026-09-18 13:49";  // 版本号：手机上看看对不对，就知道是不是旧页面了
 
 const STORE_KEY = "houseTileV1";   // house.html 的存档（导出时往这里写）
 const SKETCH_KEY = "houseSketchV1"; // 草图自己的存档（和 house.html 分开，互不干扰）
@@ -474,9 +490,64 @@ const exportDoors = (roomsFinal, doors, idMap) => {
   return { list, dropped };
 };
 
+/* ---- 批量贴尺寸：把一整段文字拆成一间间房 ----
+ * 一行一间房，先长后宽（和编辑器面板的「长 / 宽」同序），单位毫米、名字可省。
+ * 认这些写法：
+ *     客厅 4200x3600    主卧 3300×3000    次卧 3300*3000
+ *     厨房,1800,3000    阳台 1500 4200    书房 长2700 宽3300
+ * 空行跳过；# 或 // 开头的整行当注释跳过。
+ *
+ * 返回 { rooms:[{name,w,h}], errors:[{line,text,why}] }。
+ * ★ errors 只报不吞：猜错一行（比如把「卧室2」的 2 当成长度）比直接报错更糟——
+ *   用户会带着一间尺寸错的房去导给 house.html，等发现时已经在排砖了。
+ * startNo：名字省了的时候，「房间N」从几号开始编（由调用方查重后传进来）。 */
+const parseRoomLines = (text, startNo) => {
+  const rooms = [], errors = [];
+  let no = numOr(startNo, 1);
+  /* 比这还小的尺寸一定是写错了。挡的就是「把米当毫米」：
+   * 4.2 米写成 4.2，取整后变成 4×4mm 的房间，看着像加成功了，
+   * 等导进 house.html 排砖才发现不对——这种静悄悄错掉比直接报错糟得多。 */
+  const MIN_MM = 300;
+  /* 行尾的两个数，中间夹一个分隔符。★ 锚在行尾是为了「卧室2 3000x3000」这种
+   * 名字里带数字的情况：不锚尾的话会把 2 当成第一个数，尺寸整条错位。 */
+  const TAIL = /(\d+(?:\.\d+)?)\s*(?:mm|毫米)?\s*(?:[x×*X]|[,，、|/]|\s)\s*(\d+(?:\.\d+)?)\s*(?:mm|毫米)?$/;
+  String(text == null ? "" : text).split(/\r\n|\r|\n/).forEach((raw, i) => {
+    const t = String(raw).trim();
+    if (!t || /^(#|\/\/)/.test(t)) return;
+    let name = "", w = NaN, h = NaN;
+    const m = t.match(TAIL);
+    if (m) {
+      w = parseFloat(m[1]); h = parseFloat(m[2]);
+      name = t.slice(0, m.index);
+    } else {
+      /* 兜底：带字的写法「书房 长2700 宽3300」。取行里最后两个数，剩下的当名字，
+       * 名字尾巴上的「长 / 宽 / ：」下面统一剪掉。 */
+      const nums = t.match(/\d+(?:\.\d+)?/g);
+      if (nums && nums.length >= 2) {
+        w = parseFloat(nums[nums.length - 2]);
+        h = parseFloat(nums[nums.length - 1]);
+        name = t.slice(0, t.lastIndexOf(nums[nums.length - 2]));
+      }
+    }
+    name = name.replace(/[\s,，、|/:：=<>~-]+$/, "").replace(/[长宽尺寸]+$/, "").trim();
+    if (!(w > 0) || !(h > 0)) {
+      errors.push({ line: i + 1, text: t, why: "没认出「长 x 宽」两个数，写成「客厅 4200x3600」这样就行" });
+      return;
+    }
+    if (w < MIN_MM || h < MIN_MM) {
+      errors.push({ line: i + 1, text: t,
+        why: "尺寸太小了（" + Math.round(w) + "×" + Math.round(h) + "）"
+           + "——是不是把米当成毫米写了？4.2 米要写成 4200" });
+      return;
+    }
+    rooms.push({ name: name || ("房间" + (no++)), w: Math.round(w), h: Math.round(h) });
+  });
+  return { rooms, errors };
+};
+
 const Engine = { numOr, rectOf, spanOv, rectOvArea, distToRange, doorAxis, doorRectOf, doorRect,
                  clampPos, thirdRoomOnDoor, doorView, sameWallDoorClash,
-                 findWallGap, freeRangeOnWall, sanitizeDoors, nextSeq, exportDoors };
+                 findWallGap, freeRangeOnWall, sanitizeDoors, nextSeq, exportDoors, parseRoomLines };
 if (typeof module !== "undefined" && module.exports) module.exports = Engine;
 /*ENGINE-END*/
 
@@ -1556,6 +1627,71 @@ $("#clear").onclick = () => {
   saveSketch();      // 清空也要存，免得刷新又冒出来
   draw(); renderEditor(); renderDoorList();
   commitStep();      // 清空是破坏性操作，这一步必须能撤销回来
+};
+
+/* ---------- 批量贴尺寸 ---------- */
+/* 「房间N」从几号开始编：现有房间里有过 房间3 就从 4 起，免得重名。
+ * 按名字而不是按数量查——用户删掉中间一间再加，按数量就会撞出两个「房间2」。 */
+function batchStartNo() {
+  let max = 0;
+  state.rooms.forEach((r) => {
+    const m = /^房间(\d+)$/.exec(r.name || "");
+    if (m) max = Math.max(max, parseInt(m[1], 10));
+  });
+  return max + 1;
+}
+const BATCH_TIP = "分隔符 x、×、*、逗号、空格都认；新房间会先摆在户型右边，再自己拖到位。";
+function batchTip(text, bad) {
+  const el = $("#batchTip");
+  if (!el) return;
+  el.textContent = text;
+  el.className = bad ? "hint bad" : "hint";   // 行内 style 里还有 text-align，别整个覆盖掉
+}
+$("#batchAdd").onclick = () => {
+  const box = $("#batchText");
+  if (!box) return;
+  const out = Engine.parseRoomLines(box.value, batchStartNo());
+  if (!out.rooms.length) {                    // ★ 没得加就不拍快照，免得留一张空快照
+    /* 空框不算错：红色留给「你真写错了」。对着一个空框报红，像出了事一样。 */
+    if (out.errors.length)
+      batchTip(`第 ${out.errors[0].line} 行没认出来：「${out.errors[0].text}」——${out.errors[0].why}`, true);
+    else
+      batchTip("先在上面写点东西，一行一间房，比如「客厅 4200x3600」。", false);
+    return;
+  }
+  beginStep();
+  /* 先摆在现有户型的右边，4 间一行往下摞。
+   * 全排成一条横线的话，8 间房会把画面撑得又宽又扁，新加的几间反而看不清。 */
+  const bb = bbox(state.rooms), g = gapMM();
+  const cols = Math.min(4, out.rooms.length);
+  const colW = Math.max.apply(null, out.rooms.map((r) => r.w));
+  const rowH = Math.max.apply(null, out.rooms.map((r) => r.h));
+  const x0 = bb ? bb.x + bb.w + g : 0, y0 = bb ? bb.y : 0;
+  const made = out.rooms.map((r, i) => ({
+    id: "r" + (++state.seq), name: r.name, w: r.w, h: r.h,
+    /* 网格的列宽 / 行高统一取这批里最大的那间：小的那些之间就会空出一截，
+       但每间的左上角都落在整齐的格子上，拖起来好对齐。 */
+    x: x0 + (i % cols) * (colW + g),
+    y: y0 + Math.floor(i / cols) * (rowH + g),
+  }));
+  state.rooms = state.rooms.concat(made);
+  setSel(made[0], null);
+  state.view = null;                          // 多了东西，视野重算
+  saveSketch();
+  draw(); renderEditor();
+  commitStep();
+  /* ★ 有没认出来的行就留着原文、不清空：用户得对照着才知道是哪一行写坏了。
+     全认出来了才清空，方便连着贴下一批。 */
+  if (!out.errors.length) box.value = "";
+  batchTip(`加进来 ${made.length} 间，摆在右边了，拖着挪到位。`
+    + (out.errors.length
+        ? `　另有 ${out.errors.length} 行没认出来（第 ${out.errors.map((e) => e.line).join("、")} 行），没加进去，原文给你留着。`
+        : ""), !!out.errors.length);
+};
+$("#batchClear").onclick = () => {           // 只是清输入框，不动房间，所以不拍快照、不可撤销
+  const box = $("#batchText");
+  if (box) box.value = "";
+  batchTip(BATCH_TIP, false);
 };
 
 /* ---------- 导出 ---------- */

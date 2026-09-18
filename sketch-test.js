@@ -398,6 +398,115 @@ test("测试 3d：存档过滤与编号（sanitizeDoors / nextSeq）", () => {
   check("空存档 → 0", S.nextSeq([], []) === 0);
 });
 
+/* ============ 测试 4：批量贴尺寸（parseRoomLines） ============ */
+/* 一行一间房。这不是「能用就行」的辅助功能：认错一行会静悄悄生成一间尺寸错的房，
+ * 用户拖着它摆好、导给 house.html、排完砖才发现——所以下面每条断言都在钉住
+ * 「要么认对，要么报错，不许猜」。 */
+test("测试 4a：一行一间房——各种分隔符与写法", () => {
+  const one = (line, name, w, h) => {
+    const o = S.parseRoomLines(line, 1);
+    const r = o.rooms[0];
+    check(`「${line}」→ ${name} ${w}×${h}`,
+          o.rooms.length === 1 && !o.errors.length && !!r &&
+          r.name === name && r.w === w && r.h === h,
+          o.errors.length ? `报错：${o.errors[0].why}` : JSON.stringify(o.rooms));
+  };
+  one("客厅 4200x3600", "客厅", 4200, 3600);
+  one("主卧 3300×3000", "主卧", 3300, 3000);          // 全角乘号
+  one("次卧 3300*3000", "次卧", 3300, 3000);          // 星号
+  one("客厅 4200X3600", "客厅", 4200, 3600);          // 大写 X
+  one("厨房,1800,3000", "厨房", 1800, 3000);          // 半角逗号
+  one("厨房，1800，3000", "厨房", 1800, 3000);        // 全角逗号
+  one("阳台 1500 4200", "阳台", 1500, 4200);          // 纯空格
+  one("客厅, 4200, 3600", "客厅", 4200, 3600);        // 逗号后带空格
+  one("客厅4200x3600", "客厅", 4200, 3600);           // 名字和数字贴着
+  one("主卧：3300×3000", "主卧", 3300, 3000);         // 中文冒号
+  one("客厅 4200mm x 3600mm", "客厅", 4200, 3600);    // 带 mm
+  one("客厅 4200-3600", "客厅", 4200, 3600);          // 中间画个横杠
+  one("书房 长2700 宽3300", "书房", 2700, 3300);      // 带「长 / 宽」二字
+  /* ★ 名字里带数字：正则锚在行尾才认得出这是名字，不锚会把 2 当成长度，
+     尺寸整条错位成 2×3000。 */
+  one("卧室2 3000x3000", "卧室2", 3000, 3000);
+  one("房间1 3000x3000", "房间1", 3000, 3000);
+});
+
+test("测试 4b：省了名字就自动编号（房间N）", () => {
+  const o = S.parseRoomLines("3000x3000\n3300x3000", 1);
+  check("两行都没名字 → 房间1、房间2",
+        o.rooms.length === 2 && o.rooms[0].name === "房间1" && o.rooms[1].name === "房间2",
+        JSON.stringify(o.rooms.map((r) => r.name)));
+
+  const o7 = S.parseRoomLines("3000x3000", 7);
+  check("startNo=7 → 房间7（不跟现有房间撞名）", o7.rooms[0].name === "房间7",
+        o7.rooms[0].name);
+
+  /* 有名字的行不该占号：否则「客厅 + 两行没名字」会从 房间2 开始，中间空一个号。 */
+  const mix = S.parseRoomLines("客厅 4200x3600\n3000x3000\n3300x3000", 1);
+  check("有名字的行不占号 → 客厅、房间1、房间2",
+        mix.rooms.map((r) => r.name).join("/") === "客厅/房间1/房间2",
+        mix.rooms.map((r) => r.name).join("/"));
+});
+
+test("测试 4c：认不出来就报错，绝不猜", () => {
+  const bad = (line, why) => {
+    const o = S.parseRoomLines(line, 1);
+    check(`「${line}」→ 报错不加房（${why}）`,
+          o.rooms.length === 0 && o.errors.length === 1,
+          JSON.stringify(o));
+  };
+  bad("客厅 4200", "只有一个数");
+  bad("客厅 大", "根本没有数");
+  bad("客厅 4200x0", "宽是 0");
+  bad("客厅 0x3000", "长是 0");
+  /* ★ 这条是本次新加的守卫：4.2 米写成 4.2 会变成 4×4 毫米的房间，
+     看着像加成功了——比报错糟得多。 */
+  const m = S.parseRoomLines("客厅 4.2x3.6", 1);
+  check("「客厅 4.2x3.6」（把米当毫米）→ 报错，并提示该写 4200",
+        m.rooms.length === 0 && m.errors.length === 1 && /4200/.test(m.errors[0].why),
+        JSON.stringify(m.errors));
+  const e = S.parseRoomLines("客厅 1e3x2000", 1);
+  check("「客厅 1e3x2000」（科学计数法）→ 报错，不漏成 3×2000 的房间",
+        e.rooms.length === 0, JSON.stringify(e));
+});
+
+test("测试 4d：空行与注释行跳过，且不占行号、不占编号", () => {
+  const o = S.parseRoomLines("客厅 4200x3600\n\n   \n# 备注\n// 也跳过\n主卧 3300x3000", 1);
+  check("空行/纯空格/# // 全跳过 → 剩 2 间房、0 条报错",
+        o.rooms.length === 2 && o.errors.length === 0, JSON.stringify(o));
+  check("跳过的行不占用自动编号 → 一间都没自动编号",
+        o.rooms[0].name === "客厅" && o.rooms[1].name === "主卧",
+        o.rooms.map((r) => r.name).join("/"));
+
+  const crlf = S.parseRoomLines("客厅 4200x3600\r\n主卧 3300x3000", 1);
+  check("Windows 换行（\\r\\n）也认", crlf.rooms.length === 2, JSON.stringify(crlf));
+
+  const empty = S.parseRoomLines("", 1);
+  check("空字符串 → 空的房间和空的报错，不抛异常",
+        empty.rooms.length === 0 && empty.errors.length === 0);
+  check("null → 同上", S.parseRoomLines(null, 1).rooms.length === 0);
+});
+
+test("测试 4e：报错行号要准——用户是对着输入框数行号的", () => {
+  const o = S.parseRoomLines("客厅 4200x3600\n\n主卧 3300x3000\n瞎写\n次卧 3300x3000", 5);
+  check("第 4 行写坏了 → errors[0].line === 4（空行不占号，报错行不占编号）",
+        o.errors.length === 1 && o.errors[0].line === 4 && o.errors[0].text === "瞎写",
+        JSON.stringify(o.errors));
+  check("其余 3 行照常加进来，且顺序不乱",
+        o.rooms.map((r) => r.name).join("/") === "客厅/主卧/次卧",
+        o.rooms.map((r) => r.name).join("/"));
+
+  const two = S.parseRoomLines("瞎写\n客厅 4200x3600\n又瞎写", 1);
+  check("多行出错 → 行号按出现顺序给出 1、3",
+        two.errors.map((e) => e.line).join(",") === "1,3",
+        two.errors.map((e) => e.line).join(","));
+});
+
+test("测试 4f：小数取整——毫米没有小数位", () => {
+  const o = S.parseRoomLines("客厅 4200.6x3600.4", 1);
+  check("4200.6 × 3600.4 → 4201 × 3600（四舍五入到毫米）",
+        o.rooms[0].w === 4201 && o.rooms[0].h === 3600, JSON.stringify(o.rooms[0]));
+});
+
 /* ============ 汇总 ============ */
 console.log(`\n${_fail ? "❌" : "✅"} 通过 ${_pass} 条，失败 ${_fail} 条`);
 process.exit(_fail ? 1 : 0);
