@@ -76,7 +76,7 @@ button{cursor:pointer; touch-action:manipulation}
 .set-row{margin-bottom:14px}
 .set-row:last-child{margin-bottom:0}
 .set-label{display:block; font-size:13px; font-weight:700; color:var(--ink-soft); margin-bottom:6px; letter-spacing:.3px}
-/* 只在过门石把全屋分了区时才出现（见 syncAreaHint）——一个区时它没有信息量 */
+/* 只在墙／过门石真把全屋分了区时才出现（见 syncAreaHint）——一个区时它没有信息量 */
 .set-hint{margin:-2px 0 12px; font-size:12px; color:var(--ink-soft); line-height:1.45}
 .chips{display:flex; flex-wrap:wrap; gap:8px}
 .chip{border:1px solid var(--line); background:var(--chip); border-radius:8px; padding:8px 12px; min-height:42px; font-size:15px; font-variant-numeric:tabular-nums;}
@@ -145,7 +145,7 @@ select{min-height:40px; padding:7px 8px; border:1px solid var(--line); border-ra
 <div class="wrap">
   <header class="app-head">
     <h1>全屋通铺</h1>
-    <p class="sub">一块砖、一张网铺满全屋：砖缝从客厅对到卧室，门口不断缝；门口放了过门石的地方，两边各自重新排砖</p>
+    <p class="sub">墙把房间隔开，只有门洞相通：门口选「通铺」，砖缝就从这儿穿过去、全屋一张网；选「过门石」，两边各自重新排砖</p>
   </header>
 
   <section class="settings" id="settings">
@@ -203,14 +203,14 @@ select{min-height:40px; padding:7px 8px; border:1px solid var(--line); border-ra
         <canvas id="housePlan"></canvas>
         <p class="plot-empty" id="planEmpty">先把地砖规格和房间尺寸填好</p>
       </div>
-      <div class="plan-legend">浅色缝＝砖缝（同一个区内是连通的）ㆍ白框＝墙（房间之间的空档）ㆍ蓝虚线＝通铺门口（缝穿过去）ㆍ红实线＝过门石门口（这里断开，两边各排各的）<br>
+      <div class="plan-legend">浅色缝＝砖缝（同一个区内是连通的）ㆍ白框＝墙（房间之间的空档，<b>墙就是隔断</b>：要连通就在这道墙上开个门洞）ㆍ蓝虚线＝通铺门口（缝穿过去）ㆍ红实线＝过门石门口（这里断开，两边各排各的）<br>
         这张图只作看图用。<b>要挪房间，去下面「房间」卡片里改「离原点左 / 离原点上」的数字</b>，改完图上立刻跟着变。</div>
       <div class="statuses" id="statuses"></div>
     </section>
 
     <section class="card">
       <h2 class="card-title">房间</h2>
-      <p class="card-sub">按户型图填：每间房离原点的左/上距离 + 长宽。房间之间空出来的地方就是墙。</p>
+      <p class="card-sub">按户型图填：每间房离原点的左/上距离 + 长宽。房间之间空出来的地方就是墙，<b>没开门洞的墙把两边隔开、各排各的</b>；两间房贴死（中间不留墙厚）才算一个空间。</p>
       <div id="roomRows"></div>
       <button class="mini-add" id="addRoom">＋ 添加房间</button>
       <div class="statuses" id="roomStatuses"></div>
@@ -218,7 +218,7 @@ select{min-height:40px; padding:7px 8px; border:1px solid var(--line); border-ra
 
     <section class="card">
       <h2 class="card-title">门洞</h2>
-      <p class="card-sub">「通铺」＝砖缝从门口穿过去；「过门石」＝这里断开，另放一块过门石，两边各自重新排砖、缝不用对上。</p>
+      <p class="card-sub">「通铺」＝砖缝从门口穿过去；「过门石」＝这里断开，另放一块过门石，两边各自重新排砖、缝不用对上。<b>墙上没开门洞的地方也当隔断</b>，两边各排各的——要连通，就在那道墙上加个门洞。</p>
       <div id="doorRows"></div>
       <button class="mini-add" id="addDoor">＋ 添加门洞</button>
       <div class="statuses" id="doorStatuses"></div>
@@ -243,9 +243,11 @@ select{min-height:40px; padding:7px 8px; border:1px solid var(--line); border-ra
 /* ============================================================
  * 全屋通铺排砖 · 单文件工具
  *
- * 设计要点：**全屋的砖网按过门石分成若干张**，每张网一个相位；同一个区里的房间
- * 只是把这张网切出自己那一块，所以砖缝在门口处天然连成一条线——这就是"通铺"。
- * 没有过门石时全屋就是一张网（areasOf 直接返回一整组），跟分区功能上线前逐位相同。
+ * 设计要点：**墙就是隔断，门洞才是通道**——全屋的砖网按"墙 + 过门石"分成若干张，
+ * 每张网一个相位；同一个区里的房间只是把这张网切出自己那一块，
+ * 所以砖缝在通铺门口处天然连成一条线——这就是"通铺"。
+ * 详细的四条规则写在 areasOf 上面，那里是唯一出处。
+ * 一块过门石都没放时全屋就是一张网（areasOf 直接返回一整组），跟分区功能上线前逐位相同。
  *
  * 下面 ENGINE 段里的纯函数不碰 DOM，house-test.js 会把它们抽出来在 node 里跑。
  * 其中 laidDims / compatible / layoutAxis / rectPts / bboxOf / rectHit / polyAreaOf
@@ -437,6 +439,11 @@ const Engine = (() => {
     };
   };
 
+  /* wallT 是不是"约等于 0"（两间房贴死、中间没有墙）。
+   * 全文件只此一处口径——坐标来自输入框和草图，一律整数毫米，理论上不会出现浮点尾巴；
+   * 用 <= 1e-6 而不是 === 0 只是防手改存档，别在别处另写一套比较。 */
+  const isFlush = (wallT) => !(wallT > 1e-6);
+
   /* ---- 门洞：从两间房的几何反推洞口矩形 ----
    * at = 洞口中心离 A 房"沿共用边那一侧的起点"（左右相邻时=离 A 上墙；上下相邻时=离 A 左墙）
    * 返回 { ok, rect, vertical, wallT, span }；不合法时给中文原因。 */
@@ -447,8 +454,9 @@ const Engine = (() => {
     const w = wallBetween(A, B);
     if (!w) return { ok:false, why:"这两间房不相邻（中间没有共用的墙），门洞放不下" };
     const { vertical, gap, wallT, lo, hi, start } = w;
-    /* wallT = 0 是允许的：两间房连通（中间没有墙，比如客餐厅一体、或以后装推拉门），
-     * 这时门洞只是标个位置，洞厚为 0，不占铺贴面积（latticeSegments 遇到 0 长度区间返回空）。 */
+    /* wallT = 0 是允许的：两间房贴死，中间没有墙，本来就是一个空间（比如客餐厅一体），
+     * 这时门洞只是标个位置，洞厚为 0，不占铺贴面积（latticeSegments 遇到 0 长度区间返回空）。
+     * 注意这个门洞**不参与**分区判断：贴死本身就通着，有没有这个门洞都一样连通。 */
     if (wallT < 0) return { ok:false, why:"这两间房的间隙算出来是负数，请检查一下坐标" };
     const c = start + numOr(at, 0);
     if (!(c - width / 2 >= lo - 1e-6 && c + width / 2 <= hi + 1e-6)) {
@@ -460,24 +468,52 @@ const Engine = (() => {
     return { ok:true, rect, vertical, wallT, span:{ lo, hi }, at:c };
   };
 
-  /* ---- 分区：过门石把全屋切成几张各排各的砖网 ----
-   * 两间房「挨着」（中间只有一道墙，或者直接贴死）就共用一张网；
-   * 那道门洞标了过门石 → 这段网断开，两边各自起铺、缝不用对上。
+  /* ---- 分区：把全屋切成几张各排各的砖网 ----
+   * **墙就是隔断，门洞才是通道。** 两间房之间怎么算"通着"，三条：
+   * ① 贴死（wallT ≈ 0，中间没有墙，比如客餐厅一体）→ 通着，共用一张网。
+   * ② 有墙，但这道墙上开了一个「通铺」门洞 → 通着，缝从门口穿过去。
+   * ③ 有墙，开的是「过门石」门洞、或者压根没开门洞 → **断开**，两边各自起铺。
+   *    没开门洞也算断开，是因为墙本身就隔开了两间房——这是用户的原话
+   *    （原来只按几何"挨着"就算连通，导致放了过门石也被共用墙拉回全屋那张网）。
    *
    * 两个例外，都是有道理的：
    * ① 同一对房间既有过门石又有通铺门 → 通铺赢。通铺的意思就是"缝从这儿穿过去"，
    *    那两间房必须同一张网，否则门口那段砖没法画。
-   * ② 过门石只切断**直接**那道边。两间房还从别的路连着的话，绕一圈照样是一张网——
+   * ② 断开只切断**直接**那道边。两间房还从别的路通着的话，绕一圈照样是一张网——
    *    这是几何上就绕不开的（见 housePlan 里那条提醒），不是漏判。
    *
    * 返回房间 id 的分组，顺序跟着房间清单走（稳定，不随集合遍历次序变）。 */
-  const areasOf = (rooms, doors) => {
-    const pairKey = (a, b) => (a < b ? a + "|" + b : b + "|" + a);
+  const pairKey = (a, b) => (a < b ? a + "|" + b : b + "|" + a);
+
+  /* ---- 谁和谁"通着"：连通图的唯一出处 ----
+   * areasOf 拿它做合并，housePlan 拿它找"绕经哪间房"——各写一遍迟早会漂。
+   * 返回 { adj, cut, bond }：adj 是 id -> [邻居 id]，邻居顺序照房间清单，结果确定。 */
+  const openings = (rooms, doors) => {
     const cut = new Set(), bond = new Set();
     for (const d of doors || []) (d.threshold ? cut : bond).add(pairKey(d.from, d.to));
+    const adj = new Map(rooms.map(r => [r.id, []]));
+    for (let i = 0; i < rooms.length; i++) for (let j = i + 1; j < rooms.length; j++) {
+      const A = rooms[i], B = rooms[j], k = pairKey(A.id, B.id);
+      /* 过门石排第一位：用户既然在这儿放了过门石，就是要断开——哪怕两边贴死也断
+       * （那种"贴死时缝盖不住"的情况由 housePlan 里那条提醒负责告知）。 */
+      if (cut.has(k) && !bond.has(k)) continue;
+      const w = wallBetween(A.rect, B.rect);
+      if (!w) continue;                                   // 不挨着：本来就不是一个空间
+      /* ★ 墙就是隔断：有墙、又没在这道墙上开"通铺"门口 → 各排各的。
+       * 只有贴死（没墙）或者通铺门，才算通着。 */
+      if (!isFlush(w.wallT) && !bond.has(k)) continue;
+      adj.get(A.id).push(B.id); adj.get(B.id).push(A.id);
+    }
+    return { adj, cut, bond };
+  };
+
+  const areasOf = (rooms, doors) => {
+    const { adj, cut } = openings(rooms, doors);
     /* 一块过门石都没有：全屋就一张网，跟以前逐位相同。
      * 这条不是省事的捷径——界面上白纸黑字写着"不加就是全屋一张网铺过去"，
-     * 老户型的结果不能因为这次改动变样。 */
+     * 老户型的结果不能因为这次改动变样。
+     * 注意它是**无条件**的：没有过门石时，哪怕两间房隔着十万八千里，也照样是一张网。
+     * 反过来说，放上第一块过门石的那一刻，那些"有墙又没开门洞"的房间会一起独立出去。 */
     if (!cut.size) return [rooms.map(r => r.id)];
 
     const parent = new Map(rooms.map(r => [r.id, r.id]));
@@ -487,11 +523,8 @@ const Engine = (() => {
       while (parent.get(x) !== root) { const next = parent.get(x); parent.set(x, root); x = next; }
       return root;
     };
-    for (let i = 0; i < rooms.length; i++) for (let j = i + 1; j < rooms.length; j++) {
-      const A = rooms[i], B = rooms[j], k = pairKey(A.id, B.id);
-      if (cut.has(k) && !bond.has(k)) continue;          // 过门石：这道网断开
-      if (!wallBetween(A.rect, B.rect)) continue;         // 不挨着：本来就不是一个空间
-      const ra = find(A.id), rb = find(B.id);
+    for (const [a, list] of adj) for (const b of list) {
+      const ra = find(a), rb = find(b);
       if (ra !== rb) parent.set(ra, rb);
     }
     // 按房间清单顺序收拢，顺便让区号就是"区内第一间房在清单里的位置"（确定性）
@@ -541,8 +574,8 @@ const Engine = (() => {
     // 要铺的区域 = 各房间 + 「通铺」门口（过门石门口不铺砖，另给过门石尺寸）
     out.region = rooms.map(r => r.rect).concat(out.doors.filter(d => !d.threshold).map(d => d.rect));
 
-    /* 分区：过门石把全屋切成几张各排各的砖网。
-     * 没有过门石时 areasOf 直接返回一整组 → 下面每个区算出来的原点就是以前那一个，
+    /* 分区：墙和过门石一起把全屋切成几张各排各的砖网（规则见 areasOf 上面那段）。
+     * 一块过门石都没放时 areasOf 直接返回一整组 → 下面每个区算出来的原点就是以前那一个，
      * 逐位相同，老户型的结果不会因为这次改动变样。 */
     const comps = areasOf(rooms, out.doors);
     out.areas = [];
@@ -566,7 +599,8 @@ const Engine = (() => {
                  baseId:home.baseId, baseName:home.baseName };
 
     /* 全屋同一块砖的归并：按"区号 + 格线序号 (i,j)"认。
-     * 一块砖可能落在两间房里（跨门口/跨墙）——按房间各算一次就会把一块砖数成两块。
+     * 一块砖可能落在两间房里（跨通铺门口，或者跨"贴死"那条没有墙的边）——
+     * 按房间各算一次就会把一块砖数成两块。
      * **区号不能省**：不同区的网是各排各的，同一个序号 i 在两个区里是不同的物理位置；
      * 归并到一起会算出一块"面积正好等于整砖"的假砖，两块真裁砖就从清单里消失了。 */
     const cells = new Map();
@@ -577,7 +611,7 @@ const Engine = (() => {
       c.pieces.push(piece); c.area += piece.w * piece.h; c.kinds.add(kind);
     };
 
-    // 每间房：把自己区间喂进**本区**那张网
+    // 每间房：把自己区间喂进**本区**那张网（这是"通铺"的关键，缝在门口自然连成一条线）
     for (const r of rooms) {
       const R = r.rect, ci = compOf(r.id), A = out.areas[ci];
       const gx = latticeSegments(A.GX, t.x, g, R.x, R.x + R.w);
@@ -604,8 +638,9 @@ const Engine = (() => {
     // 通铺门口那一段也算进砖网（门槛处不断缝）
     for (const d of out.doors.filter(x => !x.threshold)) {
       const D = d.rect, ci = compOf(d.from), A = out.areas[ci];
-      /* d.from 和 d.to 必在同一个区：areasOf 里"通铺门"是 bond，
-       * 哪怕这道墙同时还标了过门石也不会把两间房拆开。所以取哪边的区号都一样。 */
+      /* d.from 和 d.to 必在同一个区：通铺门在 openings 里是 bond，
+       * 通铺优先——哪怕这道墙同时还标了过门石，也不会把两间房拆开。
+       * 所以取哪边的区号都一样。 */
       const gx = latticeSegments(A.GX, t.x, g, D.x, D.x + D.w);
       const gy = latticeSegments(A.GY, t.y, g, D.y, D.y + D.h);
       d.comp = ci;
@@ -615,11 +650,56 @@ const Engine = (() => {
 
     /* 过门石没能把两边分开的两种情况，都要说出来——
      * 不说的话用户只会看到"放了过门石怎么还是通缝"，以为工具坏了。 */
+    const { adj, bond } = openings(rooms, out.doors);
+    /* 绕行时"中间经过哪几间房"：在通着的边上找一条最短路，把它们点名说出来。
+     * 只含糊地说"还从别的门口连着"，用户会去找一个根本不存在的门口。
+     * 邻接表是按房间清单建的，最短路唯一 → 跑两次结果一样，测试锁得住。 */
+    const viaPath = (a, b) => {
+      const prev = new Map([[a, null]]), q = [a];
+      while (q.length) {
+        const x = q.shift();
+        if (x === b) break;
+        for (const y of adj.get(x) || []) if (!prev.has(y)) { prev.set(y, x); q.push(y); }
+      }
+      if (!prev.has(b)) return null;
+      const path = [];
+      for (let x = b; x != null; x = prev.get(x)) path.unshift(x);
+      return path;
+    };
+    const nameOf = (id) => `「${roomName(rooms.find(r => r.id === id))}」`;
     for (const d of out.doors.filter(x => x.threshold)) {
       if (compOf(d.from) === compOf(d.to)) {
-        out.warnings.push(`「${d.fromName} → ${d.toName}」放了过门石，但这两间房还从别的门口连着（那边没放第二块过门石）——缝绕一圈还是要对上，所以没能分开`);
-      } else if (d.wallT === 0) {
-        out.warnings.push(`「${d.fromName} → ${d.toName}」的过门石两侧是贴死的（没有墙厚）：两边砖缝各排各的，对不上会直接露出来。建议这里留墙厚，或者改成「通铺」`);
+        if (bond.has(pairKey(d.from, d.to))) {
+          /* 同一道墙上既开了通铺门、又放了过门石：通铺优先，这里当然没断开。 */
+          out.warnings.push(`「${d.fromName} → ${d.toName}」这道墙上还开了一个「通铺」门洞——通铺优先，缝从这里穿过去，所以过门石没能把两边分开`);
+        } else {
+          const path = viaPath(d.from, d.to) || [];
+          const mid = path.slice(1, -1).map(nameOf);
+          const via = mid.length
+            ? `还绕经${mid.slice(0, 3).join("")}${mid.length > 3 ? `等 ${mid.length} 间房` : ""}连着`
+            : "还从别的路连着";
+          out.warnings.push(`「${d.fromName} → ${d.toName}」放了过门石，但这两间房${via}——缝绕一圈还是要对上，所以没能分开。要把它们真正断开，这条路上的门口也得改成过门石`);
+        }
+      } else if (isFlush(d.wallT)) {
+        out.warnings.push(`「${d.fromName} → ${d.toName}」的过门石两侧是贴死的（没有墙厚）：两边砖缝各排各的，对不上会直接露出来。建议这里留墙厚，或者改成「通铺」（留墙厚之后，这两间房如果没有别的门洞，就会各自成一个区）`);
+      }
+    }
+
+    /* 一间房四周的墙上一道门洞都没有 → 它现在自己单独成一个区。
+     * 这是"墙就是隔断"的必然结果，但用户也可能只是忘了画门，得说一声。
+     * 判据是"一道门洞都没有"，**不是**"自成一个区"——主卧只靠一块过门石进出时
+     * 也是单房间的区，那是用户自己选的，不能报警。
+     * 汇总成一条，免得三间房没门就刷三条。 */
+    if (!out.errors.length) {
+      const lonely = rooms.filter(r => {
+        const area = out.areas[compOf(r.id)];
+        if (!area || area.rooms.length > 1) return false;                       // 跟别人同区 = 有路
+        if (out.doors.some(d => d.from === r.id || d.to === r.id)) return false; // 有门洞
+        return rooms.some(o => o.id !== r.id && wallBetween(r.rect, o.rect));    // 四周有邻居才算，孤零零摆着的别吵
+      });
+      if (lonely.length) {
+        out.warnings.push(`${lonely.map(r => nameOf(r.id)).join("")}四周的墙上都没开门洞，` +
+          `已经各自单独排砖了。如果本来就是这么设计的，忽略这条；如果不是，去「门洞」里补一道。`);
       }
     }
 
@@ -680,7 +760,7 @@ const Engine = (() => {
   };
 
   return { numOr, mod, roomRect, roomName, roomsBBox, rectOverlapArea, basePhase,
-           latticeSegments, toLocal, wallBetween, areasOf, doorRect, housePlan };
+           latticeSegments, toLocal, wallBetween, isFlush, areasOf, doorRect, housePlan };
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = Engine;
 /*ENGINE-END*/
@@ -1076,7 +1156,7 @@ function renderDoors(){
   const box = $("#doorRows");
   box.innerHTML = "";
   if (!state.doors.length) {
-    box.appendChild(el("p", "card-sub", "没有门洞也能用——不加就是全屋一张网铺过去"));
+    box.appendChild(el("p", "card-sub", "没有门洞也能用——现在一道门洞都没加（也就没有过门石），全屋还是一张网铺过去；只有加了「过门石」门洞的地方才会断开"));
     return;
   }
   state.doors.forEach((d, i) => {
@@ -1231,16 +1311,17 @@ function renderStatuses(plan){
   if (plan.ok) {
     /* 单区：原句一字不动（这是最常用的户型，别为了新功能把老话改花）。
      * 多区：得说清哪几间房是一个区、各以谁起铺——不然用户看到"过门石放了却没变化"
-     * （其实是绕经别的房间连通着）会以为工具坏了，下面那条警告也是为这个加的。 */
+     * （其实是绕经别的房间连通着）会以为工具坏了，下面那条警告也是为这个加的。
+     * 这里**不写**"分成 N 个区是因为有 N-1 道过门石"：加了"墙就是隔断"之后这个等式不成立，
+     * 没开门洞的墙也会分区。断开的原因让下面那条通用说明去讲。 */
     if (plan.areas.length > 1) {
       const CIRC = "①②③④⑤⑥⑦⑧⑨";
       const nameOf = (id) => (plan.rooms.find((r) => r.id === id) || {}).name || id;
-      const cutN = plan.doors.filter((d) => d.threshold).length;
       msgs.push({ kind:"info",
-        text:`全屋分成 ${plan.areas.length} 个区（中间有 ${cutN} 道过门石）：`
+        text:`全屋分成 ${plan.areas.length} 个区：`
            + plan.areas.map((a, i) =>
                `${CIRC[i] || (i + 1)}「${a.baseName}」区（${a.rooms.map(nameOf).join("、")}）`).join("")
-           + `。区内砖缝连通；过门石两侧各排各的，不用对上` });
+           + `。区内砖缝连通；断开的两边各排各的，缝不用对上` });
     } else {
       msgs.push({ kind:"info",
         text:`全屋一张网：以「${plan.grid.baseName}」为准起铺（${plan.grid.baseName} 左边缘的缝位 ${Math.round(plan.grid.GX)}mm）；其余房间自动跟这张网，门口不断缝` });
@@ -1256,9 +1337,15 @@ function renderStatuses(plan){
   const rb = $("#roomStatuses"); rb.innerHTML = "";
   plan.rooms.forEach((rm) => rm.warn.forEach((w) => rb.appendChild(el("div", "st warn", `${rm.name}：${w}`))));
   const db = $("#doorStatuses"); db.innerHTML = "";
-  plan.doors.forEach((d) => db.appendChild(el("div", "st ok",
-    `${d.fromName} → ${d.toName}：${d.threshold ? "过门石（这里断开）" : "通铺（缝穿过去）"}，洞宽 ${Math.round(d.width)}`
-    + (d.wallT > 0 ? "" : "（这两间房贴在一起、中间没有墙，这个门洞只是标个位置）"))));
+  plan.doors.forEach((d) => {
+    /* 贴死（中间没有墙厚）时，这个门洞不改变连通性——两间房本来就是一个空间。
+     * 口径走 Engine.isFlush，别在这里另写一套比较（同一个概念只留一处判断）。 */
+    const note = !Engine.isFlush(d.wallT) ? ""
+      : d.threshold ? "（这两间房贴在一起、中间没有墙，过门石照旧把两边分开）"
+                    : "（这两间房贴在一起、中间没有墙，本来就通着；这个门洞只是标个位置）";
+    db.appendChild(el("div", "st ok",
+      `${d.fromName} → ${d.toName}：${d.threshold ? "过门石（这里断开）" : "通铺（缝穿过去）"}，洞宽 ${Math.round(d.width)}` + note));
+  });
 }
 
 function renderCutList(plan){
@@ -1324,15 +1411,16 @@ function update(){
   syncAreaHint(plan);
 }
 
-/* 「以哪间房为准起铺」下面那行小字：只有过门石真的把全屋分了区才出现。
- * 一个区时它纯属噪音（"你选的这间管它自己那个区"——废话，全屋就一个区）。 */
+/* 「以哪间房为准起铺」下面那行小字：只有真的分了区才出现。
+ * 一个区时它纯属噪音（"你选的这间管它自己那个区"——废话，全屋就一个区）。
+ * 措辞是"墙和过门石"：加了"墙就是隔断"之后，分区的多半是没开门洞的墙，不全是过门石。 */
 function syncAreaHint(plan){
   const h = $("#areaHint");
   if (!h) return;
   const many = plan.ok && plan.areas && plan.areas.length > 1;
   h.hidden = !many;
   if (many) h.textContent =
-    `过门石把全屋分成了 ${plan.areas.length} 个区：这里选的房管它自己那个区，其余区各以区内最大的房间为准。`;
+    `墙和过门石把全屋分成了 ${plan.areas.length} 个区：这里选的房管它自己那个区，其余区各以区内最大的房间为准。`;
 }
 
 /* 「标注尺寸」的开关：裁砖尺寸线 + 过门石标签，一起显示、一起收。两个控件都走这里，
