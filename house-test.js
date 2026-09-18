@@ -40,12 +40,24 @@ const mk = (over) => {
 };
 // 一道通铺门：客厅 → 主卧（上下相邻，共用段 x 0~3300）
 const doorBottom = (over) => Object.assign({ id:"d1", from:"r1", to:"r3", at:1500, width:900, threshold:false }, over || {});
+/* 这块铺贴区域属于哪个区 → 拿那个区的格线原点。
+ * 分区之后 plan.grid 只是"参考房那张网"，拿它算别的区的面积会得出错的数，
+ * 所以这里必须按区域逐块找自己的区（房间按 rm.comp，通铺门口按 d.comp）。 */
+const areaGridFor = (plan, rect) => {
+  const same = (a, b) => near(a.x, b.x) && near(a.y, b.y) && near(a.w, b.w) && near(a.h, b.h);
+  const rm = plan.rooms.find((r) => same(r.rect, rect));
+  if (rm) return plan.areas[rm.comp];
+  const dr = plan.doors.find((d) => !d.threshold && same(d.rect, rect));
+  if (dr) return plan.areas[dr.comp];
+  return plan.grid;
+};
 // 砖面合计的独立算法（不复用引擎的 cells：Σ列宽 × Σ行宽）
 const tiledAreaOf = (plan, g) => {
   let sum = 0;
   for (const rect of plan.region) {
-    const sx = E.latticeSegments(plan.grid.GX, plan.tile.x, g, rect.x, rect.x + rect.w).segments;
-    const sy = E.latticeSegments(plan.grid.GY, plan.tile.y, g, rect.y, rect.y + rect.h).segments;
+    const A = areaGridFor(plan, rect);
+    const sx = E.latticeSegments(A.GX, plan.tile.x, g, rect.x, rect.x + rect.w).segments;
+    const sy = E.latticeSegments(A.GY, plan.tile.y, g, rect.y, rect.y + rect.h).segments;
     sum += sx.reduce((a, s) => a + s.width, 0) * sy.reduce((a, s) => a + s.width, 0);
   }
   return sum;
@@ -85,10 +97,12 @@ test("通缝 · 相邻两间房共享同一条砖缝（x 与 y 两个方向都�
     });
     return startsOK && endsOK;
   };
-  check("每间房的 x 缝都落在全屋同一张网上",
-        p.rooms.every((rm) => onLattice(rm.gx.segments, p.grid.GX, p2, p.tile.x)));
-  check("每间房的 y 缝都落在全屋同一张网上",
-        p.rooms.every((rm) => onLattice(rm.gy.segments, p.grid.GY, p3, p.tile.y)));
+  // 分区之后"全屋一张网"要读作"同一张网"：每间房落在**它自己那个区**的网上。
+  // 单区时 p.areas[rm.comp] 就是全屋那张，跟改动前的断言等价。
+  check("每间房的 x 缝都落在它自己那张网上",
+        p.rooms.every((rm) => onLattice(rm.gx.segments, p.areas[rm.comp].GX, p2, p.tile.x)));
+  check("每间房的 y 缝都落在它自己那张网上",
+        p.rooms.every((rm) => onLattice(rm.gy.segments, p.areas[rm.comp].GY, p3, p.tile.y)));
   // 在同一个轴上"并排"的两间房（客厅/次卧都在 x 上不同、y 上重叠）：y 缝必须逐条重合
   const C = p.rooms[1];
   const ays = new Set(A.gy.segments.map((s) => +s.start.toFixed(3)));
@@ -331,6 +345,209 @@ test("极端输入：一列砖都不剩的房间也能安全算完", () => {
   const p = E.housePlan(st);
   check("不抛异常", !!p);
   check("5mm 宽的房间也不出现 NaN", !p.summary || isFinite(p.summary.tiledArea), JSON.stringify(p.summary && p.summary.tiledArea));
+});
+
+/* ============================================================
+ * 分区：过门石两侧各自重新排砖
+ *
+ * 规则（欢欢拍板的）：
+ *   ① 只有过门石断开两间房——有墙、没放过门石的地方照旧通缝。
+ *   ② 一道过门石都没有 → 全屋仍是一张网，逐位跟以前相同。
+ *   ③ 每个区各自选起铺基准：设置里选的那间管它自己那个区，
+ *      其余区以区内面积最大的房间为准。
+ * ============================================================ */
+const namesOf = (p, area) => area.rooms.map((id) => (p.rooms.find((r) => r.id === id) || {}).name);
+
+test("分区 · 一道过门石把全屋切成两组，且两组各排各的", () => {
+  const st = mk({ doors:[doorBottom({ threshold:true })] });
+  const p = E.housePlan(st);
+  check("算得出方案", p.ok, p.errors.join("；"));
+  check("分成 2 个区", p.areas.length === 2, `实际 ${p.areas.length}`);
+  check("区①是客厅+次卧（过门石只切客厅↔主卧那道边）",
+        JSON.stringify(namesOf(p, p.areas[0])) === JSON.stringify(["客厅","次卧"]),
+        JSON.stringify(namesOf(p, p.areas[0])));
+  check("区②只有主卧", JSON.stringify(namesOf(p, p.areas[1])) === JSON.stringify(["主卧"]),
+        JSON.stringify(namesOf(p, p.areas[1])));
+  check("每个房间都带 comp，且落在 0..n-1",
+        p.rooms.every((r) => Number.isInteger(r.comp) && r.comp >= 0 && r.comp < p.areas.length));
+  check("comp 和区的成员对得上",
+        p.rooms.every((r) => p.areas[r.comp].rooms.includes(r.id)));
+
+  // 两个区的原点必须不同——否则"重新排砖"就是空话
+  check("两个区的 x 原点不同", !near(p.areas[0].GX, p.areas[1].GX),
+        `${p.areas[0].GX} vs ${p.areas[1].GX}`);
+  // 主卧（r3）现在归区②：它自己的网，不能是客厅那张
+  const r3 = p.rooms[2];
+  check("主卧的缝落在**它自己那个区**的网上",
+        r3.comp === 1 && near(r3.gx.segments[1].start % (p.tile.x + st.settings.grout),
+                              p.areas[1].GX % (p.tile.x + st.settings.grout), 0.02)
+        || near(r3.gx.segments[1].start, p.areas[1].GX + (p.tile.x + st.settings.grout), 0.02),
+        `GX=${p.areas[1].GX} 第一条内部缝=${r3.gx.segments[1].start}`);
+  check("主卧不再跟客厅共用一张网（原点和客厅那张不一样）",
+        !near(p.areas[1].GX, p.areas[0].GX) && r3.comp !== p.rooms[0].comp);
+});
+
+test("分区 · 通铺门不断开（哪怕同一道墙另有通铺门），无门时仍是一个区", () => {
+  const tiled = E.housePlan(mk({ doors:[doorBottom()] }));
+  check("只有通铺门 → 1 个区", tiled.areas.length === 1, `${tiled.areas.length}`);
+  check("通铺方案里三间房同属一区",
+        tiled.rooms.every((r) => r.comp === 0));
+  const dry = E.housePlan(mk({ doors:[] }));
+  check("一道门都没有 → 1 个区", dry.areas.length === 1);
+  // 同一对房间既有通铺又有过门石：通铺赢（缝要从这儿穿过去，必须同一张网）
+  const both = E.housePlan(mk({ doors:[doorBottom({ id:"d1", threshold:true }),
+                                        doorBottom({ id:"d2", at:2600, threshold:false })] }));
+  check("同一对房既有通铺又有过门石 → 仍然 1 个区（通铺优先）",
+        both.areas.length === 1, `${both.areas.length}`);
+});
+
+test("分区 · 回归锁：没有过门石时，逐位等于分区功能上线前的数字", () => {
+  // 这组数字是改动前跑出来的真实值。将来谁把"没有过门石就走老路"这条捷径改坏了，这里立刻红。
+  const p = E.housePlan(mk({}));
+  check("全屋原点 GX 仍是 497", p.grid.GX === 497, `${p.grid.GX}`);
+  check("全屋原点 GY 仍是 598", p.grid.GY === 598, `${p.grid.GY}`);
+  check("整砖数仍是 27", p.summary.wholeCount === 27, `${p.summary.wholeCount}`);
+  check("裁砖数仍是 48", p.summary.pieceCount === 48, `${p.summary.pieceCount}`);
+  check("铺贴面积仍是 35653992", p.summary.tiledArea === 35653992, `${p.summary.tiledArea}`);
+  check("起点仍是客厅", p.grid.baseName === "客厅", p.grid.baseName);
+});
+
+test("分区 · 参考房选在某个区里时，别的区改用该区最大的房间", () => {
+  // 设置里选 r3（主卧）＝区②的房。区①（客厅 15.1㎡ / 次卧 10.8㎡）应改用客厅。
+  const st = mk({ doors:[doorBottom({ threshold:true })],
+                  settings:{ baseRoom:"r3" } });
+  const p = E.housePlan(st);
+  check("算得出方案", p.ok, p.errors.join("；"));
+  const a0 = p.areas.find((a) => a.rooms.includes("r1"));
+  const a1 = p.areas.find((a) => a.rooms.includes("r3"));
+  check("主卧所在的那区以主卧为准（用户的选择生效）", a1.baseName === "主卧", a1.baseName);
+  check("客厅那区没用主卧、改用区内最大的客厅", a0.baseName === "客厅", a0.baseName);
+  // 注意 basePhase 吃的是**输入房间**（顶层 x/y/w/h），不是 out.rooms（尺寸在 .rect 里）
+  const rs0 = st.rooms.filter((r) => r.id === "r1" || r.id === "r2");
+  check("并且它的原点和「以客厅为准」独立算出来的一致",
+        near(a0.GX, E.basePhase(rs0, "r1", p.tile, st.settings.grout, st.settings.baseMode, { x:0, y:0 }).GX),
+        `${a0.GX} vs ${E.basePhase(rs0, "r1", p.tile, st.settings.grout, st.settings.baseMode, { x:0, y:0 }).GX}`);
+});
+
+test("分区 · 面积核算在多个区时仍然自洽（砖没算重、没算漏）", () => {
+  const st = mk({ doors:[doorBottom({ threshold:true })] });
+  const p = E.housePlan(st);
+  const g = st.settings.grout;
+  const indep = tiledAreaOf(p, g);
+  check("独立算法（按区取网）与引擎的 tiledArea 一致",
+        near(indep, p.summary.tiledArea, 0.01), `${indep} vs ${p.summary.tiledArea}`);
+  check("砖面 + 缝面 = 总面积",
+        near(p.summary.tiledArea + p.summary.groutArea, p.summary.areaMM, 0.01),
+        `${p.summary.tiledArea} + ${p.summary.groutArea} vs ${p.summary.areaMM}`);
+  const S = p.summary;
+  check("区号前缀没把一块砖数成两块（砖数与分组一致）",
+        S.cutGroups.reduce((a, x) => a + x.count, 0) === S.pieceCount);
+  check("跨门口统计没被分区撑大",
+        (S.crossDoorWhole || 0) <= S.wholeCount, `crossDoorWhole=${S.crossDoorWhole}`);
+});
+
+test("分区 · 每个区的基准房四周都不出现细边（分区的好处就落在这儿）", () => {
+  const st = mk({ doors:[doorBottom({ threshold:true })] });
+  const p = E.housePlan(st);
+  const thin = [];
+  /* 只查**每个区的基准房**。同一张网里的其他房间本来就可能有一条窄边——通铺就是这样：
+   * 网是为了基准房摆正的，别的房跟着走，边条好不好看是它们自己的事。
+   * 这次改动要保证的是：每个区都有人替它把网摆正，不是所有区都被参考房那张网拽着。
+   */
+  for (const A of p.areas) {
+    const rm = p.rooms.find((r) => r.id === A.baseId);
+    const gx = rm.gx.segments, gy = rm.gy.segments;
+    for (const [what, v, full] of [["左", gx[0].width, p.tile.x],
+                                   ["右", gx[gx.length - 1].width, p.tile.x],
+                                   ["上", gy[0].width, p.tile.y],
+                                   ["下", gy[gy.length - 1].width, p.tile.y]]) {
+      if (v < full / 3 - 0.01) thin.push(`${rm.name}${what}${Math.round(v)}`);
+    }
+  }
+  check("每个区的基准房都没有小于 1/3 砖的边条", thin.length === 0, thin.join(", "));
+  check("而且每个区都各有一个基准房（不是全区共用一间）",
+        p.areas.every((a) => p.rooms.some((r) => r.id === a.baseId)));
+  // 主卧单独成区之后，它的边条是它自己定的，不再被客厅那张网拽着看
+  const zhu = p.rooms.find((r) => r.name === "主卧");
+  check("主卧（区②的基准房）左右边条一样宽 = 居中起铺生效",
+        near(zhu.gx.segments[0].width, zhu.gx.segments[zhu.gx.segments.length - 1].width, 0.01),
+        `${zhu.gx.segments[0].width} vs ${zhu.gx.segments[zhu.gx.segments.length - 1].width}`);
+});
+
+test("分区 · 过门石两侧贴死（没有墙厚）时给出提醒", () => {
+  // 两间房贴死：r1 右边 x=3700，r2 左边也是 3700
+  const flat = { rooms:[ { id:"r1", name:"客厅", x:0,    y:0, w:3700, h:3300 },
+                          { id:"r2", name:"主卧", x:3700, y:0, w:3300, h:3300 } ] };
+  const p = E.housePlan(mk(Object.assign({ doors:[ { id:"d1", from:"r1", to:"r2", at:1200, width:900, threshold:true } ] }, flat)));
+  check("算得出方案", p.ok, p.errors.join("；"));
+  check("确实分成了 2 个区", p.areas.length === 2, `${p.areas.length}`);
+  check("报了「两侧贴死、缝对不上会露出来」的提醒",
+        p.warnings.some((w) => /贴死/.test(w)), (p.warnings || []).join("；"));
+  // 有墙厚的正常情况不该出这条
+  const walled = E.housePlan(mk({ rooms:[ { id:"r1", name:"客厅", x:0,    y:0, w:3700, h:3300 },
+                                            { id:"r2", name:"主卧", x:3940, y:0, w:3300, h:3300 } ],
+                                  doors:[ { id:"d1", from:"r1", to:"r2", at:1200, width:900, threshold:true } ] }));
+  check("有墙厚时不报这条", !walled.warnings.some((w) => /贴死/.test(w)), (walled.warnings || []).join("；"));
+});
+
+test("分区 · 过门石没切开两边（那边还从别的门口连着）时如实说明", () => {
+  /* 四间房摆成"田"字（每两间都挨着），A—B 放过门石，但 A—C—D—B 这条路上
+   * 三道门都是通铺 → 绕一圈还是同一个区。这是几何上就绕不开的，不是漏判。 */
+  const st = mk({ rooms:[ { id:"r1", name:"A", x:0,    y:0,    w:3000, h:3000 },
+                          { id:"r2", name:"B", x:3200, y:0,    w:3000, h:3000 },
+                          { id:"r3", name:"C", x:0,    y:3200, w:3000, h:3000 },
+                          { id:"r4", name:"D", x:3200, y:3200, w:3000, h:3000 } ],
+                  doors:[ { id:"d1", from:"r1", to:"r2", at:1000, width:900, threshold:true },
+                          { id:"d2", from:"r1", to:"r3", at:1000, width:900, threshold:false },
+                          { id:"d3", from:"r3", to:"r4", at:1000, width:900, threshold:false },
+                          { id:"d4", from:"r4", to:"r2", at:1000, width:900, threshold:false } ] });
+  const p = E.housePlan(st);
+  check("仍然算得出", p.ok, p.errors.join("；"));
+  check("绕得通 → 还是 1 个区", p.areas.length === 1, `${p.areas.length}`);
+  check("并且解释了为什么没分开",
+        p.warnings.some((w) => /绕一圈|别的门口/.test(w)), (p.warnings || []).join("；"));
+});
+
+test("分区 · 结构自洽与确定性", () => {
+  const st = mk({ doors:[doorBottom({ threshold:true })] });
+  const p1 = E.housePlan(st), p2 = E.housePlan(st);
+  check("区号就是下标", p1.areas.every((a, i) => a.id === i));
+  check("每个区都有名字和原点",
+        p1.areas.every((a) => a.baseName && isFinite(a.GX) && isFinite(a.GY)));
+  check("每个房间恰好属于一个区",
+        p1.rooms.every((r) => p1.areas.filter((a) => a.rooms.includes(r.id)).length === 1));
+  check("区的并集 = 全部房间",
+        p1.areas.reduce((a, x) => a.concat(x.rooms), []).sort().join() ===
+        p1.rooms.map((r) => r.id).sort().join());
+  check("同样的输入跑两次，结果逐位相同",
+        JSON.stringify(p1.areas) === JSON.stringify(p2.areas) &&
+        JSON.stringify(p1.rooms.map((r) => r.gx)) === JSON.stringify(p2.rooms.map((r) => r.gx)));
+  check("grid 指向参考房所在的那个区",
+        p1.areas.find((a) => a.rooms.includes(st.settings.baseRoom)).GX === p1.grid.GX);
+});
+
+test("分区 · 房间清单顺序不被分区打乱（外面是按下标取房间的）", () => {
+  const p = E.housePlan(mk({ doors:[doorBottom({ threshold:true })] }));
+  check("out.rooms 仍是 客厅/次卧/主卧 的顺序",
+        p.rooms.map((r) => r.name).join() === "客厅,次卧,主卧", p.rooms.map((r) => r.name).join());
+});
+
+test("分区 · 互不挨着的房间：没有过门石时仍共用一张网（这是答应过的老行为）", () => {
+  const rooms = [ { id:"r1", name:"A", x:0,    y:0,    w:2000, h:2000 },
+                  { id:"r2", name:"B", x:5000, y:0,    w:2000, h:2000 },
+                  { id:"r3", name:"C", x:9000, y:9000, w:2000, h:2000 } ];
+  // 界面上的原话是"不加（过门石）就是全屋一张网铺过去"，所以这里必须是 1 个区。
+  // 房间离得远不该偷偷改掉这条承诺——那会让用户在旧户型上看到莫名其妙的变化。
+  const dry = E.housePlan(mk({ rooms, doors:[] }));
+  check("一道过门石都没有 → 仍是 1 个区", dry.areas.length === 1, `${dry.areas.length}`);
+  check("三间房同属一区", dry.rooms.every((r) => r.comp === 0));
+  // 一旦有了过门石，几何上本来就分开的房间自然各成一区（它们和谁都不挨着）
+  const cut = E.housePlan(mk({ rooms, doors:[ { id:"d1", from:"r1", to:"r2", at:900, width:800, threshold:true } ] }));
+  check("有了一处过门石 → 远房自己成区，共 3 个区", cut.areas.length === 3, `${cut.areas.length}`);
+  check("每区一间房", cut.areas.every((a) => a.rooms.length === 1),
+        JSON.stringify(cut.areas.map((a) => a.rooms)));
+  check("面积核算仍自洽",
+        near(cut.summary.tiledArea + cut.summary.groutArea, cut.summary.areaMM, 0.01));
 });
 
 console.log(`\n结果：${_pass} 通过，${_fail} 失败`);

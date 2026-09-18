@@ -76,6 +76,8 @@ button{cursor:pointer; touch-action:manipulation}
 .set-row{margin-bottom:14px}
 .set-row:last-child{margin-bottom:0}
 .set-label{display:block; font-size:13px; font-weight:700; color:var(--ink-soft); margin-bottom:6px; letter-spacing:.3px}
+/* 只在过门石把全屋分了区时才出现（见 syncAreaHint）——一个区时它没有信息量 */
+.set-hint{margin:-2px 0 12px; font-size:12px; color:var(--ink-soft); line-height:1.45}
 .chips{display:flex; flex-wrap:wrap; gap:8px}
 .chip{border:1px solid var(--line); background:var(--chip); border-radius:8px; padding:8px 12px; min-height:42px; font-size:15px; font-variant-numeric:tabular-nums;}
 .chip.on{background:var(--accent-soft); border-color:var(--accent); color:var(--accent); font-weight:700}
@@ -143,7 +145,7 @@ select{min-height:40px; padding:7px 8px; border:1px solid var(--line); border-ra
 <div class="wrap">
   <header class="app-head">
     <h1>全屋通铺</h1>
-    <p class="sub">一块砖、一张网铺满全屋：砖缝从客厅对到卧室，门口不断缝</p>
+    <p class="sub">一块砖、一张网铺满全屋：砖缝从客厅对到卧室，门口不断缝；门口放了过门石的地方，两边各自重新排砖</p>
   </header>
 
   <section class="settings" id="settings">
@@ -172,6 +174,7 @@ select{min-height:40px; padding:7px 8px; border:1px solid var(--line); border-ra
         <div class="set-row"><span class="set-label">以哪间房为准起铺</span>
           <select id="baseRoom"></select>
         </div>
+        <p class="set-hint" id="areaHint" hidden></p>
         <div class="set-row"><span class="set-label">起铺方式</span>
           <div class="seg" id="baseModeSeg">
             <button data-v="center">居中对称</button><button data-v="edge">靠一边</button>
@@ -200,7 +203,7 @@ select{min-height:40px; padding:7px 8px; border:1px solid var(--line); border-ra
         <canvas id="housePlan"></canvas>
         <p class="plot-empty" id="planEmpty">先把地砖规格和房间尺寸填好</p>
       </div>
-      <div class="plan-legend">浅色缝＝砖缝（全屋同一张网）ㆍ白框＝墙（房间之间的空档）ㆍ虚线框＝门洞（标「过门石」的门口在这里断开）<br>
+      <div class="plan-legend">浅色缝＝砖缝（同一个区内是连通的）ㆍ白框＝墙（房间之间的空档）ㆍ蓝虚线＝通铺门口（缝穿过去）ㆍ红实线＝过门石门口（这里断开，两边各排各的）<br>
         这张图只作看图用。<b>要挪房间，去下面「房间」卡片里改「离原点左 / 离原点上」的数字</b>，改完图上立刻跟着变。</div>
       <div class="statuses" id="statuses"></div>
     </section>
@@ -215,7 +218,7 @@ select{min-height:40px; padding:7px 8px; border:1px solid var(--line); border-ra
 
     <section class="card">
       <h2 class="card-title">门洞</h2>
-      <p class="card-sub">「通铺」＝砖缝从门口穿过去；「过门石」＝这里断开，另放一块过门石。</p>
+      <p class="card-sub">「通铺」＝砖缝从门口穿过去；「过门石」＝这里断开，另放一块过门石，两边各自重新排砖、缝不用对上。</p>
       <div id="doorRows"></div>
       <button class="mini-add" id="addDoor">＋ 添加门洞</button>
       <div class="statuses" id="doorStatuses"></div>
@@ -240,8 +243,9 @@ select{min-height:40px; padding:7px 8px; border:1px solid var(--line); border-ra
 /* ============================================================
  * 全屋通铺排砖 · 单文件工具
  *
- * 设计要点：**全屋只有一张砖网**（一个相位）。每个房间只是把这张网切出自己那一块，
- * 所以砖缝在门口处天然连成一条线——这就是"通铺"。
+ * 设计要点：**全屋的砖网按过门石分成若干张**，每张网一个相位；同一个区里的房间
+ * 只是把这张网切出自己那一块，所以砖缝在门口处天然连成一条线——这就是"通铺"。
+ * 没有过门石时全屋就是一张网（areasOf 直接返回一整组），跟分区功能上线前逐位相同。
  *
  * 下面 ENGINE 段里的纯函数不碰 DOM，house-test.js 会把它们抽出来在 node 里跑。
  * 其中 laidDims / compatible / layoutAxis / rectPts / bboxOf / rectHit / polyAreaOf
@@ -359,10 +363,10 @@ const Engine = (() => {
     return { x:x0, y:y0, w:x1 - x0, h:y1 - y0 };
   };
 
-  /* ---- 起铺基准：全屋格线原点（全局坐标）----
+  /* ---- 起铺基准：一个区一张砖网的格线原点（全局坐标）----
    * 以"参考房"为准跑一次 layoutAxis（含"边缘裁砖 ≥ 1/3"那条老规矩），
    * 再折算到全局坐标；nudge 是师傅的整体微调。
-   * 全屋就这一个原点——其余房间都由它推出来，通缝就是这么来的。 */
+   * 同一个区里所有房间都由这**一个**原点推出来，通缝就是这么来的。 */
   const basePhase = (rooms, baseId, t, g, mode, nudge) => {
     const list = (rooms || []).filter(r => { const rr = roomRect(r); return rr.w > 0 && rr.h > 0; });
     if (!list.length || !t || !(t.x > 0) || !(t.y > 0)) return { ok:false };
@@ -403,13 +407,14 @@ const Engine = (() => {
   /* 把全局轴转成"房间局部轴"（绘图用：坐标回到 0 起） */
   const toLocal = (ax, origin) => ({ ...ax, segments: ax.segments.map(s => ({ ...s, start: s.start - origin })) });
 
-  /* ---- 门洞：从两间房的几何反推洞口矩形 ----
-   * at = 洞口中心离 A 房"沿共用边那一侧的起点"（左右相邻时=离 A 上墙；上下相邻时=离 A 左墙）
-   * 返回 { ok, rect, vertical, wallT, span }；不合法时给中文原因。 */
-  const doorRect = (a, b, at, width) => {
-    const A = roomRect(a), B = roomRect(b);
-    if (!(A.w > 0 && A.h > 0 && B.w > 0 && B.h > 0)) return { ok:false, why:"两间房的尺寸还没填全" };
-    if (!(width > 0)) return { ok:false, why:"门宽要填正整数（毫米）" };
+  /* ---- 两间房之间那道墙 ----
+   * 左右相邻（竖直缝）或上下相邻（水平缝）都算；不挨着返回 null。
+   * 返回 { vertical, gap, wallT, lo, hi, start }，start 是 A 房沿共用边那一侧的起点。
+   *
+   * 这里是**全工具唯一**一处判断"两间房挨不挨着"的地方：
+   * 开门（doorRect）和分区（areasOf）都调它。各写一遍迟早会漂——
+   * 界面允许开门、图却认为两间房不相邻，那种 bug 最难查。 */
+  const wallBetween = (A, B) => {
     const yOv = spanOv(A.y, A.y + A.h, B.y, B.y + B.h);
     const xOv = spanOv(A.x, A.x + A.w, B.x, B.x + B.w);
     // 左右相邻（竖直缝）：两房在 x 上分开、y 上有重叠
@@ -421,16 +426,30 @@ const Engine = (() => {
     if (B.y >= A.y + A.h - 1e-6) hGap = [A.y + A.h, B.y];
     else if (B.y + B.h <= A.y + 1e-6) hGap = [B.y + B.h, A.y];
     const useV = vGap && yOv > 1, useH = hGap && xOv > 1;
-    if (!useV && !useH) return { ok:false, why:"这两间房不相邻（中间没有共用的墙），门洞放不下" };
+    if (!useV && !useH) return null;
     const vertical = useV && (!useH || yOv >= xOv);
     const gap = vertical ? vGap : hGap;
-    const wallT = gap[1] - gap[0];
+    return {
+      vertical, gap, wallT: gap[1] - gap[0],
+      lo:  vertical ? Math.max(A.y, B.y) : Math.max(A.x, B.x),
+      hi:  vertical ? Math.min(A.y + A.h, B.y + B.h) : Math.min(A.x + A.w, B.x + B.w),
+      start: vertical ? A.y : A.x,
+    };
+  };
+
+  /* ---- 门洞：从两间房的几何反推洞口矩形 ----
+   * at = 洞口中心离 A 房"沿共用边那一侧的起点"（左右相邻时=离 A 上墙；上下相邻时=离 A 左墙）
+   * 返回 { ok, rect, vertical, wallT, span }；不合法时给中文原因。 */
+  const doorRect = (a, b, at, width) => {
+    const A = roomRect(a), B = roomRect(b);
+    if (!(A.w > 0 && A.h > 0 && B.w > 0 && B.h > 0)) return { ok:false, why:"两间房的尺寸还没填全" };
+    if (!(width > 0)) return { ok:false, why:"门宽要填正整数（毫米）" };
+    const w = wallBetween(A, B);
+    if (!w) return { ok:false, why:"这两间房不相邻（中间没有共用的墙），门洞放不下" };
+    const { vertical, gap, wallT, lo, hi, start } = w;
     /* wallT = 0 是允许的：两间房连通（中间没有墙，比如客餐厅一体、或以后装推拉门），
      * 这时门洞只是标个位置，洞厚为 0，不占铺贴面积（latticeSegments 遇到 0 长度区间返回空）。 */
     if (wallT < 0) return { ok:false, why:"这两间房的间隙算出来是负数，请检查一下坐标" };
-    const lo = vertical ? Math.max(A.y, B.y) : Math.max(A.x, B.x);
-    const hi = vertical ? Math.min(A.y + A.h, B.y + B.h) : Math.min(A.x + A.w, B.x + B.w);
-    const start = vertical ? A.y : A.x;
     const c = start + numOr(at, 0);
     if (!(c - width / 2 >= lo - 1e-6 && c + width / 2 <= hi + 1e-6)) {
       return { ok:false, why:`门洞超出两间房的共用段（这里可用 ${Math.round(lo - start)}~${Math.round(hi - start)}mm）` };
@@ -439,6 +458,50 @@ const Engine = (() => {
       ? { x:gap[0], y:c - width / 2, w:wallT, h:width }
       : { x:c - width / 2, y:gap[0], w:width, h:wallT };
     return { ok:true, rect, vertical, wallT, span:{ lo, hi }, at:c };
+  };
+
+  /* ---- 分区：过门石把全屋切成几张各排各的砖网 ----
+   * 两间房「挨着」（中间只有一道墙，或者直接贴死）就共用一张网；
+   * 那道门洞标了过门石 → 这段网断开，两边各自起铺、缝不用对上。
+   *
+   * 两个例外，都是有道理的：
+   * ① 同一对房间既有过门石又有通铺门 → 通铺赢。通铺的意思就是"缝从这儿穿过去"，
+   *    那两间房必须同一张网，否则门口那段砖没法画。
+   * ② 过门石只切断**直接**那道边。两间房还从别的路连着的话，绕一圈照样是一张网——
+   *    这是几何上就绕不开的（见 housePlan 里那条提醒），不是漏判。
+   *
+   * 返回房间 id 的分组，顺序跟着房间清单走（稳定，不随集合遍历次序变）。 */
+  const areasOf = (rooms, doors) => {
+    const pairKey = (a, b) => (a < b ? a + "|" + b : b + "|" + a);
+    const cut = new Set(), bond = new Set();
+    for (const d of doors || []) (d.threshold ? cut : bond).add(pairKey(d.from, d.to));
+    /* 一块过门石都没有：全屋就一张网，跟以前逐位相同。
+     * 这条不是省事的捷径——界面上白纸黑字写着"不加就是全屋一张网铺过去"，
+     * 老户型的结果不能因为这次改动变样。 */
+    if (!cut.size) return [rooms.map(r => r.id)];
+
+    const parent = new Map(rooms.map(r => [r.id, r.id]));
+    const find = (x) => {
+      let root = x;
+      while (parent.get(root) !== root) root = parent.get(root);
+      while (parent.get(x) !== root) { const next = parent.get(x); parent.set(x, root); x = next; }
+      return root;
+    };
+    for (let i = 0; i < rooms.length; i++) for (let j = i + 1; j < rooms.length; j++) {
+      const A = rooms[i], B = rooms[j], k = pairKey(A.id, B.id);
+      if (cut.has(k) && !bond.has(k)) continue;          // 过门石：这道网断开
+      if (!wallBetween(A.rect, B.rect)) continue;         // 不挨着：本来就不是一个空间
+      const ra = find(A.id), rb = find(B.id);
+      if (ra !== rb) parent.set(ra, rb);
+    }
+    // 按房间清单顺序收拢，顺便让区号就是"区内第一间房在清单里的位置"（确定性）
+    const byRoot = new Map();
+    for (const r of rooms) {
+      const k = find(r.id);
+      if (!byRoot.has(k)) byRoot.set(k, []);
+      byRoot.get(k).push(r.id);
+    }
+    return [...byRoot.values()];
   };
 
   /* ---- 总入口：算全屋 ---- */
@@ -463,11 +526,7 @@ const Engine = (() => {
     }
     if (out.errors.some(e => e.includes("重叠"))) return out;
 
-    const bp = basePhase(rooms, s.baseRoom, t, g, s.baseMode, { x:s.nudgeX, y:s.nudgeY });
-    if (!bp.ok) return out;
-    out.grid = { GX:bp.GX, GY:bp.GY, pX:t.x + g, pY:t.y + g, baseId:bp.baseId, baseName:bp.baseName };
-
-    // 门洞
+    // 门洞（要先把门洞理出来，分区才知道哪几道是过门石）
     for (const d of ((state && state.doors) || [])) {
       const A = rooms.find(r => r.id === d.from), B = rooms.find(r => r.id === d.to);
       if (!A || !B) { out.errors.push("有门洞指向了不存在或被删掉的房间，请重选"); continue; }
@@ -482,26 +541,52 @@ const Engine = (() => {
     // 要铺的区域 = 各房间 + 「通铺」门口（过门石门口不铺砖，另给过门石尺寸）
     out.region = rooms.map(r => r.rect).concat(out.doors.filter(d => !d.threshold).map(d => d.rect));
 
-    /* 全屋同一块砖的归并：按格线序号 (i,j) 认。
-     * 一块砖可能落在两间房里（跨门口/跨墙）——按房间各算一次就会把一块砖数成两块。 */
+    /* 分区：过门石把全屋切成几张各排各的砖网。
+     * 没有过门石时 areasOf 直接返回一整组 → 下面每个区算出来的原点就是以前那一个，
+     * 逐位相同，老户型的结果不会因为这次改动变样。 */
+    const comps = areasOf(rooms, out.doors);
+    out.areas = [];
+    for (const list of comps) {
+      const rs = list.map(id => rooms.find(r => r.id === id));
+      /* 本区以哪间房起铺：设置里选的那间若在本区就用它；
+       * 否则用本区里面积最大的一间——一样大就取房间清单里靠前的
+       * （sort 是稳定的，并列时自然保留 rs 的原顺序，而 rs 就是清单顺序）。 */
+      const pick = rs.find(r => r.id === s.baseRoom)
+                || rs.slice().sort((a, b) => (b.rect.w * b.rect.h) - (a.rect.w * a.rect.h))[0];
+      const ab = basePhase(rs, pick.id, t, g, s.baseMode, { x:s.nudgeX, y:s.nudgeY });
+      if (!ab.ok) return out;
+      out.areas.push({ id:out.areas.length, baseId:ab.baseId, baseName:ab.baseName,
+                       GX:ab.GX, GY:ab.GY, rooms:list });
+    }
+    const compOf = (id) => out.areas.findIndex(a => a.rooms.includes(id));
+    /* grid 是"参考房那个区"的网。单区时它就是全屋那张网，老代码照旧能用；
+     * 多区时它只是"最主要的那张"，画图和文案都会按区分别取。 */
+    const home = out.areas.find(a => a.rooms.includes(s.baseRoom)) || out.areas[0];
+    out.grid = { GX:home.GX, GY:home.GY, pX:t.x + g, pY:t.y + g,
+                 baseId:home.baseId, baseName:home.baseName };
+
+    /* 全屋同一块砖的归并：按"区号 + 格线序号 (i,j)"认。
+     * 一块砖可能落在两间房里（跨门口/跨墙）——按房间各算一次就会把一块砖数成两块。
+     * **区号不能省**：不同区的网是各排各的，同一个序号 i 在两个区里是不同的物理位置；
+     * 归并到一起会算出一块"面积正好等于整砖"的假砖，两块真裁砖就从清单里消失了。 */
     const cells = new Map();
-    const addCell = (i, j, piece, kind) => {
-      const key = i + ":" + j;
+    const addCell = (comp, i, j, piece, kind) => {
+      const key = comp + ":" + i + ":" + j;
       let c = cells.get(key);
       if (!c) { c = { i, j, pieces:[], area:0, kinds:new Set() }; cells.set(key, c); }
       c.pieces.push(piece); c.area += piece.w * piece.h; c.kinds.add(kind);
     };
 
-    // 每间房：把自己区间喂进全局格线
+    // 每间房：把自己区间喂进**本区**那张网
     for (const r of rooms) {
-      const R = r.rect;
-      const gx = latticeSegments(bp.GX, t.x, g, R.x, R.x + R.w);
-      const gy = latticeSegments(bp.GY, t.y, g, R.y, R.y + R.h);
+      const R = r.rect, ci = compOf(r.id), A = out.areas[ci];
+      const gx = latticeSegments(A.GX, t.x, g, R.x, R.x + R.w);
+      const gy = latticeSegments(A.GY, t.y, g, R.y, R.y + R.h);
       const tiles = [];
       for (const sy of gy.segments) for (const sx of gx.segments) {
         tiles.push({ x:sx.start, y:sy.start, w:sx.width, h:sy.width, gi:sx.i, gj:sy.i,
                      cut: !!(sx.cut || sy.cut) });
-        addCell(sx.i, sy.i, { x:sx.start, y:sy.start, w:sx.width, h:sy.width }, "room");
+        addCell(ci, sx.i, sy.i, { x:sx.start, y:sy.start, w:sx.width, h:sy.width }, "room");
       }
       const warn = [];
       const cutLo = Math.min(
@@ -511,16 +596,31 @@ const Engine = (() => {
         warn.push(`边缘裁砖最窄 ${Math.round(cutLo)}mm（不足 1/3 砖），请现场定夺`);
       if (gx.segments.dense || gy.segments.dense)
         warn.push("这块砖太小/房间太大，砖格太密，图上只画示意、尺寸看清单");
-      out.rooms.push({ id:r.id, name:roomName(r), rect:R,
+      // comp 是这块砖属于哪个区。顺序照房间清单，别为了"按区归拢"把 out.rooms 重排——
+      // 外面（含 house-test.js）是按清单下标取房间的。
+      out.rooms.push({ id:r.id, name:roomName(r), rect:R, comp:ci,
                        ax:toLocal(gx, R.x), ay:toLocal(gy, R.y), gx, gy, tiles, warn });
     }
     // 通铺门口那一段也算进砖网（门槛处不断缝）
     for (const d of out.doors.filter(x => !x.threshold)) {
-      const D = d.rect;
-      const gx = latticeSegments(bp.GX, t.x, g, D.x, D.x + D.w);
-      const gy = latticeSegments(bp.GY, t.y, g, D.y, D.y + D.h);
+      const D = d.rect, ci = compOf(d.from), A = out.areas[ci];
+      /* d.from 和 d.to 必在同一个区：areasOf 里"通铺门"是 bond，
+       * 哪怕这道墙同时还标了过门石也不会把两间房拆开。所以取哪边的区号都一样。 */
+      const gx = latticeSegments(A.GX, t.x, g, D.x, D.x + D.w);
+      const gy = latticeSegments(A.GY, t.y, g, D.y, D.y + D.h);
+      d.comp = ci;
       for (const sy of gy.segments) for (const sx of gx.segments)
-        addCell(sx.i, sy.i, { x:sx.start, y:sy.start, w:sx.width, h:sy.width }, "door");
+        addCell(ci, sx.i, sy.i, { x:sx.start, y:sy.start, w:sx.width, h:sy.width }, "door");
+    }
+
+    /* 过门石没能把两边分开的两种情况，都要说出来——
+     * 不说的话用户只会看到"放了过门石怎么还是通缝"，以为工具坏了。 */
+    for (const d of out.doors.filter(x => x.threshold)) {
+      if (compOf(d.from) === compOf(d.to)) {
+        out.warnings.push(`「${d.fromName} → ${d.toName}」放了过门石，但这两间房还从别的门口连着（那边没放第二块过门石）——缝绕一圈还是要对上，所以没能分开`);
+      } else if (d.wallT === 0) {
+        out.warnings.push(`「${d.fromName} → ${d.toName}」的过门石两侧是贴死的（没有墙厚）：两边砖缝各排各的，对不上会直接露出来。建议这里留墙厚，或者改成「通铺」`);
+      }
     }
 
     // 逐块判定：整砖 / 裁砖
@@ -580,7 +680,7 @@ const Engine = (() => {
   };
 
   return { numOr, mod, roomRect, roomName, roomsBBox, rectOverlapArea, basePhase,
-           latticeSegments, toLocal, doorRect, housePlan };
+           latticeSegments, toLocal, wallBetween, areasOf, doorRect, housePlan };
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = Engine;
 /*ENGINE-END*/
@@ -1078,8 +1178,12 @@ function drawPlan(plan){
   // 通铺门口那一段也要铺上砖（不然门口露白底，看着像断了）
   plan.doors.filter((d) => !d.threshold).forEach((d) => {
     const R = d.rect;
-    const gx = Engine.latticeSegments(plan.grid.GX, plan.tile.x, plan.tile.grout, R.x, R.x + R.w);
-    const gy = Engine.latticeSegments(plan.grid.GY, plan.tile.y, plan.tile.grout, R.y, R.y + R.h);
+    /* 用**这道门所在那个区**的网，不能用 plan.grid：多区时 plan.grid 只是"参考房那张"，
+     * 拿它来画别的区的门口，门口那几块砖会和两侧房间的缝对不上，看着像贴歪了。
+     * d.comp 是引擎算好的（housePlan 里给每道通铺门都记了）。 */
+    const A = plan.areas[d.comp] || plan.grid;
+    const gx = Engine.latticeSegments(A.GX, plan.tile.x, plan.tile.grout, R.x, R.x + R.w);
+    const gy = Engine.latticeSegments(A.GY, plan.tile.y, plan.tile.grout, R.y, R.y + R.h);
     ctx.save();
     ctx.translate(OX + R.x * s, OY + R.y * s);
     paintTiles(ctx, Engine.toLocal(gx, R.x), Engine.toLocal(gy, R.y), s, R.w * s, R.h * s);
@@ -1107,9 +1211,14 @@ function drawPlan(plan){
 
   chipRow(ctx, chips, cssW, cssH);
 
+  // 分了一句：只有一个区时照旧说"以某间房为准起铺"（跟改动前一字不差）；
+  // 分成多个区时，"以谁为准"就不是一句话说得清的了，得按区分别报。
+  const baseTxt = plan.areas.length > 1
+    ? `${plan.areas.length} 个区，分别以${plan.areas.map((a) => `「${a.baseName}」`).join("")}为准起铺`
+    : `以「${plan.grid.baseName}」为准起铺`;
   $("#planSub").textContent =
     `全屋 ${(bb.w / 1000).toFixed(2)} × ${(bb.h / 1000).toFixed(2)} m　` +
-    `砖 ${plan.tile.x}×${plan.tile.y}　以「${plan.grid.baseName}」为准起铺`;
+    `砖 ${plan.tile.x}×${plan.tile.y}　${baseTxt}`;
 }
 
 /* ---------------- 状态栏 / 清单 / 明细 ---------------- */
@@ -1120,8 +1229,22 @@ function renderStatuses(plan){
   plan.errors.forEach((t) => msgs.push({ kind:"error", text:t }));
   (plan.warnings || []).forEach((t) => msgs.push({ kind:"warn", text:t }));
   if (plan.ok) {
-    msgs.push({ kind:"info",
-      text:`全屋一张网：以「${plan.grid.baseName}」为准起铺（${plan.grid.baseName} 左边缘的缝位 ${Math.round(plan.grid.GX)}mm）；其余房间自动跟这张网，门口不断缝` });
+    /* 单区：原句一字不动（这是最常用的户型，别为了新功能把老话改花）。
+     * 多区：得说清哪几间房是一个区、各以谁起铺——不然用户看到"过门石放了却没变化"
+     * （其实是绕经别的房间连通着）会以为工具坏了，下面那条警告也是为这个加的。 */
+    if (plan.areas.length > 1) {
+      const CIRC = "①②③④⑤⑥⑦⑧⑨";
+      const nameOf = (id) => (plan.rooms.find((r) => r.id === id) || {}).name || id;
+      const cutN = plan.doors.filter((d) => d.threshold).length;
+      msgs.push({ kind:"info",
+        text:`全屋分成 ${plan.areas.length} 个区（中间有 ${cutN} 道过门石）：`
+           + plan.areas.map((a, i) =>
+               `${CIRC[i] || (i + 1)}「${a.baseName}」区（${a.rooms.map(nameOf).join("、")}）`).join("")
+           + `。区内砖缝连通；过门石两侧各排各的，不用对上` });
+    } else {
+      msgs.push({ kind:"info",
+        text:`全屋一张网：以「${plan.grid.baseName}」为准起铺（${plan.grid.baseName} 左边缘的缝位 ${Math.round(plan.grid.GX)}mm）；其余房间自动跟这张网，门口不断缝` });
+    }
     const notched = plan.summary.notchCount;
     if (notched) msgs.push({ kind:"warn",
       text:`有 ${notched} 块砖跨门口，且门口比砖窄：这两侧要开缺口避开墙（图上按整砖算，现场照缺口切）` });
@@ -1198,6 +1321,18 @@ function update(){
   renderStatuses(plan);
   renderCutList(plan);
   renderRoomDetails(plan);
+  syncAreaHint(plan);
+}
+
+/* 「以哪间房为准起铺」下面那行小字：只有过门石真的把全屋分了区才出现。
+ * 一个区时它纯属噪音（"你选的这间管它自己那个区"——废话，全屋就一个区）。 */
+function syncAreaHint(plan){
+  const h = $("#areaHint");
+  if (!h) return;
+  const many = plan.ok && plan.areas && plan.areas.length > 1;
+  h.hidden = !many;
+  if (many) h.textContent =
+    `过门石把全屋分成了 ${plan.areas.length} 个区：这里选的房管它自己那个区，其余区各以区内最大的房间为准。`;
 }
 
 /* 「标注尺寸」的开关：裁砖尺寸线 + 过门石标签，一起显示、一起收。两个控件都走这里，
