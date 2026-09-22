@@ -33,6 +33,39 @@
 所有填写内容自动保存在**本机浏览器的 localStorage**，关掉再打开还在。换电脑或清浏览器缓存会丢，重要内容记得截图留存。
 三个工具各存各的，互不干扰。
 
+## 同类工具（2026-09-22 搜的）
+
+开工前先把「有没有人做过」搜了一遍。结论：**大部分需求都有人做过，有三条没搜到。**
+
+### 别人做过的
+
+| 类别 | 代表 | 覆盖到哪些 |
+|---|---|---|
+| 商业大软件 | [酷家乐](https://www.kujiale.cn/hc/article/3FO4K4W3YJUE)、[三维家](https://shop.3vjia.com.cn/Page/brickPaving.html)、[四维星](http://adminx.4design.cn/news/detail/artid/1573.html)、橄榄山 GLS | 起铺点、一键对缝、去边角小砖、门槛石分区、算料清单、施工图导出 |
+| 免费网页工具 | [Herron](https://alternativeto.net/software/herron/about/)、[Calcufloor](https://alternativeto.net/software/calcufloor/about/)、[finitefield 计算器](https://finitefield.org/en/tools/construction/tile-layout-calculator/) | 一间房的排砖、切割清单、薄片报警、损耗率 |
+| 手机 App | [瓷砖排版助手](https://apps.apple.com/cn/app/%E7%93%B7%E7%A0%96%E6%8E%92%E7%89%88%E5%8A%A9%E6%89%8B-%E6%8E%92%E7%A0%96%E6%8D%9F%E8%80%97%E8%AE%A1%E7%AE%972026/id6781080437)、[装师傅](https://apps.apple.com/cn/app/%E8%A3%85%E5%B8%88%E5%82%85-%E7%93%B7%E7%A0%96%E6%8E%92%E7%89%88%E5%8A%A9%E6%89%8B/id6743728392)、[TilePlan](https://apps.apple.com/my/app/tileplan-flooring-calculator/id6757448714) | 尺寸＋规格＋缝宽 → 排砖预览、整砖/切砖/损耗率，可离线 |
+| 开源 | [OpenPlan3D](https://github.com/laanlabs/openPlan3D)、[floorplan-tiler](https://github.com/asolfre/floorplan-tiler) | 画户型（≈本项目的房间布局草图），**不是排砖** |
+
+共同点：商业软件一律要注册、要联网、数据上云；免费工具都是单一功能，只管一间房。
+
+### 没搜到的三条（这个项目立在这）
+
+1. **全屋通铺的分区规则**——墙就是隔断、门洞是唯一通道、门口二选一（通铺 / 过门石）、
+   一块过门石都没放就退回全屋一张网。酷家乐的「材质连续」能做出效果，但要手动一块块连，
+   没人把它做成规则。
+2. **卫生间：蹲便器当找坡最低点 ＋ 砖围着它裁 ＋ 底排墙砖跟着起**——中英文都没搜到。
+3. **门槛低到「双击一个文件」**——单文件、不联网、数据不出本机、手机上点书签就用。
+
+### 两个值得自己点一眼的
+
+- **[herron.app](https://alternativeto.net/software/herron/about/)**——浏览器排砖，免费、不要账号，
+  功能列表几乎是本项目的加强版（画 L 形/凹口/立柱、切割清单、薄片检测、导出 PDF）。
+  ⚠️ **没能亲自打开验证**（站点挡了抓取），介绍来自目录站和一篇 2026 年的评测文章，
+  看着像 SEO 软文——真伪自辨。
+- **瓷砖排版助手**（App Store）——手机排砖＋损耗率，支持离线。
+
+> 这是一次性检索，会过时。要复查就从上面这几个名字重新搜。
+
 ## 代码
 - 开源地址（公开）：<https://github.com/niehuanhua/tile-preview>
 - 纯静态网页，每个工具一个文件搞定（无构建、无依赖、不联网）。
