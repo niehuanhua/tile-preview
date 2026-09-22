@@ -28,7 +28,8 @@ const mk = (over) => {
   const o = over || {};
   const st = {
     settings: Object.assign({ floorTile:{ preset:"800×800", w:800, h:800 }, direction:"horizontal",
-                              grout:2, baseRoom:"r1", baseMode:"center", nudgeX:0, nudgeY:0 }, o.settings || {}),
+                              grout:2, wallGap:5, baseRoom:"r1", baseMode:"center",
+                              nudgeX:0, nudgeY:0 }, o.settings || {}),
     rooms: o.rooms || [
       { id:"r1", name:"客厅", x:0,    y:0,    w:4200, h:3600 },
       { id:"r2", name:"次卧", x:4440, y:0,    w:3000, h:3600 },
@@ -48,17 +49,20 @@ const doorRight = (over) => Object.assign({ id:"d2", from:"r1", to:"r2", at:1500
  * 分区之后 plan.grid 只是"参考房那张网"，拿它算别的区的面积会得出错的数，
  * 所以这里必须按区域逐块找自己的区（房间按 rm.comp，通铺门口按 d.comp）。 */
 const areaGridFor = (plan, rect) => {
-  const same = (a, b) => near(a.x, b.x) && near(a.y, b.y) && near(a.w, b.w) && near(a.h, b.h);
-  const rm = plan.rooms.find((r) => same(r.rect, rect));
+  const same = (a, b) => !!a && !!b && near(a.x, b.x) && near(a.y, b.y) && near(a.w, b.w) && near(a.h, b.h);
+  const rm = plan.rooms.find((r) => same(r.fill, rect) || same(r.rect, rect));
   if (rm) return plan.areas[rm.comp];
-  const dr = plan.doors.find((d) => !d.threshold && same(d.rect, rect));
+  const dr = plan.doors.find((d) => !d.threshold && (same(d.fill, rect) || same(d.rect, rect)));
   if (dr) return plan.areas[dr.comp];
   return plan.grid;
 };
-// 砖面合计的独立算法（不复用引擎的 cells：Σ列宽 × Σ行宽）
+/* 砖面合计的独立算法（不复用引擎的 cells：Σ列宽 × Σ行宽）
+ * 遍历的是 plan.fill ——**真正铺砖的那几个矩形**（房间让掉靠墙缝、通铺门口沿墙厚轴外扩过），
+ * 不是 plan.region。region 为了让 areaMM 保持"这块地有多大"的毛面积而故意不缩，
+ * 拿它重算就永远差那圈 5mm。 */
 const tiledAreaOf = (plan, g) => {
   let sum = 0;
-  for (const rect of plan.region) {
+  for (const rect of plan.fill) {
     const A = areaGridFor(plan, rect);
     const sx = E.latticeSegments(A.GX, plan.tile.x, g, rect.x, rect.x + rect.w).segments;
     const sy = E.latticeSegments(A.GY, plan.tile.y, g, rect.y, rect.y + rect.h).segments;
@@ -193,12 +197,18 @@ test("房间 · 砖轴恰好铺满（砖 + 缝，两端最多各留一个缝宽�
   const g = 2;
   let ok = true, detail = "";
   p.rooms.forEach((rm) => {
-    [["x", rm.ax, rm.rect.w], ["y", rm.ay, rm.rect.h]].forEach(([nm, ax, L]) => {
+    /* ax/ay 是相对**毛矩形**（rect）左上角的局部坐标，而真正铺砖的是 fill
+     * （靠墙那几边往里让了 pad）。所以判据里的两端余量要先减掉 pad：
+     * 铺满的是 fill，不是 rect。1/3 裁砖警告那边也是同一件事，只是算法相反。 */
+    const pL = rm.fill.x - rm.rect.x, pR = (rm.rect.x + rm.rect.w) - (rm.fill.x + rm.fill.w);
+    const pT = rm.fill.y - rm.rect.y, pB = (rm.rect.y + rm.rect.h) - (rm.fill.y + rm.fill.h);
+    [["x", rm.ax, rm.rect.w, pL, pR], ["y", rm.ay, rm.rect.h, pT, pB]].forEach(([nm, ax, L, padA, padB]) => {
       const segs = ax.segments;
       const first = segs[0].start, last = segs[segs.length - 1].start + segs[segs.length - 1].width;
       const sum = segs.reduce((a, s) => a + s.width, 0);
-      if (!(first <= g + 1e-6 && L - last <= g + 1e-6 && near(sum + g * (segs.length - 1), last - first, 1e-6))) {
-        ok = false; detail = `${rm.name}.${nm}: 前${first.toFixed(1)} 后${(L - last).toFixed(1)} 砖${sum.toFixed(1)}`;
+      if (!(first - padA <= g + 1e-6 && L - padB - last <= g + 1e-6
+            && near(sum + g * (segs.length - 1), last - first, 1e-6))) {
+        ok = false; detail = `${rm.name}.${nm}: 前${(first - padA).toFixed(1)} 后${(L - padB - last).toFixed(1)} 砖${sum.toFixed(1)}`;
       }
     });
   });
@@ -452,13 +462,157 @@ test("分区 · 贴死（中间没有墙）的两间房照旧通着——墙是�
 
 test("分区 · 回归锁：没有过门石时，逐位等于分区功能上线前的数字", () => {
   // 这组数字是改动前跑出来的真实值。将来谁把"没有过门石就走老路"这条捷径改坏了，这里立刻红。
-  const p = E.housePlan(mk({}));
+  // 这里**显式关掉靠墙缝**（wallGap:0），因为这几个数字是"没有靠墙缝"那个年代的真实值；
+  // 靠墙缝本身的效果另有一条锁（下面那个测试），不要混在一起。
+  const p = E.housePlan(mk({ settings:{ wallGap:0 } }));
   check("全屋原点 GX 仍是 497", p.grid.GX === 497, `${p.grid.GX}`);
   check("全屋原点 GY 仍是 598", p.grid.GY === 598, `${p.grid.GY}`);
   check("整砖数仍是 27", p.summary.wholeCount === 27, `${p.summary.wholeCount}`);
   check("裁砖数仍是 48", p.summary.pieceCount === 48, `${p.summary.pieceCount}`);
   check("铺贴面积仍是 35653992", p.summary.tiledArea === 35653992, `${p.summary.tiledArea}`);
   check("起点仍是客厅", p.grid.baseName === "客厅", p.grid.baseName);
+  check("靠墙缝不参与格线相位：开了缝 GX/GY 也一个毫米不动",
+        E.housePlan(mk({})).grid.GX === 497 && E.housePlan(mk({})).grid.GY === 598);
+});
+
+/* ============================================================
+ * 靠墙留缝（瓷砖与墙之间那圈 5mm）
+ * ============================================================ */
+test("靠墙缝 · 开了缝之后：格线不动，只把靠墙那圈砖裁窄", () => {
+  const g5 = E.housePlan(mk({}));                 // 默认 5mm
+  const g0 = E.housePlan(mk({ settings:{ wallGap:0 } }));
+  check("整砖数、裁砖数都不变（削 5mm 不改变「它是裁砖」这个分类）",
+        g5.summary.wholeCount === g0.summary.wholeCount &&
+        g5.summary.pieceCount === g0.summary.pieceCount,
+        `${g5.summary.wholeCount}/${g5.summary.pieceCount} vs ${g0.summary.wholeCount}/${g0.summary.pieceCount}`);
+  check("砖面合计变小了（靠墙那圈不再铺砖）",
+        g5.summary.tiledArea < g0.summary.tiledArea, `${g5.summary.tiledArea} vs ${g0.summary.tiledArea}`);
+  check("铺贴面积（毛面积）一个字不变", g5.summary.areaMM === g0.summary.areaMM, `${g5.summary.areaMM}`);
+  check("老存档没这个字段 → 兜 5mm，和默认逐位一样",
+        JSON.stringify(E.housePlan(mk({ settings:{ wallGap:undefined } })).summary) ===
+        JSON.stringify(g5.summary));
+});
+
+test("靠墙缝 · 每间房四边都让出了 5mm（含没邻居的那几条边）", () => {
+  const p = E.housePlan(mk({}));
+  let ok = true, detail = "";
+  p.rooms.forEach((rm) => {
+    const pads = [rm.fill.x - rm.rect.x, (rm.rect.x + rm.rect.w) - (rm.fill.x + rm.fill.w),
+                  rm.fill.y - rm.rect.y, (rm.rect.y + rm.rect.h) - (rm.fill.y + rm.fill.h)];
+    if (!pads.every((v) => near(v, 5))) { ok = false; detail = `${rm.name}: ${pads.join("/")}`; }
+  });
+  check("默认户型四周都是墙/外墙 → 四条边各让 5mm", ok, detail);
+});
+
+test("靠墙缝 · 贴死的两间房中间不许凿洞（护坑 1）", () => {
+  // 3000+3000 贴死共边：两边各让 5mm 会在房子正中间凭空多出一条 10mm 的洞，
+  // 跨缝那块砖的 c.area 少了 10×h，整砖被判成异形。判据是"那几条边不能缩"。
+  const st = mk({ rooms:[ { id:"r1", name:"A", x:0,    y:0, w:3000, h:3000 },
+                          { id:"r2", name:"B", x:3000, y:0, w:3000, h:3000 } ],
+                  doors:[] });
+  const p = E.housePlan(st);
+  check("算得出方案", p.ok, p.errors.join("；"));
+  check("整砖 21 / 裁砖 26（和不开缝时逐位一致）",
+        p.summary.wholeCount === 21 && p.summary.pieceCount === 26,
+        `${p.summary.wholeCount}/${p.summary.pieceCount}`);
+  check("没有异形砖（凿了洞就会出现）", p.summary.cutGroups.every((c) => c.kind !== "notch"),
+        JSON.stringify(p.summary.cutGroups.filter((c) => c.kind === "notch")));
+  const A = p.rooms.find((r) => r.id === "r1"), B = p.rooms.find((r) => r.id === "r2");
+  check("A 的右边不让（贴死那条边）", near(A.fill.x + A.fill.w, A.rect.x + A.rect.w));
+  check("B 的左边不让（同一条边）", near(B.fill.x, B.rect.x));
+  check("外侧那两条边照常让 5mm", near(A.fill.x, A.rect.x + 5) && near(B.fill.x + B.fill.w, B.rect.x + B.rect.w - 5));
+});
+
+test("靠墙缝 · 跨门洞的砖仍是整砖（护坑 2 的外扩）", () => {
+  // 手对齐夹具：A x[0,1600]、B x[1800,3400]、门洞 x[1600,1800]（墙厚 200）。
+  // 跨门砖 x[1202,2002]：A 那段 398 + 门条 200 + B 那段 202 = 800 是整砖；
+  // 两边各让 5mm 后变成 393 + 200 + 197 = 790 ≠ 800 → 会掉进"开缺口"分支成为假异形砖，
+  // 门条沿墙厚轴两头各外扩 5mm 补回来 → 210，正好 800。
+  // （at=800 是扫出来的：这套尺寸下只有这一个门位能造出跨门整砖，测的就是它。）
+  const st = mk({ rooms:[ { id:"r1", name:"A", x:0,    y:0, w:1600, h:1600 },
+                          { id:"r2", name:"B", x:1800, y:0, w:1600, h:1600 } ],
+                  doors:[ { id:"d1", from:"r1", to:"r2", at:800, width:800, threshold:false } ] });
+  const p = E.housePlan(st);
+  check("算得出方案", p.ok, p.errors.join("；"));
+  check("有一块整砖直接穿过门口", p.summary.crossDoorWhole === 1, `${p.summary.crossDoorWhole}`);
+  check("没有异形砖（不外扩就会出现假 notch）",
+        p.summary.cutGroups.every((c) => c.kind !== "notch"),
+        JSON.stringify(p.summary.cutGroups.filter((c) => c.kind === "notch")));
+  const d = p.doors[0];
+  check("门条沿墙厚轴外扩了 5mm、门宽轴没扩",
+        near(d.fill.x, d.rect.x - 5) && near(d.fill.w, d.rect.w + 10) &&
+        near(d.fill.y, d.rect.y) && near(d.fill.h, d.rect.h),
+        `fill=${JSON.stringify(d.fill)} rect=${JSON.stringify(d.rect)}`);
+});
+
+test("靠墙缝 · 贴死处那道通铺门不许外扩（护 wallT>1e-6 那道闸）", () => {
+  // doorRect 在贴死时会**合法地**给出 wallT=0 的门条。这时两侧房间本来就因为贴死没让缝，
+  // 再外扩就把门条撑成 10mm 宽、和房间重复计一次面积（实测虚增 8000mm²）。
+  const st = mk({ rooms:[ { id:"r1", name:"A", x:0,    y:0, w:3000, h:3000 },
+                          { id:"r2", name:"B", x:3000, y:0, w:3000, h:3000 } ],
+                  doors:[ { id:"d1", from:"r1", to:"r2", at:1500, width:800, threshold:false } ] });
+  const p = E.housePlan(st);
+  check("算得出方案", p.ok, p.errors.join("；"));
+  const d = p.doors[0];
+  check("门条矩形原样（wallT=0 → 不外扩）",
+        near(d.fill.x, d.rect.x) && near(d.fill.w, d.rect.w), `fill=${JSON.stringify(d.fill)}`);
+  check("整砖 21 / 裁砖 26 / 无异形砖",
+        p.summary.wholeCount === 21 && p.summary.pieceCount === 26 &&
+        p.summary.cutGroups.every((c) => c.kind !== "notch"),
+        `${p.summary.wholeCount}/${p.summary.pieceCount}`);
+  check("面积没被重复计（17814468；去掉那道闸会虚增 8000）",
+        p.summary.tiledArea === 17814468, `${p.summary.tiledArea}`);
+});
+
+test("靠墙缝 · 窄房不能让区间反向（不产生 NaN）", () => {
+  const one = (w) => E.housePlan(mk({ rooms:[ { id:"r1", name:"A", x:0, y:0, w, h:2000 } ], doors:[] }));
+  const sw = (p) => JSON.stringify(p.rooms[0].ax.segments.map((s) => [s.start, s.width]));
+  const p5 = one(5), p11 = one(11);
+  check("w=5：两边都让会缩成负区间 → 一律不让", sw(p5) === "[[0,5]]", sw(p5));
+  check("w=5：砖面合计有限、不是 NaN", isFinite(p5.summary.tiledArea), `${p5.summary.tiledArea}`);
+  check("w=11：只让左边 5mm，右边归零", sw(p11) === "[[5,1]]", sw(p11));
+  check("w=11：砖面合计有限、不是 NaN", isFinite(p11.summary.tiledArea), `${p11.summary.tiledArea}`);
+});
+
+test("靠墙缝 · 1/3 警告：判据看名义宽，印出来的数字看真砖宽", () => {
+  /* 借相位的房间（不走 layoutAxis 那半格自动平移）才会踩到这条警告。
+   * 判据必须是**名义**宽（加回靠墙缝）：用真宽判会让 2.2% 本来合格的边条
+   * 凭空掉进警告里（800 砖、名义 271 够、真 266 差 0.67mm）。
+   * 但印出来的数字必须是**真**宽——用户拿着这个数去对裁砖清单，
+   * 印名义宽会比清单大整整一个缝宽，等于当面骗人。 */
+  const borrow = (L) => E.housePlan({
+    settings: { floorTile:{preset:"custom",w:800,h:800}, direction:"horizontal", grout:2,
+                wallGap:5, baseRoom:"r1", baseMode:"center", nudgeX:0, nudgeY:0,
+                showCuts:false, wall:240 },
+    seq: 3,
+    rooms: [ { id:"r1", name:"基准", x:0,    y:0, w:3300, h:3300 },
+             { id:"r2", name:"被试", x:3540, y:0, w:L,    h:L } ],
+    doors: [],
+  });
+  const p = borrow(900);
+  const rm = p.rooms[1];
+  const w = (rm.warn || []).find((x) => /不足 1\/3/.test(x));
+  const segs = rm.ax.segments;
+  const realMin = Math.min(segs[0].width, segs[segs.length - 1].width);
+  check("这条尺寸确实会触发 1/3 警告（夹具没失效才谈得上验它）", !!w, (rm.warn || []).join("；"));
+  check("警告印的是真砖宽 109，不是名义宽 114",
+        !!w && Number((w.match(/(\d+)mm/) || [])[1]) === Math.round(realMin) &&
+        Math.round(realMin) === 109, w);
+  check("同一间房的四边确实各让了 5mm（差额的来源）",
+        near(rm.fill.x - rm.rect.x, 5) && near(rm.rect.w - rm.fill.w - (rm.fill.x - rm.rect.x), 5));
+  /* 反向：判据仍走名义宽。把缝填 0，真宽=名义宽，警告内容除数字外不变。 */
+  const p0 = E.housePlan({
+    settings: { floorTile:{preset:"custom",w:800,h:800}, direction:"horizontal", grout:2,
+                wallGap:0, baseRoom:"r1", baseMode:"center", nudgeX:0, nudgeY:0,
+                showCuts:false, wall:240 },
+    seq: 3,
+    rooms: [ { id:"r1", name:"基准", x:0,    y:0, w:3300, h:3300 },
+             { id:"r2", name:"被试", x:3540, y:0, w:900,  h:900 } ],
+    doors: [],
+  });
+  const w0 = (p0.rooms[1].warn || []).find((x) => /不足 1\/3/.test(x));
+  check("缝填 0 时同一间房仍报同一条警告（说明判据没被真宽带偏）", !!w0, (p0.rooms[1].warn || []).join("；"));
+  check("缝填 0 时印的就是 114（真宽=名义宽）", !!w0 && /114mm/.test(w0), w0);
 });
 
 test("分区 · 参考房选在某个区里时，别的区改用该区最大的房间", () => {
@@ -673,6 +827,191 @@ test("分区 · 互不挨着的房间：没有过门石时仍共用一张网（�
         JSON.stringify(cut.areas.map((a) => a.rooms)));
   check("面积核算仍自洽",
         near(cut.summary.tiledArea + cut.summary.groutArea, cut.summary.areaMM, 0.01));
+});
+
+/* ============================================================================
+ * 起铺点（起铺角）
+ *
+ * 一件真事：现场是**能不裁砖就不裁砖**。同一块砖如果正好从墙角起步，
+ * 那相邻的两面墙就都是整砖，一分钱不花。
+ *
+ * 「让出墙缝」的读法（欢欢拍板的乙）：格线原点落在**离墙 5mm 的弹线上**，
+ * 那 5mm 的缝留在瓷砖和墙之间——所以角上那块是**完整的 800**，不是 795。
+ * 裁的不是角砖，是**对面墙**那块。
+ *
+ * 两个轴**各自决定**（欢欢拍板）：x 能起铺角就起，y 该退回居中就退，
+ * 互不牵连。这不是将就——耦合起来会让"至少一面墙是整砖"的命中率从 88% 掉到 43%。
+ * ==========================================================================*/
+
+const TILE = 800, GRT = 2, GAPMM = 5, T3 = TILE / 3, SLIVER = 10;
+
+/* 一间房、走起铺角。房间钉在原点，格线与 fill 的坐标能直接对上。 */
+const cornerRoom = (w, h, corner, over) => E.housePlan({
+  settings: Object.assign({ floorTile:{ preset:"custom", w:TILE, h:TILE }, direction:"horizontal",
+                            grout:GRT, wallGap:GAPMM, baseRoom:"r1", baseMode:"corner",
+                            startCorner:corner || "tl", nudgeX:0, nudgeY:0,
+                            showCuts:false, wall:240 }, over || {}),
+  rooms: [ { id:"r1", name:"客厅", x:0, y:0, w, h } ],
+  doors: [],
+});
+
+test("起铺角 · 角上那块是整砖 800，贴在离墙 5mm 的弹线上（不是被切过的 795）", () => {
+  /* 判据一律相对 fill，不写死绝对坐标：真值变了格线原点也不该跟着变 */
+  let bad = [];
+  for (const corner of ["tl", "tr", "bl", "br"]) {
+    for (const [w, h] of [[3211,2950],[4000,4000],[3211,3211],[1619,1619],[2411,2404],[3300,3211]]) {
+      const p = cornerRoom(w, h, corner);
+      const rm = p.rooms[0], c = p.areas[0].corner;
+      for (const ax of ["x", "y"]) {
+        if (c[ax].at !== "corner") continue;              // 退回居中的轴不归这条管
+        const segs = ax === "x" ? rm.gx.segments : rm.gy.segments;
+        const f0 = ax === "x" ? rm.fill.x : rm.fill.y;
+        const fw = ax === "x" ? rm.fill.w : rm.fill.h;
+        const atMin = ax === "x" ? (corner === "tl" || corner === "bl")
+                                 : (corner === "tl" || corner === "tr");
+        const s = atMin ? segs[0] : segs[segs.length - 1];
+        const edgeErr = atMin ? Math.abs(s.start - f0)
+                              : Math.abs(s.start + s.width - (f0 + fw));
+        if (s.cut || !near(s.width, TILE) || edgeErr > 1e-6)
+          bad.push(`${corner} 轴${ax} ${w}×${h}: ${Math.round(s.width)}${s.cut ? "(裁)" : ""} 离墙差 ${edgeErr.toFixed(1)}`);
+      }
+    }
+  }
+  check("四个角 × 六个尺寸：角上那块都恰好 800、不裁、紧贴 5mm 弹线", bad.length === 0, bad.slice(0, 5).join(" | "));
+});
+
+test("起铺角 · 对面墙的零头：<10mm 忽略，10mm 到 1/3 砖之间退回居中", () => {
+  /* 10mm 那头比的是**真砖宽**（地上看得见的那条），不是加回靠墙缝的名义宽。
+   * 拿名义宽比会漏掉最典型的一例：1619 的房间真零头 5mm（该忽略），
+   * 加回 5mm 缝正好凑成 10，比出来照样报警——把说好要忽略的零头又喊一遍。 */
+  const r1 = (x) => Math.round(x * 10) / 10;
+  let bad = [], seen = { corner:0, center:0, tiny:0 };
+  for (let L = 1500; L <= 6000; L++) {
+    const c = cornerRoom(L, L, "tl").areas[0].corner.x;
+    if (c.at === "corner") {
+      seen.corner++;
+      if (c.farCut) {
+        if (!(c.far < SLIVER - 1e-9 || c.far >= T3 - 1e-9))
+          bad.push(`净长${L} 留着起铺角，可对面墙只剩 ${r1(c.far)}mm（落在该退回的区间里）`);
+        if (c.far < SLIVER) seen.tiny++;
+      } else if (!near(c.far, TILE)) {
+        bad.push(`净长${L} 对面墙没裁，可那块的宽是 ${r1(c.far)} 不是 800`);
+      }
+    } else {
+      seen.center++;
+      const v = Number((String(c.why).match(/(\d+)mm/) || [])[1]);
+      if (!(v >= SLIVER - 1 && v < T3 + 1))
+        bad.push(`净长${L} 退回居中，理由却是「${c.why}」`);
+    }
+  }
+  check("1500–6000 逐毫米扫：每根轴要么留角且零头 <10mm 或 ≥1/3 砖，要么退回居中且在理",
+        bad.length === 0, bad.slice(0, 4).join(" | "));
+  check("三种结果都出现过（扫描没退化成一边倒）",
+        seen.corner > 0 && seen.center > 0 && seen.tiny > 0, JSON.stringify(seen));
+
+  // 边界两侧的钉子，钉住"恰好 10"和"恰好 1/3"这两个数字
+  const at = (L) => cornerRoom(L, L, "tl").areas[0].corner.x;
+  check("1619 → 零头 5mm，忽略，留角",     at(1619).at === "corner" && near(at(1619).far, 5), JSON.stringify(at(1619)));
+  check("1624 → 零头 10mm，正好到线，退回居中", at(1624).at === "center", JSON.stringify(at(1624)));
+  check("3211 → 零头 795mm，留角",          at(3211).at === "corner" && near(at(3211).far, 795), JSON.stringify(at(3211)));
+  check("3300 → 零头 82mm，退回居中",        at(3300).at === "center", JSON.stringify(at(3300)));
+  check("4000 → 零头 782mm，留角",          at(4000).at === "corner" && near(at(4000).far, 782), JSON.stringify(at(4000)));
+});
+
+test("起铺角 · 两轴各自决定，互不牵连", () => {
+  /* 中间态（一轴起铺角、一轴居中）**只**因为"各自决定"才存在。
+   * 谁要图省事把两个轴绑在一起，这条会立刻红。 */
+  const xy = cornerRoom(3211, 3300, "tl").areas[0].corner;
+  check("3211×3300 → 左右起铺角、上下退回居中",
+        xy.x.at === "corner" && xy.y.at === "center", `${xy.x.at}/${xy.y.at}`);
+  const yx = cornerRoom(3300, 3211, "tl").areas[0].corner;
+  check("3300×3211 → 正好反过来（顺序没写反）",
+        yx.x.at === "center" && yx.y.at === "corner", `${yx.x.at}/${yx.y.at}`);
+});
+
+test("起铺角 · 退回居中的那根轴，和真·居中模式逐位相同", () => {
+  /* 「退回居中」必须是**真的**居中，不能是"居中的另一种相位" */
+  let bad = [];
+  for (const [w, h] of [[3211,3300],[3300,3211],[4000,3300],[2600,2950],[3300,3300],[1610,3300]]) {
+    const pc = cornerRoom(w, h, "tl"), pm = cornerRoom(w, h, "tl", { baseMode:"center" });
+    const c = pc.areas[0].corner;
+    for (const ax of ["x", "y"]) {
+      if (c[ax].at === "corner") continue;
+      const a = ax === "x" ? pc.rooms[0].gx.segments : pc.rooms[0].gy.segments;
+      const b = ax === "x" ? pm.rooms[0].gx.segments : pm.rooms[0].gy.segments;
+      if (JSON.stringify(a) !== JSON.stringify(b)) bad.push(`${w}×${h} 轴${ax}`);
+    }
+  }
+  check("凡退回居中的轴，砖格与居中模式一模一样", bad.length === 0, bad.join(" | "));
+});
+
+test("起铺角 · 窄条警告闭嘴（说好忽略的零头就别再喊一遍）", () => {
+  /* 1619 那间房起铺角之后，对面墙真的只剩 5mm。修之前它照报
+   * 「边缘裁砖最窄 5mm（不足 1/3 砖），请现场定夺」——把说好要忽略的东西又喊了一遍。
+   * 反向由上面「靠墙缝 · 1/3 警告」那条锁兜着：109mm 那种真零头照样要报。 */
+  const warnOf = (w, h) => (cornerRoom(w, h, "tl").rooms[0].warn || []).filter((x) => /不足 1\/3/.test(x));
+  check("1619×1619 起铺角：零头 5mm，不报警", warnOf(1619, 1619).length === 0, warnOf(1619, 1619).join("；"));
+  check("4000×4000 起铺角：本来就没零头，不报警", warnOf(4000, 4000).length === 0, warnOf(4000, 4000).join("；"));
+  check("3211×3211 起铺角：零头 795mm 够宽，不报警", warnOf(3211, 3211).length === 0, warnOf(3211, 3211).join("；"));
+});
+
+test("起铺角 · 整网偏移之后，就不再声称角上贴的是整砖", () => {
+  /* nudge 是在相位定完之后才加到 GX 上的，整张网平移 = 起铺角被带走。
+   * 相位**不**改回去（师傅要整体挪就以师傅为准），但报告必须说实话——
+   * 不然界面上会出现「左墙贴的是整砖」，而图上明明错开一截。 */
+  const plain = cornerRoom(3211, 2950, "tl");
+  const nudged = cornerRoom(3211, 2950, "tl", { nudgeX:100 });
+  const c0 = plain.areas[0].corner, c1 = nudged.areas[0].corner;
+  check("没填偏移时，两轴都报起铺角", c0.x.at === "corner" && c0.y.at === "corner", `${c0.x.at}/${c0.y.at}`);
+  check("整网右移 100 之后，x 轴改报 nudge、y 轴不受牵连",
+        c1.x.at === "nudge" && c1.y.at === "corner", `${c1.x.at}/${c1.y.at}`);
+  check("理由里写明了是整网右移 100mm", /整网右移 100mm/.test(String(c1.x.why)), String(c1.x.why));
+  check("相位本身没被改掉（GX 就是原地加 100）",
+        near(nudged.areas[0].GX, plain.areas[0].GX + 100), `${nudged.areas[0].GX} vs ${plain.areas[0].GX}`);
+  check("画面上靠左墙那块确实不再是整砖（这条才是实话的根据）",
+        nudged.rooms[0].gx.segments[0].cut && nudged.rooms[0].gx.segments[0].width < TILE,
+        JSON.stringify(nudged.rooms[0].gx.segments[0]));
+  const up = cornerRoom(3211, 2950, "tl", { nudgeY:-40 }).areas[0].corner;
+  check("y 轴负向偏移说的是「上移」，不是「下移」",
+        up.y.at === "nudge" && /整网上移 40mm/.test(String(up.y.why)), String(up.y.why));
+});
+
+test("起铺角 · 老存档里没有 startCorner 字段时，钉死在左上角", () => {
+  /* baseMode 是 "corner" 却没有角时，basePhase 会掉进 layoutAxis("corner") 那个分支
+   * ——那不是居中、也不是起铺角，是"靠一边"，静默走错版。
+   * 与其让存档的脏字段决定用哪一版，不如钉死在左上。 */
+  // 从头搭一份**脏存档**：baseMode 是 corner，但存档年代久远、没有 startCorner 这个字段
+  const dirty = { floorTile:{ preset:"custom", w:TILE, h:TILE }, direction:"horizontal",
+                  grout:GRT, wallGap:GAPMM, baseRoom:"r1", baseMode:"corner",
+                  nudgeX:0, nudgeY:0, showCuts:false, wall:240 };
+  const rooms = [{ id:"r1", name:"客厅", x:0, y:0, w:3211, h:2950 }];
+  const p = E.housePlan({ settings: dirty, rooms, doors: [] });
+  const q = cornerRoom(3211, 2950, "tl");
+  check("脏存档也走得出起铺角", !!p.areas[0].corner, JSON.stringify(p.areas[0].corner));
+  check("结果与显式 tl 逐位相同",
+        p.areas[0].GX === q.areas[0].GX && p.areas[0].GY === q.areas[0].GY &&
+        p.areas[0].corner.x.at === q.areas[0].corner.x.at,
+        `${p.areas[0].GX}/${p.areas[0].GY} vs ${q.areas[0].GX}/${q.areas[0].GY}`);
+});
+
+test("起铺角 · 不碰老路径：没传 opt、或 mode 不是 corner 时结果逐位不变", () => {
+  let drift = [];
+  for (let L = 1500; L <= 6000; L += 137) {
+    const a = E.basePhase([{ id:"a", name:"基准", x:0, y:0, w:L, h:L }], "a",
+                          { x:TILE, y:TILE }, GRT, "center", { x:0, y:0 });
+    const b = E.basePhase([{ id:"a", name:"基准", x:0, y:0, w:L, h:L }], "a",
+                          { x:TILE, y:TILE }, GRT, "center", { x:0, y:0 },
+                          { corner:"tl", gap:GAPMM, sliver:SLIVER });
+    if (a.GX !== b.GX || a.GY !== b.GY || b.corner !== null) drift.push(L);
+  }
+  check("传了 opt 但 mode=center：老的居中结果一个数没动，也**不**冒出一个角",
+        drift.length === 0, drift.slice(0, 5).join(", "));
+  const one = [{ id:"a", name:"基准", x:0, y:0, w:3211, h:2950 }];
+  const e = E.basePhase(one, "a", { x:TILE, y:TILE }, GRT, "edge", { x:0, y:0 });
+  /* 不能拿 GX===0 判"靠一边"：1/3 那条老规矩照样会平移半格。
+   * 3211 = 4×802−2 余 5mm，5 < 800/3 → 相位 +802/2 = 401，这就是「靠一边」这一版的值。 */
+  check("mode=edge 走的还是「靠一边」（相位 401 = 靠边 0 + 1/3 半格），没被起铺角借走",
+        e.corner === null && near(e.GX, 401), `corner=${JSON.stringify(e.corner)} GX=${e.GX}`);
 });
 
 console.log(`\n结果：${_pass} 通过，${_fail} 失败`);

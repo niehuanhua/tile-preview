@@ -78,6 +78,8 @@ button{cursor:pointer; touch-action:manipulation}
 .set-label{display:block; font-size:13px; font-weight:700; color:var(--ink-soft); margin-bottom:6px; letter-spacing:.3px}
 /* 只在墙／过门石真把全屋分了区时才出现（见 syncAreaHint）——一个区时它没有信息量 */
 .set-hint{margin:-2px 0 12px; font-size:12px; color:var(--ink-soft); line-height:1.45}
+/* 提示行里的小按钮：.chip 是 42px 高的大块头，塞进一行小字里会把行撑开 */
+.hint-btn{margin-left:6px; padding:3px 9px; min-height:0; font-size:12px; border:1px solid var(--line); background:var(--chip); border-radius:7px; color:var(--accent); font-weight:700}
 .chips{display:flex; flex-wrap:wrap; gap:8px}
 .chip{border:1px solid var(--line); background:var(--chip); border-radius:8px; padding:8px 12px; min-height:42px; font-size:15px; font-variant-numeric:tabular-nums;}
 .chip.on{background:var(--accent-soft); border-color:var(--accent); color:var(--accent); font-weight:700}
@@ -171,15 +173,31 @@ select{min-height:40px; padding:7px 8px; border:1px solid var(--line); border-ra
             <button data-v="1">1 mm</button><button data-v="2">2 mm</button><button data-v="2.5">2.5 mm</button><button data-v="3">3 mm</button>
           </div>
         </div>
+        <!-- 靠墙缝：瓷砖不能顶着墙贴，靠墙那圈要裁窄几毫米（墙不直、砖不方、还要留伸缩量）。
+             静默兜底是 5mm，清空输入框就是回到 5；想不留缝得**显式填 0**（parseMM 只吃 \d+）。
+             它不参与格线相位——整张砖网一个毫米都不动，只是把靠墙那圈砖裁窄。 -->
+        <div class="set-row"><span class="set-label">靠墙缝（mm）</span>
+          <input type="text" inputmode="numeric" id="wallGap" placeholder="5">
+        </div>
         <div class="set-row"><span class="set-label">以哪间房为准起铺</span>
           <select id="baseRoom"></select>
         </div>
         <p class="set-hint" id="areaHint" hidden></p>
         <div class="set-row"><span class="set-label">起铺方式</span>
           <div class="seg" id="baseModeSeg">
-            <button data-v="center">居中对称</button><button data-v="edge">靠一边</button>
+            <button data-v="corner">起铺角</button><button data-v="center">居中对称</button><button data-v="edge">靠一边</button>
           </div>
         </div>
+        <!-- 起铺角：只在选了「起铺角」时才出现（默认居中对称，那一版不打扰）。
+             四个角指的是**基准房**的四个角；本工具的画布没有 y 翻转，
+             所以「上」= y 小的一侧、「左」= x 小的一侧，跟图上看到的一致。 -->
+        <div class="set-row" id="cornerRow" hidden>
+          <span class="set-label">起铺角（<span id="cornerBase">基准房</span>的角）</span>
+          <div class="seg" id="cornerSeg">
+            <button data-v="tl">左上</button><button data-v="tr">右上</button><button data-v="bl">左下</button><button data-v="br">右下</button>
+          </div>
+        </div>
+        <p class="set-hint" id="cornerHint" hidden><span id="cornerHintText"></span><button class="hint-btn" id="cornerSwap" type="button">换一个</button></p>
         <!-- 整网偏移跟砖规格无关（引擎 basePhase 无条件吃这两个值），所以是普通常显行，
              不用 .custom-inputs 那种「默认藏起来、由 JS 放出来」的写法 -->
         <div class="set-row"><span class="set-label">整网右移（mm）</span>
@@ -204,6 +222,7 @@ select{min-height:40px; padding:7px 8px; border:1px solid var(--line); border-ra
         <p class="plot-empty" id="planEmpty">先把地砖规格和房间尺寸填好</p>
       </div>
       <div class="plan-legend">浅色缝＝砖缝（同一个区内是连通的）ㆍ白框＝墙（房间之间的空档，<b>墙就是隔断</b>：要连通就在这道墙上开个门洞）ㆍ蓝虚线＝通铺门口（缝穿过去）ㆍ红实线＝过门石门口（这里断开，两边各排各的）<br>
+        靠墙那一圈砖会自动裁窄 <b id="legendGap">5</b>mm（墙不一定直、砖不一定方，靠墙得留一道缝），在设置里改；两间房贴死（中间没墙）的那条边不留。<br>
         这张图只作看图用。<b>要挪房间，去下面「房间」卡片里改「离原点左 / 离原点上」的数字</b>，改完图上立刻跟着变。</div>
       <div class="statuses" id="statuses"></div>
     </section>
@@ -259,6 +278,10 @@ const Engine = (() => {
 
   const numOr = (v, d) => (typeof v === "number" && isFinite(v)) ? v : d;
   const mod = (v, m) => ((v % m) + m) % m;
+
+  /* 窄到这个程度的边条当没有：现场用一块砖的厚度就能糊过去，
+   * 为它报警、为它退回居中都是打扰。起铺角和 1/3 警告共用这一个阈值。 */
+  const CUT_IGNORE_MM = 10;
 
   const laidDims = (spec, direction) => {
     const a = Math.min(spec.w, spec.h), b = Math.max(spec.w, spec.h);
@@ -368,19 +391,51 @@ const Engine = (() => {
   /* ---- 起铺基准：一个区一张砖网的格线原点（全局坐标）----
    * 以"参考房"为准跑一次 layoutAxis（含"边缘裁砖 ≥ 1/3"那条老规矩），
    * 再折算到全局坐标；nudge 是师傅的整体微调。
-   * 同一个区里所有房间都由这**一个**原点推出来，通缝就是这么来的。 */
-  const basePhase = (rooms, baseId, t, g, mode, nudge) => {
+   * 同一个区里所有房间都由这**一个**原点推出来，通缝就是这么来的。
+   *
+   * opt（第 7 个参数，老调用不传 = 行为逐位不变）：
+   *   { corner:"tl"|"tr"|"bl"|"br", gap, sliver } —— mode==="corner" 时用。
+   *   角是**基准房**的四个角之一；gap 取靠墙缝，sliver 是"忽略不计"的窄条阈值。
+   *   nudge 是在相位定完之后才加的，所以填了 nudge 就等于放弃起铺角
+   *   （师傅要整体挪，那就以师傅为准）。
+   *   返回值 corner.x/.y 的 at 有三种：corner 成立 / center 自动退回居中 /
+   *   nudge 相位没动但整网被挪走了（此时 far/farCut 是**没挪之前**的数，别拿去说事）。 */
+  const basePhase = (rooms, baseId, t, g, mode, nudge, opt) => {
     const list = (rooms || []).filter(r => { const rr = roomRect(r); return rr.w > 0 && rr.h > 0; });
     if (!list.length || !t || !(t.x > 0) || !(t.y > 0)) return { ok:false };
     const base = list.find(r => r.id === baseId) || list[0];
     const br = roomRect(base);
-    const ax = layoutAxis(br.w, t.x, g, mode || "center");
-    const ay = layoutAxis(br.h, t.y, g, mode || "center");
+    const o = opt || {};
+    let ax, ay, cx = null, cy = null;
+    if (mode === "corner" && o.corner) {
+      const gap = Math.max(0, numOr(o.gap, 0));
+      const sliver = Math.max(0, numOr(o.sliver, 10));
+      // sideGaps 要的是 [{id, rect}]，而 list 里是原始房间对象
+      const rects = list.map(r => ({ id:r.id, rect:roomRect(r) }));
+      const pads = sideGaps(br, rects, base.id, gap);      // [左,右,上,下]
+      const c = o.corner;
+      const rX = cornerAxis(br.w, t.x, g, pads[0], pads[1], c === "tr" || c === "br", sliver);
+      const rY = cornerAxis(br.h, t.y, g, pads[2], pads[3], c === "bl" || c === "br", sliver);
+      ax = rX.ax; ay = rY.ax; cx = rX; cy = rY;
+    } else {
+      ax = layoutAxis(br.w, t.x, g, mode || "center");
+      ay = layoutAxis(br.h, t.y, g, mode || "center");
+    }
+    /* nudge 是在这**之后**才加到 GX/GY 上的（下面两行），所以整网一挪，
+     * 起铺角那面墙就不再贴整砖了——相位没变，是整张网平移了。
+     * 这里**不**改相位（"师傅要整体挪，那就以师傅为准"），但要把话说明白：
+     * 界面照着一份没挪过的算稿宣称"左墙贴的是整砖"，而屏幕上明明错开一截，
+     * 那就是工具在说谎，比不告诉还糟。 */
+    const nx = numOr(nudge && nudge.x, 0), ny = numOr(nudge && nudge.y, 0);
+    const shifted = (v, dir) => `整网${v > 0 ? dir[0] : dir[1]}移 ${Math.abs(v)}mm`;
+    if (cx && nx !== 0) cx = { ...cx, at:"nudge", why:shifted(nx, "右左") };
+    if (cy && ny !== 0) cy = { ...cy, at:"nudge", why:shifted(ny, "下上") };
     return {
       ok:true, baseId:base.id, baseName:roomName(base), baseRect:br,
-      GX: br.x + ax.phase + numOr(nudge && nudge.x, 0),
-      GY: br.y + ay.phase + numOr(nudge && nudge.y, 0),
+      GX: br.x + ax.phase + nx,
+      GY: br.y + ay.phase + ny,
       baseAx: ax, baseAy: ay,
+      corner: (cx && cy) ? { x:cx, y:cy } : null,
     };
   };
 
@@ -404,6 +459,34 @@ const Engine = (() => {
     const cutLeft  = segments.length && segments[0].cut ? segments[0].width : null;
     const cutRight = segments.length && segments[segments.length - 1].cut ? segments[segments.length - 1].width : null;
     return { segments, phase:G, step:p, cutLeft, cutRight };
+  };
+
+  /* ---- 一个轴上的"起铺角"相位（读法乙：格线钉在离墙那条弹线上）----
+   * 现场工序：先在离墙 padAt 的地方弹一条线，从这条线起排整砖。
+   * 于是**角上那块是整砖**——靠墙缝留在砖和墙之间，砖一个毫米都不用裁。
+   * 代价落在对面墙：那块是该裁的零头。零头太窄（[sliver, t/3)）最难看，
+   * 这个轴就退回居中；窄到看不见（< sliver）就当她说的"忽略不计"，照样用起铺角。
+   *
+   * 两个轴**各自判断**：x 退回居中，不影响 y 继续用起铺角。
+   *
+   * atMax=true 表示角在最大侧（右墙 / 下墙，本工具没有 y 翻转，下 = y 大）。
+   * 注意格线原点是在**缩过的** [a,b] 上定的，而 layoutAxis 是按房间整长定的相位——
+   * 这不是笔误，正是"乙"读法换来整砖的原因；居中模式那条老路一个字节没动。 */
+  const cornerAxis = (L, t, g, padAt, padFar, atMax, sliver) => {
+    const center = (why) => ({ ax: layoutAxis(L, t, g, "center"), at:"center", far:null, farCut:false, why });
+    if (!(L > 0) || !(t > 0)) return center("尺寸无效");
+    const a = Math.max(0, numOr(padAt, 0)), b = L - Math.max(0, numOr(padFar, 0));
+    if (!(b - a > 1e-9)) return center("净宽不足");
+    const origin = atMax ? b - t : a;                      // 乙：把靠墙缝让出来
+    const segs = latticeSegments(origin, t, g, a, b).segments;
+    if (!segs.length) return center("排不下");
+    const cs = atMax ? segs[segs.length - 1] : segs[0];    // 角上那块
+    const fs = atMax ? segs[0] : segs[segs.length - 1];    // 对面墙那块
+    // 房间比一块砖还窄：角上那块自己就是裁砖，"起铺角"名不副实，退居中走窄房分支
+    if (cs.cut) return center("房间不够一块砖");
+    const far = fs.width, farCut = !!fs.cut;
+    if (farCut && far >= sliver - 1e-9 && far < t / 3) return center(`对面墙只剩 ${Math.round(far)}mm`);
+    return { ax: layoutAxis(L, t, g, "center", origin), at:"corner", far, farCut, why:null };
   };
 
   /* 把全局轴转成"房间局部轴"（绘图用：坐标回到 0 起） */
@@ -466,6 +549,42 @@ const Engine = (() => {
       ? { x:gap[0], y:c - width / 2, w:wallT, h:width }
       : { x:c - width / 2, y:gap[0], w:width, h:wallT };
     return { ok:true, rect, vertical, wallT, span:{ lo, hi }, at:c };
+  };
+
+  /* ---- 靠墙那圈留缝：这条边到底要不要缩 ----
+   * 施工上瓷砖不能顶着墙贴（墙不直、砖不方、还要留伸缩量），靠墙那圈要裁窄几毫米。
+   * 返回 [左, 右, 上, 下] 四个 pad（mm），房间的铺贴区间 = 房间矩形各边往里让这么多。
+   *
+   * **只有【墙】才让。** 两间房贴死（wallT ≈ 0，中间没有墙，比如客餐厅一体）的那条边
+   * 绝对不能让——两边各让 5mm 会在房子正中间凭空多出一条 10mm 的洞，
+   * 而 addCell 是按格线序号**累加**面积的：少了这 10×h，那块砖的 c.area 就不等于整砖，
+   * 会被判成"异形砖"塞进下料清单。判断口径一律走 wallBetween + isFlush，
+   * 别在这儿另写一套"挨不挨着"——那是全工具唯一口径，各写一遍迟早会漂。
+   *
+   * 方向直接复用 wallBetween 内部用过的同款比较（含同样的 1e-6），不另算一套，免得漂。
+   * 循环只可能把 pad 归零、不会再加回来，所以房间清单的顺序不影响结果。
+   *
+   * 已知限制：同一条边一半贴死、一半是墙时，按【贴死优先】整条边都不让。
+   *   反过来"墙优先"会把贴死那半段凿出槽，又变回上面那个假异形砖。
+   *   精确解要把房间切成几个子矩形，得废掉"一房一轴"的 ax/ay 接口、绘图重写——不做。 */
+  const sideGaps = (R, rooms, selfId, gap) => {
+    const o4 = [gap, gap, gap, gap];
+    if (!(gap > 0)) return o4;
+    for (const o of rooms) {
+      if (o.id === selfId) continue;
+      const O = o.rect, w = wallBetween(R, O);
+      if (!w || !isFlush(w.wallT)) continue;          // 有墙厚 → 正常留缝
+      if (w.vertical) {
+        if (O.x >= R.x + R.w - 1e-6) o4[1] = 0;
+        else if (O.x + O.w <= R.x + 1e-6) o4[0] = 0;
+      } else {
+        if (O.y >= R.y + R.h - 1e-6) o4[3] = 0;
+        else if (O.y + O.h <= R.y + 1e-6) o4[2] = 0;
+      }
+    }
+    if (R.w <= gap * 2) { o4[0] = 0; o4[1] = 0; }     // 窄房保护：两边都让会缩成负区间
+    if (R.h <= gap * 2) { o4[2] = 0; o4[3] = 0; }
+    return o4;
   };
 
   /* ---- 分区：把全屋切成几张各排各的砖网 ----
@@ -545,7 +664,12 @@ const Engine = (() => {
     if (!spec || !(spec.w > 0) || !(spec.h > 0)) { out.errors.push("先在顶部选地砖规格（没规格就不出图）"); return out; }
     const t = laidDims(spec, s.direction);
     const g = numOr(s.grout, 2);
-    out.tile = { x:t.x, y:t.y, grout:g };
+    /* 靠墙缝（默认 5mm）。老存档里没这个字段 → numOr 兜 5，改了就能自动生效，不用迁移。
+     * 注意：这道缝**不参与**格线相位的计算——layoutAxis 照旧按 R.w/R.h 整长算，
+     * 只是最后把铺贴区间两头各收进来 wallGap。这样 GX/GY 一个毫米都不动，
+     * 老户型（wallGap 填 0）逐位不变。别"顺手"把它加进 basePhase。 */
+    const wallGap = Math.max(0, numOr(s.wallGap, 5));
+    out.tile = { x:t.x, y:t.y, grout:g, wallGap };
 
     const all = ((state && state.rooms) || []).map(r => ({ ...r, rect:roomRect(r) }));
     const rooms = all.filter(r => r.rect.w > 0 && r.rect.h > 0);
@@ -586,10 +710,14 @@ const Engine = (() => {
        * （sort 是稳定的，并列时自然保留 rs 的原顺序，而 rs 就是清单顺序）。 */
       const pick = rs.find(r => r.id === s.baseRoom)
                 || rs.slice().sort((a, b) => (b.rect.w * b.rect.h) - (a.rect.w * a.rect.h))[0];
-      const ab = basePhase(rs, pick.id, t, g, s.baseMode, { x:s.nudgeX, y:s.nudgeY });
+      /* startCorner 兜个 "tl"：baseMode 是 "corner" 却没有角时，basePhase 会掉进
+       * layoutAxis("corner") 那个分支——那不是居中、也不是起铺角，是"靠一边"，静默走错版。
+       * 与其让存档的脏字段决定用哪一版，不如钉死在左上。 */
+      const ab = basePhase(rs, pick.id, t, g, s.baseMode, { x:s.nudgeX, y:s.nudgeY },
+                           { corner:s.startCorner || "tl", gap:wallGap, sliver:CUT_IGNORE_MM });
       if (!ab.ok) return out;
       out.areas.push({ id:out.areas.length, baseId:ab.baseId, baseName:ab.baseName,
-                       GX:ab.GX, GY:ab.GY, rooms:list });
+                       GX:ab.GX, GY:ab.GY, rooms:list, corner:ab.corner });
     }
     const compOf = (id) => out.areas.findIndex(a => a.rooms.includes(id));
     /* grid 是"参考房那个区"的网。单区时它就是全屋那张网，老代码照旧能用；
@@ -614,8 +742,14 @@ const Engine = (() => {
     // 每间房：把自己区间喂进**本区**那张网（这是"通铺"的关键，缝在门口自然连成一条线）
     for (const r of rooms) {
       const R = r.rect, ci = compOf(r.id), A = out.areas[ci];
-      const gx = latticeSegments(A.GX, t.x, g, R.x, R.x + R.w);
-      const gy = latticeSegments(A.GY, t.y, g, R.y, R.y + R.h);
+      /* 铺贴区间 = 房间矩形各边往里让 pad（靠墙的那几边）。
+       * 格线原点 A.GX/A.GY 照旧是全区共用的那一个，只是"铺到哪儿为止"收进来了——
+       * 所以整砖网不动、只把靠墙那圈砖裁窄，跟现场"弹好线、靠墙现场裁"是一个道理。 */
+      const pad = sideGaps(R, rooms, r.id, wallGap);
+      const fill = { x:R.x + pad[0], y:R.y + pad[2],
+                     w:R.w - pad[0] - pad[1], h:R.h - pad[2] - pad[3] };
+      const gx = latticeSegments(A.GX, t.x, g, fill.x, fill.x + fill.w);
+      const gy = latticeSegments(A.GY, t.y, g, fill.y, fill.y + fill.h);
       const tiles = [];
       for (const sy of gy.segments) for (const sx of gx.segments) {
         tiles.push({ x:sx.start, y:sy.start, w:sx.width, h:sy.width, gi:sx.i, gj:sy.i,
@@ -623,16 +757,43 @@ const Engine = (() => {
         addCell(ci, sx.i, sy.i, { x:sx.start, y:sy.start, w:sx.width, h:sy.width }, "room");
       }
       const warn = [];
-      const cutLo = Math.min(
-        gx.cutLeft != null ? gx.cutLeft : Infinity, gx.cutRight != null ? gx.cutRight : Infinity,
-        gy.cutLeft != null ? gy.cutLeft : Infinity, gy.cutRight != null ? gy.cutRight : Infinity);
-      if (isFinite(cutLo) && cutLo < Math.min(t.x, t.y) / 3)
-        warn.push(`边缘裁砖最窄 ${Math.round(cutLo)}mm（不足 1/3 砖），请现场定夺`);
+      /* 1/3 规矩比的是**内缩前**的边条宽度（把靠墙缝加回去），不是裁完的净宽。
+       * 理由是这条规矩管的是"格线定得合不合适"，而格线是 layoutAxis 按房间整长定的；
+       * 靠墙那 5mm 是每条边都有的固定施工余量，不该把一条本来合格的边条推进警告里。
+       * （比如 800 砖、房间 4000 长：名义边条 400 ≥ 266.7 是合格的，
+       *   裁完 395 也合格；但名义 271 的边裁完 266 就会差 0.67mm 踩线。
+       *   实测扫 33 万组尺寸约 2.2% 会踩，全是这种毫厘之差。）
+       * 千万别改成"让 layoutAxis 拿缩过的长度重跑 1/3 规矩"——那会挪走格线相位，
+       * GX/GY 全变，几条回归锁一起废。 */
+      const cutCand = [
+        gx.cutLeft  != null ? [gx.cutLeft,  pad[0]] : null,
+        gx.cutRight != null ? [gx.cutRight, pad[1]] : null,
+        gy.cutLeft  != null ? [gy.cutLeft,  pad[2]] : null,
+        gy.cutRight != null ? [gy.cutRight, pad[3]] : null,
+      ].filter(Boolean);
+      if (cutCand.length) {
+        // 判据用**名义**宽（加回靠墙缝），印出来的数字用**真**宽（要裁的那块砖）。
+        const nominal = Math.min(...cutCand.map((c) => c[0] + c[1]));
+        const real    = Math.min(...cutCand.map((c) => c[0]));
+        /* 窄过 CUT_IGNORE_MM 的边条按"没有"处理——起铺角那一版会大量产生这种
+         * 6~9mm 的对面墙零头，为它跳一条"请现场定夺"是把人往错路上指。
+         *
+         * 两头用的是两个不同的数，这是故意的：
+         *   t/3 那头上界比 nominal（名义宽），跟格线是怎么定的口径一致；
+         *   10mm 这头比 real（地上那条真边条）——因为"10mm 以下忽略不计"说的是
+         *   师傅**看得见**的那条边。拿 nominal 比会漏掉最典型的那个 case：
+         *   起铺角 1619 的房间，真边条 5mm（该忽略），加回 5mm 靠墙缝正好凑成 10，
+         *   比出来"不小于 10"照样报警——把说好要忽略的零头又喊了一遍。 */
+        if (nominal < Math.min(t.x, t.y) / 3 && real >= CUT_IGNORE_MM)
+          warn.push(`边缘裁砖最窄 ${Math.round(real)}mm（不足 1/3 砖），请现场定夺`);
+      }
       if (gx.segments.dense || gy.segments.dense)
         warn.push("这块砖太小/房间太大，砖格太密，图上只画示意、尺寸看清单");
       // comp 是这块砖属于哪个区。顺序照房间清单，别为了"按区归拢"把 out.rooms 重排——
       // 外面（含 house-test.js）是按清单下标取房间的。
-      out.rooms.push({ id:r.id, name:roomName(r), rect:R, comp:ci,
+      // fill = 真正铺砖的那个矩形（rect 往里让了靠墙缝）。rect 仍是毛尺寸：
+      // 界面显示房间面积、门洞定位都用它，不能动。
+      out.rooms.push({ id:r.id, name:roomName(r), rect:R, fill, comp:ci,
                        ax:toLocal(gx, R.x), ay:toLocal(gy, R.y), gx, gy, tiles, warn });
     }
     // 通铺门口那一段也算进砖网（门槛处不断缝）
@@ -641,8 +802,21 @@ const Engine = (() => {
       /* d.from 和 d.to 必在同一个区：通铺门在 openings 里是 bond，
        * 通铺优先——哪怕这道墙同时还标了过门石，也不会把两间房拆开。
        * 所以取哪边的区号都一样。 */
-      const gx = latticeSegments(A.GX, t.x, g, D.x, D.x + D.w);
-      const gy = latticeSegments(A.GY, t.y, g, D.y, D.y + D.h);
+      /* 门条要**沿着墙厚那一边两头各外扩 wallGap**，把两侧房间让出来的那 5mm 补回来。
+       * 不补的话：客厅这块 393 + 门条 200 + 次卧这块 197 = 790 ≠ 800，
+       * 那块本该是整砖的跨门砖会被算成"开了缺口的异形砖"，下料清单跟着错，
+       * 状态栏「有 N 块整砖直接穿过门口」也会凭空少一块。
+       * 门宽那一头**不外扩**：那是墙上的洞，不是墙边，多出来会平白压到墙角上。
+       *
+       * `wallT > 1e-6` 这道闸是必须的，不是保险：贴死的两间房中间没有墙，
+       * doorRect 会合法地给出 wallT = 0 的门条，这时两侧房间本来就因为贴死没让缝，
+       * 再外扩就把门条撑成 10mm 宽、和房间重复计一次面积（实测虚增 8000mm²）。 */
+      const dwx = ( d.vertical && d.wallT > 1e-6) ? wallGap : 0;
+      const dwy = (!d.vertical && d.wallT > 1e-6) ? wallGap : 0;
+      const Df = { x:D.x - dwx, y:D.y - dwy, w:D.w + dwx * 2, h:D.h + dwy * 2 };
+      const gx = latticeSegments(A.GX, t.x, g, Df.x, Df.x + Df.w);
+      const gy = latticeSegments(A.GY, t.y, g, Df.y, Df.y + Df.h);
+      d.fill = Df;
       d.comp = ci;
       for (const sy of gy.segments) for (const sx of gx.segments)
         addCell(ci, sx.i, sy.i, { x:sx.start, y:sy.start, w:sx.width, h:sy.width }, "door");
@@ -728,6 +902,13 @@ const Engine = (() => {
         cuts.push({ kind:"piece", count:1, w:p.w, h:p.h, area:p.w * p.h, pieces });
       }
     }
+    /* 真正铺砖的那几个矩形（房间 rect 让掉靠墙缝 + 通铺门口外扩过的门条）。
+     * **必须放在两个铺砖循环之后**：上面 out.region 那儿是循环之前，那时 r.fill 还是
+     * undefined，搬过去会变成"读 undefined 的 x"直接抛异常，而不是一条看得懂的断言失败。
+     * out.region 则**保持毛面积**（房间矩形 + 门条原样）：areaMM = 铺贴面积，
+     * 它是"这块地有多大"，跟留不留缝无关，也让 222 行那条面积断言逐位不变。 */
+    out.fill = out.rooms.map(r => r.fill)
+      .concat(out.doors.filter(d => !d.threshold).map(d => d.fill));
     for (const rect of out.region) areaMM += rect.w * rect.h;
 
     // 按尺寸归并裁块（同一尺寸合并计数）
@@ -742,7 +923,8 @@ const Engine = (() => {
     const pieceCount = cuts.reduce((n, c) => n + c.count, 0);
     const cutArea = cuts.reduce((a, c) => a + c.area, 0);
     /* 校验用：整砖面积 + 裁块面积 == 砖面合计 == 铺贴面积 − 砖缝面积
-     * （砖格之间那几毫米缝不铺砖，所以砖面合计天然比房间面积小一点点，这是对的） */
+     * （砖格之间那几毫米缝不铺砖，靠墙那一圈缝也不铺，所以砖面合计天然比房间面积小
+     *   一点点，这是对的。groutArea 因此是「砖缝 + 靠墙缝」的合计，不只是砖缝。） */
     const tiledArea = wholeCount * tileArea + cutArea;
     out.summary = {
       tile: { x:t.x, y:t.y, grout:g },
@@ -987,6 +1169,11 @@ function chipTo(ctx, sink, txt, color, ax, ay, W, H){
   else chipText(ctx, txt, ax, ay, color, W, H);
 }
 
+/* 页面这一侧也会碰到「老存档里根本没这个字段」的设置项（比如后加的 wallGap）。
+ * 直接读会显示 "undefinedmm"。引擎 IIFE 里有一个 numOr，但外面看不到——
+ * 在这儿把它取出来，别在页面代码里另写一套兜底逻辑。 */
+const numOr = Engine.numOr;
+
 const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
 const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
@@ -1009,8 +1196,9 @@ const TILE_PRESETS = ["800×800", "600×600", "750×1500", "600×1200", "900×90
 
 /* 初始给一套示例户型（客厅/次卧/主卧），照自己的户型改数字即可 */
 const defaultState = () => ({
-  settings: { floorTile:null, direction:"horizontal", grout:2,
-              baseRoom:null, baseMode:"center", nudgeX:0, nudgeY:0, showCuts:false, wall:240 },
+  settings: { floorTile:null, direction:"horizontal", grout:2, wallGap:5,
+              baseRoom:null, baseMode:"center", startCorner:"tl",
+              nudgeX:0, nudgeY:0, showCuts:false, wall:240 },
   seq: 4,
   rooms: [
     { id:"r1", name:"客厅", x:0,    y:0,    w:4200, h:3600 },
@@ -1070,8 +1258,12 @@ function renderSettings(){
           (v) => { s.direction = v; });
   segInto($("#groutSeg"), [[1,"1 mm"],[2,"2 mm"],[2.5,"2.5 mm"],[3,"3 mm"]], s.grout,
           (v) => { s.grout = parseFloat(v); });
-  segInto($("#baseModeSeg"), [["center","居中对称"],["edge","靠一边"]], s.baseMode,
+  // 「靠一边」留着没删：它是老功能，删了等于悄悄拿走一个选项。
+  // 「起铺角」放第一个，跟下面那两行（角选择 + 小字）从视觉上连成一组。
+  segInto($("#baseModeSeg"), [["corner","起铺角"],["center","居中对称"],["edge","靠一边"]], s.baseMode,
           (v) => { s.baseMode = v; });
+  segInto($("#cornerSeg"), [["tl","左上"],["tr","右上"],["bl","左下"],["br","右下"]], s.startCorner || "tl",
+          (v) => { s.startCorner = v; });
 
   // 起铺基准房间
   const sel = $("#baseRoom");
@@ -1089,12 +1281,32 @@ function renderSettings(){
     });
   }
 
-  // 摘要
+  renderSummary();
+}
+
+/* 面板标题那行摘要 + 图上图例里的缝宽数字。
+ *
+ * 为什么单独拆一个函数：renderSettings() 会把整个面板拆了重建，**正在打字的输入框
+ * 会跟着被销毁**（光标跳掉、输一半的数字没了）。所以「靠墙缝」这种纯文本框的
+ * input 监听只能走 update()，不能再调 renderSettings()——可它又必须把摘要刷新掉，
+ * 否则用户填了 20，图都按 20 画完了，顶上还写着「靠墙 5mm」，一直骗到下次重建面板。
+ * 拆出来两边各调一次：重建面板时调、输入框变化时也调，谁也不碰对方的元素。 */
+function renderSummary(){
+  const s = state.settings;
+  const cur = s.floorTile;
   const bits = [];
   bits.push(cur ? `${cur.preset === "custom" ? "自定义 " : ""}${cur.w}×${cur.h}` : "未选砖");
   bits.push(s.direction === "horizontal" ? "长边横着" : "长边竖着");
   bits.push(`缝 ${s.grout}mm`);
+  // 靠墙缝走 numOr 兜底 5：老存档里压根没这个字段，直接写 s.wallGap 会显示 "undefinedmm"
+  bits.push(`靠墙 ${numOr(s.wallGap, 5)}mm`);
+  // 起铺方式只在**不是默认**时才占一个字：默认那版（居中对称）说它等于白说，
+  // 还把摘要行挤长。角的具体位置也不写进来——紧跟着的 #cornerHint 说得比这清楚。
+  if (s.baseMode === "corner") bits.push("起铺角");
+  else if (s.baseMode === "edge") bits.push("靠一边");
   $("#settingsSummary").textContent = bits.join(" · ");
+  const lg = $("#legendGap");
+  if (lg) lg.textContent = numOr(s.wallGap, 5);
 }
 
 /* ---------------- 房间 / 门洞 列表 ---------------- */
@@ -1262,12 +1474,18 @@ function drawPlan(plan){
      * 拿它来画别的区的门口，门口那几块砖会和两侧房间的缝对不上，看着像贴歪了。
      * d.comp 是引擎算好的（housePlan 里给每道通铺门都记了）。 */
     const A = plan.areas[d.comp] || plan.grid;
-    const gx = Engine.latticeSegments(A.GX, plan.tile.x, plan.tile.grout, R.x, R.x + R.w);
-    const gy = Engine.latticeSegments(A.GY, plan.tile.y, plan.tile.grout, R.y, R.y + R.h);
+    /* 画的是 d.fill，不是 d.rect：靠墙留缝之后，门段要**沿着墙厚那一头两头各外扩 5mm**，
+     * 把那两侧房间让出来的缝补回来——和引擎里铺砖用的是同一个矩形，
+     * 不然图上门口会露出两道 5mm 的白缝、跟两侧房间对不上，像是贴歪了。
+     * fill 由引擎算好（housePlan 里 d.fill = Df），这里不再自己算一遍，免得两处漂。
+     * 贴死（wallT=0）的门 fill === rect，外扩为 0，这里天然正确。 */
+    const F = d.fill || R;
+    const gx = Engine.latticeSegments(A.GX, plan.tile.x, plan.tile.grout, F.x, F.x + F.w);
+    const gy = Engine.latticeSegments(A.GY, plan.tile.y, plan.tile.grout, F.y, F.y + F.h);
     ctx.save();
-    ctx.translate(OX + R.x * s, OY + R.y * s);
-    paintTiles(ctx, Engine.toLocal(gx, R.x), Engine.toLocal(gy, R.y), s, R.w * s, R.h * s);
-    drawJoints(ctx, Engine.toLocal(gx, R.x), Engine.toLocal(gy, R.y), s, R.w * s, R.h * s, plan.tile.grout * s);
+    ctx.translate(OX + F.x * s, OY + F.y * s);
+    paintTiles(ctx, Engine.toLocal(gx, F.x), Engine.toLocal(gy, F.y), s, F.w * s, F.h * s);
+    drawJoints(ctx, Engine.toLocal(gx, F.x), Engine.toLocal(gy, F.y), s, F.w * s, F.h * s, plan.tile.grout * s);
     ctx.restore();
   });
 
@@ -1409,6 +1627,9 @@ function update(){
   renderCutList(plan);
   renderRoomDetails(plan);
   syncAreaHint(plan);
+  // 起铺角那两行（角选择行 + 小字）跟着**引擎算出来的结果**走，不是跟着设置走：
+  // "选了起铺角但自动退回了居中"这种状态，只有 plan 里才有。
+  syncCorner();
 }
 
 /* 「以哪间房为准起铺」下面那行小字：只有真的分了区才出现。
@@ -1421,6 +1642,71 @@ function syncAreaHint(plan){
   h.hidden = !many;
   if (many) h.textContent =
     `墙和过门石把全屋分成了 ${plan.areas.length} 个区：这里选的房管它自己那个区，其余区各以区内最大的房间为准。`;
+}
+
+/* ---------------- 起铺角 ---------------- */
+
+const CORNER_LABEL = { tl:"左上", tr:"右上", bl:"左下", br:"右下" };
+
+/* 「起铺角」那一版的两行小字。引擎已经把结果和理由都算好了
+ * （corner.x/.y = { at:"corner"|"center"|"nudge", far, farCut, why }），这里**只做翻译**：
+ * 一条判断都不重算——重算就等于在界面上又养了一份会跟引擎跑偏的逻辑。
+ * 三种状态各说各的话，别合并：corner = 成立，center = 引擎自动退回居中，
+ * nudge = 相位是对的、但整网被人挪走了（师傅的手动偏移，不是引擎的决定）。 */
+function syncCorner(){
+  const s = state.settings;
+  const on = s.baseMode === "corner";
+  const row = $("#cornerRow"), hint = $("#cornerHint"), txt = $("#cornerHintText");
+  if (row) row.hidden = !on;
+  if (hint) hint.hidden = !on;
+  if (!on || !txt) return;
+  const plan = planCache;
+  const areas = (plan && plan.ok && plan.areas) || [];
+  if (!areas.length) { txt.textContent = ""; return; }
+  // 引擎没给 baseId 匹配上时自己会退到第一间房，这里跟着退，别另立一套规则
+  const home = areas.find((a) => a.baseId === s.baseRoom) || areas[0];
+  const cb = $("#cornerBase");
+  if (cb) cb.textContent = home.baseName || "基准房";
+  const c = home.corner;
+  if (!c) { txt.textContent = ""; return; }
+  const corner = s.startCorner || "tl";
+  // 本工具的 canvas 没有 y 翻转（y 大 = 下），所以"上"就是 y 小的一侧，跟图上一致
+  const xMax = (corner === "tr" || corner === "br"), yMax = (corner === "bl" || corner === "br");
+  const nearX = xMax ? "右墙" : "左墙", farX = xMax ? "左墙" : "右墙";
+  const nearY = yMax ? "下墙" : "上墙", farY = yMax ? "上墙" : "下墙";
+  const clause = (r, near, far) => `${near}贴的是整砖，对面${far}` +
+        (r.farCut ? `剩 ${Math.round(r.far)}mm 现场裁` : "也是整砖");
+  const head = `以「${home.baseName}」的${CORNER_LABEL[corner] || "左上"}角起铺：`;
+
+  /* 整网偏移是在相位定完之后加的，会把起铺角那面墙的整砖一起带走。
+   * 这**不是**"退回居中"——相位还是起铺角那一份，是师傅手动把整张网挪了。
+   * 所以不能复用下面那句"改回居中对称"：那会把师傅的手动偏移说成引擎的自动决定，
+   * 而且照着"左墙贴的是整砖"讲，图上明明错开一截。 */
+  const nudged = [c.x, c.y].filter((r) => r.at === "nudge");
+  if (nudged.length) {
+    const which = (nudged.length === 2) ? "左右、上下两向"
+                : (c.x.at === "nudge" ? "左右这一向" : "上下这一向");
+    txt.textContent = head + `整网挪过之后，${which}的起铺角就不作数了` +
+      `（${nudged.map((r) => r.why).join("，")}）——画面上看到的格线是挪过的。` +
+      ((c.x.at === "corner" || c.y.at === "corner") ? "另一向还按起铺角贴着整砖。" : "") +
+      "想用起铺角，把「整网偏移」清成 0。";
+    return;
+  }
+
+  const parts = [];
+  if (c.x.at === "corner") parts.push(clause(c.x, nearX, farX));
+  if (c.y.at === "corner") parts.push(clause(c.y, nearY, farY));
+  if (parts.length === 2) {
+    txt.textContent = `${head}${parts[0]}，${parts[1]}。`;
+  } else if (parts.length === 1) {
+    const xOk = c.x.at === "corner";
+    txt.textContent = `${head}${parts[0]}。${xOk ? "上下" : "左右"}这一向改回居中对称` +
+                      `（${(xOk ? c.y : c.x).why}）。`;
+  } else {
+    // 一个角都没用上——此时 head 里的"以某角起铺"是句假话，不能再说
+    txt.textContent = `这个角用不上——左右、上下两个方向的对面墙都只剩太窄的零头，` +
+                      `已自动改回居中对称。换个角试试。`;
+  }
 }
 
 /* 「标注尺寸」的开关：裁砖尺寸线 + 过门石标签，一起显示、一起收。两个控件都走这里，
@@ -1473,7 +1759,25 @@ function setShowCuts(v){
   $("#baseRoom").addEventListener("change", (e) => { state.settings.baseRoom = e.target.value; save(); update(); });
   $("#nudgeX").addEventListener("input", (e) => { state.settings.nudgeX = parseMM(e.target.value) || 0; save(); update(); });
   $("#nudgeY").addEventListener("input", (e) => { state.settings.nudgeY = parseMM(e.target.value) || 0; save(); update(); });
+  // 「换一个」= 回到居中对称那一版。欢欢的原话是"总计就2版"，所以按钮就是在这两版之间切，
+  // 不另开一个"忽略起铺角"的开关——那会变成第三版。
+  // 切回来走 update() 就够：baseModeSeg 上那颗 .on 由 renderSettings 重画，
+  // 而角选择行/小字的显隐归 syncCorner 管（在 update 里），不用重建整个面板。
+  $("#cornerSwap").addEventListener("click", () => {
+    state.settings.baseMode = "center"; save(); renderSettings(); update();
+  });
   $("#nudgeX").value = state.settings.nudgeX || ""; $("#nudgeY").value = state.settings.nudgeY || "";
+  /* 靠墙缝：清空 → 删掉字段，引擎 numOr 兜回默认 5mm（不是「不留缝」——
+     想不留缝得显式填 0，因为 parseMM 只认 \d+，空字符串解析出来是 NaN）。
+     上限 clamp 到 50：这是防止手滑填 5000 把整间房的铺贴区间算成负的，
+     不是技术限制，正常工地 3~10mm。 */
+  $("#wallGap").addEventListener("input", (e) => {
+    const v = parseMM(e.target.value);
+    if (!isFinite(v)) delete state.settings.wallGap;
+    else state.settings.wallGap = Math.min(v, 50);
+    save(); renderSummary(); update();
+  });
+  $("#wallGap").value = isFinite(state.settings.wallGap) ? state.settings.wallGap : "";
   // 平面上这些「小字标注」的显示/隐藏（默认关，字会很多）
   //
   // 管两样东西：裁砖的尺寸线（paintCuts），和「过门石 900」这种门洞标签。
