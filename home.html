@@ -27,7 +27,13 @@ header p{margin:6px 0 0; color:var(--ink-soft); font-size:13px}
 header p.ver{margin-top:5px; font-size:12px; color:var(--accent); font-weight:700}
 a.card{display:block; text-decoration:none; color:inherit; background:var(--card);
   border:1px solid var(--line); border-radius:12px; padding:14px; margin-top:12px}
-a.card h2{margin:0 0 4px; font-size:17px; color:var(--accent)}
+a.card h2{display:flex; align-items:baseline; gap:8px; margin:0 0 4px; font-size:17px; color:var(--accent)}
+/* 版本号徽章。三个工具各走各的 ?v=，所以版本号挂在卡片上、不写在页头的
+   更新时间后面——页头只有一个数字的话，说不清它是哪个工具的。
+   ⚠️ 改完某个工具，卡片上的 vN 和链接里的 ?v=N 必须一起 +1，否则手机上
+   看到的号跟实际加载的文件对不上，等于白标。 */
+a.card h2 .v{margin-left:auto; flex:none; font-size:12px; font-weight:700; color:var(--accent);
+  background:var(--accent-soft); border-radius:6px; padding:2px 8px; font-variant-numeric:tabular-nums}
 a.card p{margin:0; font-size:13px; color:var(--ink-soft)}
 a.card:active{background:var(--accent-soft)}
 .tip{margin-top:16px; padding:10px 12px; background:var(--card); border:1px solid var(--line);
@@ -40,21 +46,21 @@ a.card:active{background:var(--accent-soft)}
   <header>
     <h1>瓷砖排版小工具</h1>
     <p>点一个进去用 · 手机上存个书签，以后点开就是它</p>
-    <p class="ver">更新：2026-09-23 01:44</p>
+    <p class="ver">更新：2026-09-23 07:50 · 每个工具的版本号在它自己卡片上</p>
   </header>
 
   <a class="card" href="index.html?v=7">
-    <h2>卫生间墙地砖</h2>
+    <h2>卫生间墙地砖<span class="v">v7</span></h2>
     <p>单面墙 / 单块地面的排砖，管地漏找坡、蹲便器裁砖、门窗洞口</p>
   </a>
 
-  <a class="card" href="house.html?v=14">
-    <h2>全屋通铺</h2>
+  <a class="card" href="house.html?v=15">
+    <h2>全屋通铺<span class="v">v15</span></h2>
     <p>墙把房间隔开，只有门洞相通：门口选「通铺」，砖缝就从这儿穿过去、全屋一张网；选「过门石」、或者墙上没开门洞，两边就各自重新排砖</p>
   </a>
 
   <a class="card" href="%E6%88%BF%E9%97%B4%E5%B8%83%E5%B1%80%E8%8D%89%E5%9B%BE.html?v=11">
-    <h2>房间布局草图</h2>
+    <h2>房间布局草图<span class="v">v11</span></h2>
     <p>量完房把尺寸一行一间贴进去，拖着摆好（可留墙厚，也可贴死），再一键导给「全屋通铺」</p>
   </a>
 

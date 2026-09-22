@@ -99,6 +99,13 @@ button{cursor:pointer; touch-action:manipulation}
  * 开着的时候是 .on（蓝底蓝字加粗），和设置面板里的开关长得不一样、
  * 但表达的是同一件事——一边点，两边一起变。 */
 .plan-tools{display:flex; flex-wrap:wrap; gap:8px; margin:0 0 10px}
+/* 平面图卡片上的小控件（靠墙缝 / 起铺方式 / 起铺角）。
+   和设置面板里是同一批 id，挪个位置而已——renderSettings / syncCorner
+   全都按 id 取元素，所以标记搬到哪儿都认。 */
+.tool-field{display:flex; align-items:center; gap:6px; min-height:42px; padding:0 4px 0 12px;
+  border:1px solid var(--line); background:var(--chip); border-radius:8px;
+  font-size:14px; font-weight:700; color:var(--ink-soft); letter-spacing:.3px}
+.tool-field input{width:52px; min-height:34px; padding:4px 6px; text-align:center; background:var(--card)}
 .field{display:block}
 .field>span{display:block; font-size:12px; color:var(--ink-soft); margin-bottom:3px}
 .field.mini{flex:1; min-width:0}
@@ -173,31 +180,10 @@ select{min-height:40px; padding:7px 8px; border:1px solid var(--line); border-ra
             <button data-v="1">1 mm</button><button data-v="2">2 mm</button><button data-v="2.5">2.5 mm</button><button data-v="3">3 mm</button>
           </div>
         </div>
-        <!-- 靠墙缝：瓷砖不能顶着墙贴，靠墙那圈要裁窄几毫米（墙不直、砖不方、还要留伸缩量）。
-             静默兜底是 5mm，清空输入框就是回到 5；想不留缝得**显式填 0**（parseMM 只吃 \d+）。
-             它不参与格线相位——整张砖网一个毫米都不动，只是把靠墙那圈砖裁窄。 -->
-        <div class="set-row"><span class="set-label">靠墙缝（mm）</span>
-          <input type="text" inputmode="numeric" id="wallGap" placeholder="5">
-        </div>
         <div class="set-row"><span class="set-label">以哪间房为准起铺</span>
           <select id="baseRoom"></select>
         </div>
         <p class="set-hint" id="areaHint" hidden></p>
-        <div class="set-row"><span class="set-label">起铺方式</span>
-          <div class="seg" id="baseModeSeg">
-            <button data-v="corner">起铺角</button><button data-v="center">居中对称</button><button data-v="edge">靠一边</button>
-          </div>
-        </div>
-        <!-- 起铺角：只在选了「起铺角」时才出现（默认居中对称，那一版不打扰）。
-             四个角指的是**基准房**的四个角；本工具的画布没有 y 翻转，
-             所以「上」= y 小的一侧、「左」= x 小的一侧，跟图上看到的一致。 -->
-        <div class="set-row" id="cornerRow" hidden>
-          <span class="set-label">起铺角（<span id="cornerBase">基准房</span>的角）</span>
-          <div class="seg" id="cornerSeg">
-            <button data-v="tl">左上</button><button data-v="tr">右上</button><button data-v="bl">左下</button><button data-v="br">右下</button>
-          </div>
-        </div>
-        <p class="set-hint" id="cornerHint" hidden><span id="cornerHintText"></span><button class="hint-btn" id="cornerSwap" type="button">换一个</button></p>
         <!-- 整网偏移跟砖规格无关（引擎 basePhase 无条件吃这两个值），所以是普通常显行，
              不用 .custom-inputs 那种「默认藏起来、由 JS 放出来」的写法 -->
         <div class="set-row"><span class="set-label">整网右移（mm）</span>
@@ -215,14 +201,41 @@ select{min-height:40px; padding:7px 8px; border:1px solid var(--line); border-ra
       <h2 class="card-title">全屋平面图</h2>
       <div class="plan-tools">
         <button class="chip" id="cutToggle" aria-pressed="false">标注尺寸</button>
+        <!-- 靠墙缝：瓷砖不能顶着墙贴，靠墙那圈要裁窄几毫米（墙不直、砖不方、还要留伸缩量）。
+             静默兜底是 5mm，清空输入框就是回到 5；想不留缝得**显式填 0**（parseMM 只吃 \d+）。
+             它不参与格线相位——整张砖网一个毫米都不动，只是把靠墙那圈砖裁窄。 -->
+        <label class="tool-field">靠墙缝
+          <input type="text" inputmode="numeric" id="wallGap" placeholder="5"> mm
+        </label>
       </div>
       <p class="card-sub" id="planSub"></p>
+      <!-- 起铺方式 / 起铺角 原来在设置面板最底下，手机上要拖到页面底部才看得见，
+           改个数字得来回滚——挪到图上来了。id 一个没改，renderSettings()
+           和 syncCorner() 都是按 id 找元素的，所以这里只是搬了家，逻辑一行没动。 -->
+      <div class="plan-setup">
+        <div class="set-row"><span class="set-label">起铺方式</span>
+          <div class="seg" id="baseModeSeg">
+            <button data-v="corner">起铺角</button><button data-v="center">居中对称</button><button data-v="edge">靠一边</button>
+          </div>
+        </div>
+        <!-- 起铺角：只在选了「起铺角」时才出现（默认居中对称，那一版不打扰）。
+             四个角指的是**基准房**的四个角；本工具的画布没有 y 翻转，
+             所以「上」= y 小的一侧、「左」= x 小的一侧，跟图上看到的一致。 -->
+        <div class="set-row" id="cornerRow" hidden>
+          <span class="set-label">起铺角（<span id="cornerBase">基准房</span>的角）</span>
+          <div class="seg" id="cornerSeg">
+            <button data-v="tl">左上</button><button data-v="tr">右上</button><button data-v="bl">左下</button><button data-v="br">右下</button>
+          </div>
+        </div>
+        <p class="set-hint" id="cornerHint" hidden><span id="cornerHintText"></span><button class="hint-btn" id="cornerSwap" type="button">换一个</button></p>
+      </div>
       <div class="plan-plot">
         <canvas id="housePlan"></canvas>
         <p class="plot-empty" id="planEmpty">先把地砖规格和房间尺寸填好</p>
       </div>
       <div class="plan-legend">浅色缝＝砖缝（同一个区内是连通的）ㆍ白框＝墙（房间之间的空档，<b>墙就是隔断</b>：要连通就在这道墙上开个门洞）ㆍ蓝虚线＝通铺门口（缝穿过去）ㆍ红实线＝过门石门口（这里断开，两边各排各的）<br>
-        靠墙那一圈砖会自动裁窄 <b id="legendGap">5</b>mm（墙不一定直、砖不一定方，靠墙得留一道缝），在设置里改；两间房贴死（中间没墙）的那条边不留。<br>
+        靠墙那一圈砖会自动裁窄 <b id="legendGap">5</b>mm（墙不一定直、砖不一定方，靠墙得留一道缝），在上面「靠墙缝」那个框里改；两间房贴死（中间没墙）的那条边不留。<br>
+        开了「标注尺寸」：<b>红线搭在哪一段砖上，旁边的数字就是那一段的尺寸</b>——数字在上边或下边＝那块砖的宽，在左边或右边＝它的高；四个角各站一个，不会挤在一起。<br>
         这张图只作看图用。<b>要挪房间，去下面「房间」卡片里改「离原点左 / 离原点上」的数字</b>，改完图上立刻跟着变。</div>
       <div class="statuses" id="statuses"></div>
     </section>
@@ -1008,20 +1021,40 @@ function paintCuts(ctx, xe, ye, s, W, H, map, opts){
   const add = (axis, x0, x1, y0, y1, vx, vy, txt) =>
     marks.push({ axis, x0, x1, y0, y1, cx: vx, cy: vy, txt, w: pillW(txt), h: 20 });
 
-  // 横向裁砖（宽）
-  xe.segments.forEach((xs) => {
+  // 标签一律往房间里面让开「半个标签 + 5px」：原地压在尺寸线上时，
+  // 标签连两端那对短刻度一起盖住，图上只剩一个孤零零的数字，
+  // 看不出它量的是哪一段 —— 这正是「看不清标的是哪一部分」的一半原因。
+  const CLEAR = 5;
+
+  // 横向裁砖（宽）：靠左墙那段标在上边，靠右墙那段标在下边。
+  //
+  // ⚠️ 判据原来是 `xs.start < 1` —— 那是「砖网从 0 铺起」年代的写法。
+  //    靠墙缝上线后铺贴区间从 5mm 起（引擎 sideGaps），xs.start 恒等于 5，
+  //    这个条件**永远为假**：左右两条宽标全掉到下边，两个数字叠在同一个角，
+  //    谁量的是左边那条、谁量的是右边那条，就彻底分不清了。
+  //    改按段的下标判：第一段贴低边、最后一段贴高边（latticeSegments 按 start 升序）。
+  const hSegs = xe.segments, hLast = hSegs.length - 1;
+  hSegs.forEach((xs, i) => {
     if (!xs.cut) return;
     const x0 = xs.start * s, x1 = (xs.start + xs.width) * s;
-    const cy = (xs.start < 1) ? pad : H - pad;         // 左缘→顶；右缘→底
-    add("h", x0, x1, cy, cy, (x0 + x1) / 2, cy, String(Math.round(xs.width)));
+    const top = i * 2 <= hLast;                        // 落在靠低边那一半 → 走上边
+    const cy = top ? pad : H - pad;                    // 左缘→顶；右缘→底
+    add("h", x0, x1, cy, cy, (x0 + x1) / 2, cy + (top ? 1 : -1) * (10 + CLEAR),
+        String(Math.round(xs.width)));
   });
-  // 纵向裁砖（高）；墙面预览可跳过
-  if (!skipHeight) ye.segments.forEach((ys) => {
-    if (!ys.cut) return;
-    const y0 = ys.start * s, y1 = (ys.start + ys.width) * s;
-    const cx = (ys.start < 1) ? pad : W - pad;         // 上缘→左；下缘→右
-    add("v", cx, cx, y0, y1, cx, (y0 + y1) / 2, String(Math.round(ys.width)));
-  });
+  // 纵向裁砖（高）；墙面预览可跳过。同样的下标判：上缘→左；下缘→右
+  if (!skipHeight){
+    const vSegs = ye.segments, vLast = vSegs.length - 1;
+    vSegs.forEach((ys, i) => {
+      if (!ys.cut) return;
+      const y0 = ys.start * s, y1 = (ys.start + ys.width) * s;
+      const left = i * 2 <= vLast;                     // 落在靠上边那一半 → 走左边
+      const cx = left ? pad : W - pad;
+      const txt = String(Math.round(ys.width));
+      add("v", cx, cx, y0, y1, cx + (left ? 1 : -1) * (pillW(txt) / 2 + CLEAR),
+          (y0 + y1) / 2, txt);
+    });
+  }
 
   // 2) 先把贴边的标签夹回画布内（贴边标签会略微内移）
   marks.forEach((m) => {
@@ -1035,9 +1068,12 @@ function paintCuts(ctx, xe, ye, s, W, H, map, opts){
     Math.abs(a.cx - b.cx) < (a.w + b.w) / 2 &&
     Math.abs(a.cy - b.cy) < (a.h + b.h) / 2;
   const flipH = (m) => {
-    const newCx = (m.x0 < W / 2) ? W - pad : pad;   // 对侧垂直边
+    const toLeft = !(m.x0 < W / 2);                 // 原来在左边 → 翻到右边
+    const newCx = toLeft ? pad : W - pad;           // 对侧垂直边
     m.x0 = m.x1 = newCx;
-    m.cx = Math.max(m.w / 2 + 2, Math.min(W - m.w / 2 - 2, newCx));
+    // 翻过去以后同样让开尺寸线（往房间里面偏半个标签），别又压回线上
+    const vx = newCx + (toLeft ? 1 : -1) * (m.w / 2 + CLEAR);
+    m.cx = Math.max(m.w / 2 + 2, Math.min(W - m.w / 2 - 2, vx));
   };
   // 最多翻两次以防翻转后又撞上另一侧的宽标
   for (let pass = 0; pass < 2; pass++) {
