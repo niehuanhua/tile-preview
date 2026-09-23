@@ -49,18 +49,37 @@ const SETTINGS = {
   nudgeX: 0, nudgeY: 0, showCuts: true, wall: 240,
 };
 
+/* 户型的原点偏移：整个户型画在草图坐标系的哪儿。
+ *
+ * ★ 这是这个夹具里最要紧的一个参数，别把它改回「只取 0 或 0.5」。
+ *   门在草图里存的是**草图坐标**（x/y 是绝对毫米），而房间在导出时会被
+ *   整体平移 (minX, minY) 并取整。exportDoors 里凡是拿门的位置去和
+ *   「用导出坐标算出来的共用段 ax.lo/ax.hi」比大小的地方，都必须先把门
+ *   减掉这个原点，否则就是拿两把不同的尺子量同一段墙。
+ *   偏移是 0 或 0.5 的时候，这个错最多只差半毫米——**完全看不出来**，
+ *   这正是它当初能躲过 84 条断言的原因。所以这里必须掺进上千毫米的
+ *   整数偏移，而且**正负都要有**：用户把房间往左上拖，minX/minY 就是负的，
+ *   那才是线上真正会踩到的户型（拖动那边没有「不许出画布左上」的钳位）。 */
+const orgPick = () => {
+  const r = Math.random();
+  if (r < 0.30) return 0.5;                     // 半毫米：逼出「at 必须用取整平移后的房间重算」
+  if (r < 0.45) return 0;                       // 原点恰好在角上：这个 bug 在这里隐身
+  if (r < 0.75) return (1 + rnd(9)) * 1000;     // 大正偏移
+  return -(1 + rnd(9)) * 1000;                  // 大负偏移（房间被拖到左上）
+};
+
 /* 造一份真实形状的户型：cols 列 × rows 行的规整网格。
  * 网格保证「相邻关系明确、缝里不会莫名夹着第三间房」，好把测试火力集中在导出换算上。
  * 故意掺进去的脏东西：
- *   gx/gy = 0   —— 走 wallT = 0 那条特殊路径
- *   org = 0.5   —— 整体半毫米偏移，逼出「at 必须用取整平移后的房间重算」
- *   id 打乱     —— 按下标硬映射 id 的实现会露馅
- *   奇数码宽     —— 逼出「取整后再夹一次」那条 */
+ *   gx/gy = 0        —— 走 wallT = 0 那条特殊路径
+ *   orgX/orgY        —— 整体上千毫米的偏移（可正可负），见上面 orgPick
+ *   id 打乱          —— 按下标硬映射 id 的实现会露馅
+ *   奇数码宽          —— 逼出「取整后再夹一次」那条 */
 function gridPlan() {
   const cols = 2 + rnd(3), rows = Math.random() < 0.5 ? 1 : 2;
   const gx = Math.random() < 0.4 ? 0 : 240;
   const gy = Math.random() < 0.5 ? 0 : 240;
-  const org = Math.random() < 0.6 ? 0.5 : 0;
+  const orgX = orgPick(), orgY = orgPick();
   const colW = [], rowH = [];
   for (let i = 0; i < cols; i++) colW.push((10 + rnd(15)) * 100);
   for (let j = 0; j < rows; j++) rowH.push((10 + rnd(15)) * 100);
@@ -68,9 +87,9 @@ function gridPlan() {
   const rooms = [], doors = [];
   let dn = 0;
   const put = (i, j) => {
-    let x = org;
+    let x = orgX;
     for (let k = 0; k < i; k++) x += colW[k] + gx;
-    let y = org;
+    let y = orgY;
     for (let k = 0; k < j; k++) y += rowH[k] + gy;
     return { id: "s" + ((j * cols + i) * 7 + 3) % 23, name: `房${j}${i}`,
              x, y, w: colW[i], h: rowH[j] };
@@ -108,7 +127,8 @@ function gridPlan() {
 }
 
 test("测试 1：草图导出的每道门，house.html 都认（含整屋出图）", () => {
-  let nPlans = 0, nDoors = 0, nDropped = 0, badDoor = null, badPlan = null, nZeroGap = 0;
+  let nPlans = 0, nDoors = 0, nDropped = 0, nZeroGap = 0, nBigOrg = 0;
+  let badDoor = null, badPlan = null, badPos = null;
   for (let round = 0; round < 300; round++) {
     const { rooms: sketchRooms, doors: sketchDoors } = gridPlan();
     if (!sketchRooms.length) continue;
@@ -128,7 +148,10 @@ test("测试 1：草图导出的每道门，house.html 都认（含整屋出图�
     const idMap = {};
     sketchRooms.forEach((r, i) => { idMap[r.id] = roomsFinal[i].id; });
 
-    const { list, dropped } = S.exportDoors(roomsFinal, sketchDoors, idMap);
+    // 整份户型的原点：门存的是草图坐标，房间已经平移过，两者差的就是这个量
+    if (Math.abs(minX) > 500 || Math.abs(minY) > 500) nBigOrg++;
+
+    const { list, dropped } = S.exportDoors(roomsFinal, sketchDoors, idMap, { x: minX, y: minY });
     nDoors += list.length; nDropped += dropped.length;
 
     // 一道都不许凭空消失：留下的 + 丢掉的 = 草图里画的总数
@@ -136,12 +159,28 @@ test("测试 1：草图导出的每道门，house.html 都认（含整屋出图�
       badDoor = { why: `门数对不上：留下 ${list.length} + 丢掉 ${dropped.length} ≠ 草图 ${sketchDoors.length}` };
     }
 
-    // ★ 每道门都喂进 house.html 的**真** doorRect
+    // ★ 每道门都喂进 house.html 的**真** doorRect：
+    //   ① 它得认（不认就整张图白屏）；② 它算出来的门心，得和草图画的位置对得上。
     const byId = {}; for (const r of roomsFinal) byId[r.id] = r;
+    const sketchById = {}; for (const d of sketchDoors) sketchById[d.id] = d;
     for (const d of list) {
       const chk = H.doorRect(byId[d.from], byId[d.to], d.at, d.width);
-      if (!chk.ok && !badDoor) {
-        badDoor = { why:`house.html 拒收：${chk.why}`, d, rooms: roomsFinal };
+      if (!chk.ok) {
+        if (!badDoor) badDoor = { why:`house.html 拒收：${chk.why}`, d, rooms: roomsFinal };
+        continue;
+      }
+      /* ★★ 位置校验——这条才是能抓住「门整体错位」的那一条。
+       * 光验合法性抓不到它：错位后的门**往往仍然合法**（墙上有别的位置可以放），
+       * house.html 照收不误，然后默默画在错误的地方。
+       * 期望值 = 门的草图坐标 − 平移量，也就是用户在图里看到的那一行。
+       * 容差 0.5mm：导出时会 Math.round，奇数门宽可能蹭出半毫米再夹回来。 */
+      const sd = sketchById[d.id];
+      if (!sd) continue;                       // 门丢了由上面那条报，这里不重复报
+      const got = chk.vertical ? chk.rect.y + chk.rect.h / 2 : chk.rect.x + chk.rect.w / 2;
+      const want = (chk.vertical ? sd.y - minY : sd.x - minX);
+      if (Math.abs(got - want) > 0.5 + 1e-6 && !badPos) {
+        badPos = { id: d.id, 竖墙: chk.vertical, 门心该在: want, 实际: got, 错位: got - want,
+                   minX, minY, 草图里的门: sd, rooms: roomsFinal };
       }
     }
 
@@ -157,13 +196,106 @@ test("测试 1：草图导出的每道门，house.html 都认（含整屋出图�
   }
 
   console.log(`     ${nPlans} 份户型、导出 ${nDoors} 道门（丢掉 ${nDropped} 道）、` +
-              `${nZeroGap} 处贴死（wallT 可能是 0）`);
+              `${nZeroGap} 处贴死（wallT 可能是 0）、${nBigOrg} 份户型原点离得远`);
   check("300 份随机户型，每道导出的门 house.html 都认", !badDoor,
         badDoor ? JSON.stringify(badDoor).slice(0, 500) : "");
   check("300 份户型 housePlan 全部 plan.ok = true（真机上不会白屏）", !badPlan,
         badPlan ? JSON.stringify(badPlan).slice(0, 500) : "");
+  /* ★ 这条是「过门石导过去位置不对」那个 bug 的回归锁。
+   * 它必须和上面那条「house 认不认」分开：门错位之后**仍然是合法的**，
+   * 只验合法性永远抓不到，只有比坐标才抓得到。 */
+  check("每道导出的门，位置和草图里画的一致（错位 ≤ 0.5mm 取整误差）", !badPos,
+        badPos ? JSON.stringify(badPos).slice(0, 500) : "");
   check("样本真的覆盖到了门（否则这条测试是空转）", nDoors > 300, `只有 ${nDoors} 道`);
   check("样本真的覆盖到了贴死模式（wallT = 0 那条分支）", nZeroGap > 20, `只有 ${nZeroGap} 处`);
+  check("样本真的覆盖到了原点远离零点的户型（否则位置锁是空转）", nBigOrg > 30,
+        `只有 ${nBigOrg} 份；原点偏移全在 0 附近时，门错位这个 bug 只差半毫米，测不出来`);
+});
+
+/* ============ 测试 1b：导出坐标换算（定点回归锁） ============
+ * 「房间布局草图里的过门石，导进全屋通铺位置不对」——就是这里错。
+ *
+ * 病根：exportDoors 拿 d.x/d.y（**草图坐标**）去和 ax.lo/ax.hi
+ * （用**导出后**的房间算的）比大小，两套坐标系差一个 (minX, minY)。
+ * 只要户型没贴着自己的原点画，每道门就会沿它那道墙整体平移 (minX, minY)，
+ * 而平移后的门**往往仍然合法**，house.html 照收不误，只是默默画错位置。
+ *
+ * 测试 1 是随机的、覆盖面广；这里是定点的、数字是给人看的，
+ * 坏掉的时候一眼就知道错在哪个方向、错了多少。 */
+test("测试 1b：零件不动（原点不为零时，门不能被平移量带跑）", () => {
+  /* 走一遍 房间布局草图.html #apply 的那三步，一字不改 */
+  const exportOf = (sketchRooms, sketchDoors) => {
+    const minX = Math.min(...sketchRooms.map(r => r.x));
+    const minY = Math.min(...sketchRooms.map(r => r.y));
+    const roomsFinal = sketchRooms.map((r, i) => ({
+      id: "r" + (i + 1), name: r.name,
+      x: Math.round(r.x - minX), y: Math.round(r.y - minY),
+      w: Math.round(r.w), h: Math.round(r.h),
+    }));
+    const idMap = {};
+    sketchRooms.forEach((r, i) => { idMap[r.id] = roomsFinal[i].id; });
+    return Object.assign({ roomsFinal, minX, minY },
+      S.exportDoors(roomsFinal, sketchDoors, idMap, { x: minX, y: minY }));
+  };
+  /* 门心在 house.html 那边落在墙轴的哪个坐标上 */
+  const centerOf = (roomsFinal, d) => {
+    const byId = {}; for (const r of roomsFinal) byId[r.id] = r;
+    const chk = H.doorRect(byId[d.from], byId[d.to], d.at, d.width);
+    if (!chk.ok) return { ok: false, why: chk.why };
+    return { ok: true, vertical: chk.vertical,
+             got: chk.vertical ? chk.rect.y + chk.rect.h / 2 : chk.rect.x + chk.rect.w / 2 };
+  };
+
+  /* —— 用例 A：2026-09-23 线上复现用的那份户型。
+   * 主卧被往上拖了 1200（y = −1200），于是 minY = −1200；
+   * 过门石在草图里 y = 3440（客厅 r2 与次卧 r3 之间那道竖墙），
+   * 导出后该落在 y = 3440 − (−1200) = 4640。坏的时候落在 3440，差 1200mm。 */
+  const A = [
+    { id: "a", name: "主卧", x: 0,    y: -1200, w: 3000, h: 2400 },
+    { id: "b", name: "客厅", x: 0,    y: 1440,  w: 4200, h: 3600 },
+    { id: "c", name: "次卧", x: 4440, y: 1440,  w: 3000, h: 3600 },
+  ];
+  const doorA = { id: "d1", a: "b", b: "c", x: 4320, y: 3440, width: 900, threshold: true };
+  const rA = exportOf(A, [doorA]);
+  check("用例 A：过门石导出成功（没有被丢掉）", rA.list.length === 1 && rA.dropped.length === 0,
+        rA.dropped[0] && rA.dropped[0].why);
+  const cA = rA.list.length ? centerOf(rA.roomsFinal, rA.list[0]) : { ok: false };
+  check(`用例 A：minY 明明是 −1200，门心仍该在 4640（实际 ${
+        cA.ok ? cA.got : "house 拒收 " + cA.why}）`,
+        cA.ok && near(cA.got, 4640, 0.5 + 1e-6));
+  check(`用例 A：门心真的被平移量带跑了才叫 bug（错位 ${cA.ok ? cA.got - 4640 : "?"}mm）`,
+        cA.ok && Math.abs(cA.got - 4640) <= 0.5 + 1e-6);
+
+  /* —— 用例 B：横墙、大正偏移、门摆在共用段正中间。
+   * 两间房整体画在 (8100, 3700) 那一带，minX = 8100、minY = 3700。
+   * 门在草图里 x = 9700（客厅 r1 下边那道横墙的正中），导出后该还在 1600。 */
+  const B = [
+    { id: "a", name: "客厅", x: 8100, y: 3700, w: 3200, h: 3000 },
+    { id: "b", name: "主卧", x: 8100, y: 6940, w: 3200, h: 3000 },
+  ];
+  const doorB = { id: "d2", a: "a", b: "b", x: 9700, y: 6820, width: 900, threshold: false };
+  const rB = exportOf(B, [doorB]);
+  check("用例 B：通铺门（横墙）导出成功", rB.list.length === 1 && rB.dropped.length === 0,
+        rB.dropped[0] && rB.dropped[0].why);
+  const cB = rB.list.length ? centerOf(rB.roomsFinal, rB.list[0]) : { ok: false };
+  check(`用例 B：整体平移 (8100, 3700) 之后门心仍该在 1600（实际 ${
+        cB.ok ? cB.got : "house 拒收 " + cB.why}）`,
+        cB.ok && near(cB.got, 9700 - 8100, 0.5 + 1e-6));
+
+  /* —— 用例 C：原点恰好在 (0, 0) 时，导出结果必须和以前**逐位一样**。
+   * 这条防的是「修 bug 顺手把正常户型也改了」——老户型的位置一个毫米都不许动。 */
+  const C = [
+    { id: "a", name: "客厅", x: 0, y: 0, w: 3000, h: 3000 },
+    { id: "b", name: "主卧", x: 3240, y: 0, w: 3000, h: 3000 },
+  ];
+  const doorC = { id: "d3", a: "a", b: "b", x: 3120, y: 1500, width: 900, threshold: true };
+  const rC = exportOf(C, [doorC]);
+  check("用例 C：原点在 (0,0) 的老户型，结果和从前逐位相同（at = 1500，from 取 r1）",
+        rC.list.length === 1 && rC.list[0].at === 1500 && rC.list[0].from === "r1" && rC.list[0].to === "r2");
+  /* 不传 origin 时也必须退化成「原点 = 0」——3b 那几条老断言全靠这个默认值 */
+  const rC2 = S.exportDoors(rC.roomsFinal, [doorC], { a: "r1", b: "r2" });
+  check("用例 C：省略 origin 参数 → 按 (0,0) 处理，at 一样是 1500",
+        rC2.list.length === 1 && rC2.list[0].at === 1500);
 });
 
 /* ============ 测试 2：镜像同步 ============ */
@@ -300,13 +432,17 @@ test("测试 3a：点墙命中（findWallGap）", () => {
 });
 
 test("测试 3b：exportDoors 的三类结局", () => {
+  /* 这一组夹具里的房间**已经是导出坐标**（整体从 (0,0) 开始），
+   * 所以原点就是 0。还是显式传进去：这个参数一旦有人漏掉，
+   * 注释里那句「门得先减掉原点」就没人看得见了。 */
+  const ORG0 = { x: 0, y: 0 };
   const roomsF = [{ id: "r1", name: "客厅", x: 0, y: 0, w: 3000, h: 3000 },
                   { id: "r2", name: "主卧", x: 3240, y: 0, w: 3000, h: 3000 }];
   const map = { a: "r1", b: "r2" };
 
   // ① pos 漂出共用段 → 夹紧，**仍然要留在 list 里**，不许丢
   const far = { id: "d1", a: "a", b: "b", x: 3120, y: 99999, width: 900, threshold: false };
-  const r1 = S.exportDoors(roomsF, [far], map);
+  const r1 = S.exportDoors(roomsF, [far], map, ORG0);
   check("门心漂到 99999 → 夹紧后仍然导出，不算丢", r1.list.length === 1 && r1.dropped.length === 0);
   check(`夹紧后 at = 2550（离起点 2550，得到 ${r1.list[0].at}）`, r1.list[0].at === 2550);
   // from/to 必须真的写进去（少了它们 house.html 会报"门洞指向了不存在的房间"）
@@ -319,7 +455,7 @@ test("测试 3b：exportDoors 的三类结局", () => {
 
   // ② 墙比门窄 → 丢弃，且原因里带可用宽度
   const wide = { id: "d2", a: "a", b: "b", x: 3120, y: 1500, width: 4200, threshold: false };
-  const r2 = S.exportDoors(roomsF, [wide], map);
+  const r2 = S.exportDoors(roomsF, [wide], map, ORG0);
   check("门比共用段宽 → 丢弃", r2.list.length === 0 && r2.dropped.length === 1);
   check(`丢弃原因里报了可用宽度：「${r2.dropped[0].why}」`,
         /3000mm/.test(r2.dropped[0].why) && /4200mm/.test(r2.dropped[0].why));
@@ -327,13 +463,13 @@ test("测试 3b：exportDoors 的三类结局", () => {
   // ③ 指向不存在的房间 / a === b
   const gone = { id: "d3", a: "a", b: "zz", x: 3120, y: 1500, width: 900, threshold: false };
   const same = { id: "d4", a: "a", b: "a", x: 3120, y: 1500, width: 900, threshold: false };
-  const r3 = S.exportDoors(roomsF, [gone, same], map);
+  const r3 = S.exportDoors(roomsF, [gone, same], map, ORG0);
   check("指向已删房间 / 同一间房 → 都丢弃", r3.list.length === 0 && r3.dropped.length === 2);
 
   // ④ 同墙两道门叠在一起 → 后一道丢弃
   const x1 = { id: "d5", a: "a", b: "b", x: 3120, y: 1000, width: 900, threshold: false };
   const x2 = { id: "d6", a: "a", b: "b", x: 3120, y: 1200, width: 900, threshold: false };
-  const r4 = S.exportDoors(roomsF, [x1, x2], map);
+  const r4 = S.exportDoors(roomsF, [x1, x2], map, ORG0);
   check("同一道墙上两道门重叠 → 只留一道", r4.list.length === 1 && r4.dropped.length === 1);
   check(`原因是「重叠」：「${r4.dropped[0].why}」`, /重叠/.test(r4.dropped[0].why));
 
@@ -341,7 +477,7 @@ test("测试 3b：exportDoors 的三类结局", () => {
   const roomsH = [{ id: "r1", name: "客厅", x: 0, y: 0, w: 3000, h: 3000 },
                   { id: "r2", name: "主卧", x: 3241, y: 0, w: 3000, h: 3000 }];
   const dd = { id: "d7", a: "a", b: "b", x: 3120.5, y: 1500.5, width: 900, threshold: false };
-  const r5 = S.exportDoors(roomsH, [dd], map);
+  const r5 = S.exportDoors(roomsH, [dd], map, ORG0);
   check("半毫米坐标 → 仍然导出", r5.list.length === 1);
   check(`at 是整数（得到 ${r5.list[0].at}）`, Number.isInteger(r5.list[0].at));
   const back = H.doorRect(roomsH[0], roomsH[1], r5.list[0].at, 900);

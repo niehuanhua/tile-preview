@@ -445,9 +445,17 @@ const nextSeq = (rooms, doors) => {
 
 /* ---- 导出：把草图的门换算成 house.html 认的 {from, to, at, width, threshold} ----
  * roomsFinal = 已经平移取整后的房间（house.html 里的坐标，id 是 r1..rN）
+ * doors      = 草图里的门，x/y 是**草图坐标**（绝对毫米，原点在草图自己那儿）
  * idMap      = { 草图房间 id → 导出后的房间 id }
+ * origin     = { x: minX, y: minY } = 房间被整体平移掉的那个量。
+ *              ★ 这个参数不能省：门存的是草图坐标，而门轴 ax.lo/ax.hi 是从
+ *              roomsFinal 算的导出坐标——不把门先减掉 origin 就等于是拿两把
+ *              不同的尺子去量同一段墙。只要有人把某间房拖到左边或上边
+ *              （minX/minY 变负），门就会整体偏掉那么多，而且偏完往往**仍然合法**，
+ *              house.html 照收不误，只是在图上默默画错位置。
  * 返回 { list, dropped }；dropped 每项带 d 和 why（中文，直接念给用户听）。 */
-const exportDoors = (roomsFinal, doors, idMap) => {
+const exportDoors = (roomsFinal, doors, idMap, origin) => {
+  const ox = numOr(origin && origin.x, 0), oy = numOr(origin && origin.y, 0);
   const list = [], dropped = [], placed = [];
   const byId = {};
   for (const r of (roomsFinal || [])) byId[r.id] = r;
@@ -463,8 +471,10 @@ const exportDoors = (roomsFinal, doors, idMap) => {
       dropped.push({ d, why:`共用段只有 ${Math.round(ax.hi - ax.lo)}mm，放不下 ${Math.round(width)}mm 的门` });
       continue;
     }
-    // 位置夹进共用段再取整；取整可能又蹭出去半毫米（奇数门宽），所以夹两次
-    let c = clampPos(ax.lo, ax.hi, width, ax.vertical ? d.y : d.x);
+    /* 位置先换算到导出坐标（减掉 origin），再夹进共用段、再取整；
+     * 取整可能又蹭出去半毫米（奇数门宽），所以夹两次。 */
+    const pos = (ax.vertical ? d.y : d.x) - (ax.vertical ? oy : ox);
+    let c = clampPos(ax.lo, ax.hi, width, pos);
     c = clampPos(ax.lo, ax.hi, width, Math.round(c));
     /* ★ from 取"在共用轴上起点更大"的那间：这样 start === lo，
      *   于是 at = c - lo 正好是用户在草图里看到的那个数（两个工具显示同一个数字）。
@@ -1735,8 +1745,10 @@ $("#apply").onclick = () => {
   state.rooms.forEach((r, i) => { idMap[r.id] = rooms[i].id; });
 
   /* ② 再把门换算过去。放不下的（墙比门窄、房间不再相邻、洞口压着第三间房……）
-   *    会被丢进 dropped，下面逐条报给用户听，不闷声吞掉。 */
-  const { list: doors, dropped } = exportDoors(rooms, state.doors, idMap);
+   *    会被丢进 dropped，下面逐条报给用户听，不闷声吞掉。
+   *    ★ 必须把 (minX, minY) 一起交给它：门的 x/y 还是草图坐标，而上面这套
+   *    rooms 已经平移过了，两套坐标差一个原点，exportDoors 得先减掉才能对齐。 */
+  const { list: doors, dropped } = exportDoors(rooms, state.doors, idMap, { x: minX, y: minY });
 
   /* ③ 这时候才弹确认：几间房、几道门，**两个方向都说清楚**。
    *    尤其「草图里 0 道门」必须明说会清空，否则用户以为门还在——
