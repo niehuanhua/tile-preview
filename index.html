@@ -246,6 +246,13 @@ button{cursor:pointer; touch-action:manipulation}
           </label>
         </div>
 
+        <!-- 重置为示例：手机上没有 confirm 弹窗，改成就地两段确认（先点变"确定重置/取消"） -->
+        <div class="set-row">
+          <span class="set-label">重新开始</span>
+          <div class="seg" id="resetSeg"></div>
+          <p class="rn-sub" id="resetNote" hidden></p>
+        </div>
+
       </div>
     </div>
   </section>
@@ -912,9 +919,15 @@ const Engine = (() => {
    *   edgeCuts   靠墙收边（1/3 老规矩，与找坡无关，单独报，不计入 cutCount）
    *   ride       分水线穿过的砖 → **骑线，不切**，只报底下垫多少灰
    *   ridgeCuts  恒为 0：分水线永不切砖（留着给断言看，见 8b）          */
-  const drainCutPlan = (drain, card, layout, shape, holeList) => {
+  const drainCutPlan = (drain, card, layout, shape, holeList, ownShape) => {
     const d = drain || {};
     const sh = shape || drainShape(d, card);
+    /* sh 是「最低点」造型：开着蹲便器时最低点就是蹲便器，分水线得按它算。
+     * 但下面那段落点 / 切法是**地漏洞口专属**语义，必须用**地漏自己**的造型。
+     * 两者在有蹲便器时不是同一个东西——拿 sh.point（蹲便器中心）去量地漏洞口
+     * 离砖缝多远，量的是另一个位置，结果恒为「骑缝」，工具再也报不出砖心/四砖交角。
+     * 不给 ownShape 就退回 sh（老行为，一个字不变；测试全是这条路径）。 */
+    const ds = ownShape || sh;
     /* 要挖掉的洞口可以不止一个（地漏 + 蹲便器这种"洁具口"）。每个洞口带 kind：
      * 地漏 "drain"、洁具 "fixture"——账要分开报，别让"地漏周围 4 块"把蹲便器那几块也数进去。
      * 不给 holeList 时退回"低点造型自己的洞口"（老行为，一个字不变）。 */
@@ -982,9 +995,9 @@ const Engine = (() => {
     /* 点状：落点判定 → 切法（2.4.3 第二步表）。这段是**地漏洞口专属**语义
      * （四砖交角 / 骑缝 / 砖心套割 / abcd 开孔定位），没有地漏就不算。 */
     let cutStyle = drainHole ? "strip" : null, clearance = null;   // 没地漏 → 没有"切法"这回事
-    if (drainHole && !sh.isLine) {
+    if (drainHole && !ds.isLine) {
       const p = ax.step, phX = ax.phase, phY = ay.phase;
-      const c = sh.point || { x:0, y:0 };
+      const c = ds.point || { x:0, y:0 };
       const halfW = hole.w / 2, halfH = hole.h / 2;
       // 洞口四边到最近砖缝的距离；若有砖缝从洞口中间穿过 → 0（骑缝）
       const clearanceOf = (lo, hi, ph, t, L) => {
@@ -1237,7 +1250,9 @@ const Engine = (() => {
         const holes = [];
         if (dShape) holes.push({ ...drainOpening(dShape), kind:"drain" });
         if (toiletOk) holes.push({ ...tShape.hole, kind:"fixture" });
-        const plan = drainCutPlan(dr, floorCard, { x:floorX, y:floorY, tx:tX, ty:tY, g }, shape, holes);
+        /* 第 6 个参数是**地漏自己**的造型：开着蹲便器时 shape 已经换成蹲便器了，
+         * 落点/切法那几行不能跟着跑偏（见 drainCutPlan 里的说明）。 */
+        const plan = drainCutPlan(dr, floorCard, { x:floorX, y:floorY, tx:tX, ty:tY, g }, shape, holes, dShape);
         const advice = drainAdvice(
           toiletOk ? { drop:tShape.drop } : dr,      // 蹲便器当最低点时只借它的 drop 算抬高量
           floorCard, fDims, { shape, zones, plan });
@@ -1524,20 +1539,46 @@ const WALL_PRESETS  = [[300,600],[400,800],[600,1200]];
 const FLOOR_PRESETS = [[300,300],[400,400],[600,600]];
 const EDGE_NAMES = { front:"前边", back:"后边", left:"左边", right:"右边" };
 
+/* 初始给一间示例卫生间（2300×2100，和后两份工具那套 89㎡ 户型里的卫生间同尺寸），
+ * 打开就能看到排好的图，照自己的尺寸改数字即可。
+ *
+ * ★ 只在【一个存档都没有】的时候用（见下面的 load()）。已有存档的老用户一个字节都不会被碰到。
+ * ★ 墙砖 300×600 是【竖铺】：竖着放的时候墙宽方向的砖边是 300，2300 和 2100 两个方向
+ *   都除得开，四面墙跟地面全都通缝、没有一处窄条。横铺会在左右两面墙上切出 2mm 和 4mm
+ *   的薄片（2300 与 2100 都除不尽 600），一打开就是两个红字，所以示例选了竖铺。
+ *   想改成横铺就直接点上面那个「横铺」按钮，看得到差别。
+ * ★ 四面墙的「对齐到」分别选了 后/前/左/右，墙宽就和地面那一边一样长，
+ *   工具才能把墙缝和地缝对起来（alignEdge 选"不参与"就没有通缝了）。
+ * ★ 地漏和蹲便器给的是能过校核的一组数：地漏洞口离墙最近 197mm（要求 ≥ 23mm），
+ *   蹲便器坑距 400mm 也落在允许区间里。改数之前先看一眼卡片上的红字。 */
 const defaultState = () => ({
   settings: {
-    wallTile:null, floorTile:null,           // {preset:"300×600"|"custom", w, h}
-    direction:"horizontal", startMode:"center", grout:2,
+    wallTile:{ preset:"300×600", w:300, h:600 },   // {preset:"300×600"|"custom", w, h}
+    floorTile:{ preset:"300×300", w:300, h:300 },
+    direction:"vertical", startMode:"center", grout:2,
     wallOverFloor:true,                   // 墙砖压地砖：墙面最底排贴地整砖，裁砖甩到顶
   },
   doorEdge:"bottom",
-  seq:5,
+  seq:5,                                  // 本页是 seq++ 后自增，所以再加一面墙就是 w5
   cards:[
-    { id:"w1", type:"wall", name:"墙 A", w:null, h:null, door:{on:false,left:null,width:null,height:null}, win:{on:false,left:null,sill:null,width:null,height:null}, cols:[], alignEdge:"none" },
-    { id:"w2", type:"wall", name:"墙 B", w:null, h:null, door:{on:false,left:null,width:null,height:null}, win:{on:false,left:null,sill:null,width:null,height:null}, cols:[], alignEdge:"none" },
-    { id:"w3", type:"wall", name:"墙 C", w:null, h:null, door:{on:false,left:null,width:null,height:null}, win:{on:false,left:null,sill:null,width:null,height:null}, cols:[], alignEdge:"none" },
-    { id:"w4", type:"wall", name:"墙 D", w:null, h:null, door:{on:false,left:null,width:null,height:null}, win:{on:false,left:null,sill:null,width:null,height:null}, cols:[], alignEdge:"none" },
-    { id:"floor", type:"floor", name:"地面", w:null, h:null, drain:defaultDrain(), toilet:defaultToilet() },
+    { id:"w1", type:"wall", name:"墙 A", w:2300, h:2400, alignEdge:"back",
+      door:{on:true,left:800,width:700,height:2000}, win:{on:false,left:null,sill:null,width:null,height:null}, cols:[] },
+    { id:"w2", type:"wall", name:"墙 B", w:2300, h:2400, alignEdge:"front",
+      door:{on:false,left:null,width:null,height:null}, win:{on:true,left:600,sill:1400,width:900,height:600}, cols:[] },
+    { id:"w3", type:"wall", name:"墙 C", w:2100, h:2400, alignEdge:"left",
+      door:{on:false,left:null,width:null,height:null}, win:{on:false,left:null,sill:null,width:null,height:null}, cols:[] },
+    { id:"w4", type:"wall", name:"墙 D", w:2100, h:2400, alignEdge:"right",
+      door:{on:false,left:null,width:null,height:null}, win:{on:false,left:null,sill:null,width:null,height:null}, cols:[] },
+    { id:"floor", type:"floor", name:"地面", w:2300, h:2100,
+      drain: Object.assign(defaultDrain(), {
+        on:true, kind:"square", size:100, gap:3, drop:10,
+        fromLeft:2030, fromBack:1810,     // 地漏中心离左墙 2030、离后墙 1810（师傅卷尺量得到的那两个数）
+      }),
+      toilet: Object.assign(defaultToilet(), {
+        on:true, against:"left",          // 便器后背靠左墙
+        fromLeft:400, fromBack:900,       // 排污管中心离左墙 400、离后墙 900
+        len:520, wide:420, wallGap:150, gap:5, drop:9,
+      }) },
   ],
 });
 
@@ -1771,6 +1812,35 @@ function bindSettings(){
   $$("#startSeg button").forEach(b => b.onclick = () => { state.settings.startMode = b.dataset.v; save(); renderSettings(); update(); });
   $$("#groutSeg button").forEach(b => b.onclick = () => { state.settings.grout = parseFloat(b.dataset.v); save(); renderSettings(); update(); });
   $("#wallOverFloor").onchange = () => { state.settings.wallOverFloor = $("#wallOverFloor").checked; save(); renderSettings(); update(); };
+
+  /* 「重置为示例」：点一下先变成「确定重置 / 取消」，再点第二下才真清。
+     故意不用 confirm()——手机浏览器会拦，而且那弹窗在手机上又丑又容易点错。
+     重置就是把 state 换回 defaultState()，跟"第一次打开"走的是同一份数据。 */
+  const resetSeg = $("#resetSeg"), resetNote = $("#resetNote");
+  const resetBtn = el("button", null, "重置为示例");
+  const showResetBtn = () => {
+    resetSeg.innerHTML = "";
+    resetSeg.appendChild(resetBtn);
+  };
+  resetBtn.onclick = () => {
+    resetNote.hidden = false;
+    resetNote.textContent = "会清掉现在填的所有尺寸，换回内置的示例卫生间（2300×2100）。清掉就找不回来了。";
+    const yes = el("button", null, "确定重置");
+    const no  = el("button", null, "取消");
+    yes.onclick = () => {
+      state = defaultState();
+      save(); renderSettings(); renderCards(); update();
+      resetNote.textContent = "已经换回示例卫生间，要改就直接改下面的数字。";
+      showResetBtn();
+    };
+    no.onclick = () => {
+      resetNote.hidden = true; resetNote.textContent = "";
+      showResetBtn();
+    };
+    resetSeg.innerHTML = "";
+    resetSeg.appendChild(yes); resetSeg.appendChild(no);
+  };
+  showResetBtn();
 }
 
 /* ============================================================

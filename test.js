@@ -1518,6 +1518,79 @@ test("方位 · 蹲便器「靠后墙」跟着门走，坑距从后墙量起", (
   check("四条门边：便器都靠在“后墙”上，坑距都从后墙量起 = 400", ok, detail);
 });
 
+/* ============================================================
+ * 回归锁 · 开着蹲便器时，地漏的「落点 / 切法」量的是**地漏**，不是蹲便器
+ * （2026-09-27 修；对应 更新说明.md「二十九」）
+ *
+ * 病根：drainCutPlan 里 `const ds = sh`，而 sh 是**最低点**造型——
+ * 蹲便器一开，最低点就是蹲便器，于是拿便器中心去量「地漏洞口离砖缝多远」，
+ * 量的是另一个位置，结果把便器的离缝（45mm，砖心）当成地漏的报出来。
+ * 修法：加第 6 个参数 ownShape（地漏自己的造型），落点/切法改用它。
+ *
+ * ⚠️ 夹具里 `cutStyle` **必须是 "auto"**。引擎里有一行「师傅指定」覆盖：
+ *      if (d.cutStyle === "hole" || d.cutStyle === "corner") cutStyle = d.cutStyle;
+ *    而 footState 的默认值正是 cutStyle:"hole"——不改成 auto，自动分类根本不会跑，
+ *    新旧代码都会报 hole，这道锁就变成空转（第一版就是这么写废的）。
+ * ============================================================ */
+
+// 地漏 + 蹲便器同时在的 state（footState 的四墙 + 地面 3000×2000 照用）
+function drainToiletState(over) {
+  over = over || {};
+  const st = footState({ drain: Object.assign({
+    on: true, kind: "square", fromLeft: 700, fromBack: 700, rot: 0,
+    size: 100, len: 300, wide: 64, gap: 3, against: null, shower: "hand",
+    drop: 10, cutStyle: "auto", fitRidges: true, fitEdges: true, minPiece: 50,
+  }, over.drain || {}) });
+  const f = st.cards.find((c) => c.type === "floor");
+  f.toilet = Object.assign({
+    on: true, fromLeft: 1500, fromBack: 400, against: "back",
+    len: 520, wide: 420, wallGap: 150, gap: 5, drop: 9, minPiece: 50, fitRidges: true,
+  }, over.toilet || {});
+  if (over.noToilet) delete f.toilet;
+  return st;
+}
+const slopePlanOf = (st) => E.computeScene(st).floor.slope;   // 名字别撞上面的 slopeOf
+
+slopeTest("回归锁 · 开着蹲便器时，地漏的落点量的是地漏不是便器（2026-09-27 修）", () => {
+  const sl = slopePlanOf(drainToiletState());
+  const hole = sl.plan.hole;
+  const holeC = { x: hole.x + hole.w / 2, y: hole.y + hole.h / 2 };   // 地漏洞口中心
+  const wcC = { x: sl.toilet.point.x, y: sl.toilet.point.y };         // 蹲便器（= 最低点）中心
+
+  // ① 非空转自检：两个中心必须离得够远，否则「量错地方」量不出差别，锁会悄悄空转。
+  //    （同「二十八」那条「样本真的覆盖到了远离原点的户型」的用意。）
+  const far = Math.abs(holeC.x - wcC.x) + Math.abs(holeC.y - wcC.y);
+  check("夹具本身够苛刻：地漏洞口中心与蹲便器中心相距 ≥ 500mm", far >= 500,
+        `实测 ${far.toFixed(0)}mm（洞口中心 ${holeC.x},${holeC.y} / 便器中心 ${wcC.x},${wcC.y}）`);
+
+  // ② 洞口表本身没被动过：地漏的洞口仍以地漏为中心
+  check("地漏洞口仍开在地漏上（中心 = 700,1300）",
+        near(holeC.x, 700, 0.5) && near(holeC.y, 1300, 0.5),
+        `洞口中心 ${holeC.x},${holeC.y}`);
+
+  // ③ 命门：地漏洞口正骑在砖缝上（离缝 0），落点必须报 seam。
+  //    修之前这里报的是**便器**的离缝 45mm / 砖心套割——工具会把便器那块砖的
+  //    开孔定位（host.abcd）当成地漏的交给师傅。
+  check("落点 = 骑砖缝（修之前错报成「砖心套割」）", sl.plan.cutStyle === "seam",
+        `实际 ${sl.plan.cutStyle}`);
+  check("离缝 = 0mm（修之前错报成 45mm，那是便器的离缝）", near(sl.plan.clearance, 0, 0.01),
+        `实际 ${sl.plan.clearance}`);
+
+  // ④ 换个位置：落点恰好又是「砖心套割」，但**离缝数字也不同了**（49 而非 45）。
+  //    锁住数字，才证明改的是「在哪儿量」，而不只是换了个标签。
+  const sl2 = slopePlanOf(drainToiletState({ drain: { fromLeft: 600, fromBack: 500 } }));
+  check("换一处：落点仍是砖心套割，但离缝是 49mm（修之前一律 45mm）",
+        sl2.plan.cutStyle === "hole" && near(sl2.plan.clearance, 49, 0.01),
+        `实际 ${sl2.plan.cutStyle} / ${sl2.plan.clearance}`);
+
+  // ⑤ 老路径逐位不变：把蹲便器关掉，第 6 个参数与 shape 同源，结果必须还是老样子。
+  //    （这就是「5 个参数的调用者一个字不变」那句承诺的机器证据。）
+  const sl3 = slopePlanOf(drainToiletState({ noToilet: true }));
+  check("关掉蹲便器时，落点与离缝与修之前逐位相同（seam / 0）",
+        sl3.plan.cutStyle === "seam" && near(sl3.plan.clearance, 0, 0.01),
+        `实际 ${sl3.plan.cutStyle} / ${sl3.plan.clearance}`);
+});
+
 if (!SLOPE_READY) {
   console.log(`\n⏸  地漏造型组（断言 13~25 + 命门）整组跳过：引擎还缺 ${_missApi.length} 个函数`);
   console.log(`   待实现：${_missApi.join(", ")}`);

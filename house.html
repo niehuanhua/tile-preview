@@ -1230,18 +1230,36 @@ const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
 const STORE_KEY = "houseTileV1";        // 与卫生间工具（tilePreviewV12）分开存，互不干扰
 const TILE_PRESETS = ["800×800", "600×600", "750×1500", "600×1200", "900×900", "300×300"];
 
-/* 初始给一套示例户型（客厅/次卧/主卧），照自己的户型改数字即可 */
+/* 初始给一套示例户型（89㎡ 两室一厅：客厅/主卧/次卧/厨房/卫生间/阳台），照自己的户型改数字即可。
+ *
+ * ★ 只在【一个存档都没有】的时候用（见 load()）。已有存档的老用户一个字节都不会被碰到。
+ * ★ floorTile 必须给：housePlan 开头就是「没规格就不出图」，留空的话打开是一片空白。
+ *   这里给 800×800，是市面上最常见的通铺规格。
+ * ★ doors 不能手写，得是「房间布局草图」里那套户型导出的结果：
+ *   导出时会把 from/to 按共用轴上谁的起点大调个个儿、at 也跟着重算，
+ *   手写必然对不上。改房间尺寸后要重新导出一次。
+ * ★ 这套尺寸和 房间布局草图.html / index.html 的示例是同一套，三边保持一致。 */
 const defaultState = () => ({
-  settings: { floorTile:null, direction:"horizontal", grout:2, wallGap:5,
+  settings: { floorTile:{ preset:"800×800", w:800, h:800 },
+              direction:"horizontal", grout:2, wallGap:5,
               baseRoom:null, baseMode:"center", startCorner:"tl",
               nudgeX:0, nudgeY:0, showCuts:false, wall:240 },
-  seq: 4,
+  seq: 7,                                  // 本页是 seq++ 后自增，所以下一个新房间是 r7
   rooms: [
-    { id:"r1", name:"客厅", x:0,    y:0,    w:4200, h:3600 },
-    { id:"r2", name:"次卧", x:4440, y:0,    w:3000, h:3600 },
-    { id:"r3", name:"主卧", x:0,    y:3840, w:3300, h:3000 },
+    { id:"r1", name:"客厅",   x:0,    y:0,    w:6900, h:4400 },
+    { id:"r2", name:"主卧",   x:0,    y:4640, w:3800, h:3900 },
+    { id:"r3", name:"次卧",   x:4040, y:4640, w:2860, h:3800 },
+    { id:"r4", name:"厨房",   x:7140, y:0,    w:2300, h:2000 },
+    { id:"r5", name:"卫生间", x:7140, y:2240, w:2300, h:2100 },
+    { id:"r6", name:"阳台",   x:0,    y:8780, w:3700, h:1400 },
   ],
-  doors: [ { id:"d1", from:"r1", to:"r3", at:1500, width:900, threshold:false } ],
+  doors: [
+    { id:"d1", from:"r1", to:"r2", at:1500, width:900,  threshold:false },
+    { id:"d2", from:"r3", to:"r1", at:1100, width:800,  threshold:false },
+    { id:"d3", from:"r1", to:"r4", at:1000, width:800,  threshold:false },
+    { id:"d4", from:"r5", to:"r1", at:1000, width:700,  threshold:true  },
+    { id:"d5", from:"r2", to:"r6", at:1850, width:1500, threshold:false },
+  ],
 });
 
 function load(){
@@ -1831,6 +1849,47 @@ function setShowCuts(v){
   ccb.addEventListener("change", () => setShowCuts(ccb.checked));
   cutSw.appendChild(ccb);
   $("#settingsBody").appendChild(cutSw);
+
+  /* 「重置为示例」：破坏性操作，永远排在最底下（和草图那个「清空」同一个规矩）。
+     点一下先变成「确定重置 / 取消」，第二下才真清——故意不用 confirm()：
+     手机浏览器会拦弹窗，那弹窗在手机上也又丑又容易点错。
+     重置 = state 换回 defaultState()，跟"第一次打开、一个存档都没有"走的是同一份数据。 */
+  const resetRow = el("div", "set-row");
+  resetRow.appendChild(el("span", "set-label", "重新开始"));
+  const resetSeg = el("div", "seg");
+  const resetNote = el("p", "set-hint");
+  resetNote.hidden = true;
+  resetRow.appendChild(resetSeg); resetRow.appendChild(resetNote);
+  $("#settingsBody").appendChild(resetRow);
+
+  const resetBtn = el("button", null, "重置为示例");
+  const showResetBtn = () => { resetSeg.innerHTML = ""; resetSeg.appendChild(resetBtn); };
+  resetBtn.onclick = () => {
+    resetNote.hidden = false;
+    resetNote.textContent = "会清掉现在填的所有房间、门洞和设置，换回内置的示例户型（89㎡ 两室一厅）。清掉就找不回来了。";
+    const yes = el("button", null, "确定重置");
+    const no  = el("button", null, "取消");
+    yes.onclick = () => {
+      state = defaultState();
+      save();
+      // 这几个输入框不在 renderSettings 的重建范围内，得自己把旧值抹掉，
+      // 否则重置完了框里还留着上一套数（顶上摘要却已经是新的）。
+      $("#tileW").value = ""; $("#tileH").value = "";
+      $("#nudgeX").value = ""; $("#nudgeY").value = "";
+      $("#wallGap").value = isFinite(state.settings.wallGap) ? state.settings.wallGap : "";
+      renderSettings(); renderRooms(); renderDoors(); update(); syncCutUI();
+      resetNote.textContent = "已经换回示例户型，要改就直接改下面的数字。";
+      showResetBtn();
+    };
+    no.onclick = () => {
+      resetNote.hidden = true; resetNote.textContent = "";
+      showResetBtn();
+    };
+    resetSeg.innerHTML = "";
+    resetSeg.appendChild(yes); resetSeg.appendChild(no);
+  };
+  showResetBtn();
+
   $("#cutToggle").onclick = () => setShowCuts(!state.settings.showCuts);
   // 添加按钮
   $("#addRoom").onclick = () => {

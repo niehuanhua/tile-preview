@@ -101,6 +101,12 @@ textarea{min-height:112px; resize:vertical; line-height:1.65; white-space:pre; o
       <button class="ghost" id="undo" disabled>↶ 撤销</button>
       <button class="ghost" id="clear">清空</button>
     </div>
+    <!-- 「重置为示例」单独占一行，不往上面那排里插：撤销紧挨清空的位置关系是特意排的
+         （手滑点完清空、手指正好落在撤销旁边），不该被新按钮挤开。 -->
+    <div class="btn-row" id="resetRow">
+      <button class="ghost" id="resetDemo">重置为示例</button>
+    </div>
+    <p class="hint" id="resetNote" hidden></p>
   </section>
 
   <section class="card">
@@ -699,10 +705,48 @@ window.addEventListener("keydown", (e) => {
   undo();
 });
 
+/* ---------- 内置示例户型（第一次打开时用）----------
+ * 89㎡ 两室一厅：客厅 / 主卧 / 次卧 / 厨房 / 卫生间 / 阳台，共 6 间、5 道门。
+ * 三份工具（本页、house.html、index.html）用的是**同一套尺寸**，
+ * 所以本页导出的数据丢进「全屋通铺」能直接出图。
+ *
+ * ★ 只在【一个存档都没有】的时候用（见 loadSketch）。已经有存档的老用户，
+ *   一个字节都不会被这个示例碰到 —— 删空房间后刷新不会又蹦出来。
+ * ★ 房间 id 用 r1..r6、门用 d1..d5，和工具自己生成新对象的编号规则一致；
+ *   seq 取 6（本页是 ++state.seq 先自增，所以下一个新房间是 r7）。
+ * ★ 改尺寸时注意：坐标是**绝对毫米**，房间之间靠 240 墙厚（state.wall）隔开，
+ *   门夹在共用段里、由 reconcileDoors 自动归位到墙缝中心线。 */
+const EXAMPLE_ROOMS = [
+  { id: "r1", name: "客厅",   x: 0,    y: 0,    w: 6900, h: 4400 },
+  { id: "r2", name: "主卧",   x: 0,    y: 4640, w: 3800, h: 3900 },
+  { id: "r3", name: "次卧",   x: 4040, y: 4640, w: 2860, h: 3800 },
+  { id: "r4", name: "厨房",   x: 7140, y: 0,    w: 2300, h: 2000 },
+  { id: "r5", name: "卫生间", x: 7140, y: 2240, w: 2300, h: 2100 },
+  { id: "r6", name: "阳台",   x: 0,    y: 8780, w: 3700, h: 1400 },
+];
+const EXAMPLE_DOORS = [
+  { id: "d1", a: "r1", b: "r2", x: 1500, y: 4520, width: 900,  threshold: false },
+  { id: "d2", a: "r1", b: "r3", x: 5140, y: 4520, width: 800,  threshold: false },
+  { id: "d3", a: "r1", b: "r4", x: 7020, y: 1000, width: 800,  threshold: false },
+  { id: "d4", a: "r1", b: "r5", x: 7020, y: 3240, width: 700,  threshold: true  },
+  { id: "d5", a: "r2", b: "r6", x: 1850, y: 8660, width: 1500, threshold: false },
+];
+/* 把示例灌进 state。和 loadSketch 读存档走**同一套**净化 + 归位流程，
+ * 免得示例本身带着不合法的门、一打开就是红叉。 */
+function applyExample() {
+  state.rooms = EXAMPLE_ROOMS.map((r) => ({ id: r.id, name: r.name, x: r.x, y: r.y, w: r.w, h: r.h }));
+  state.doors = sanitizeDoors(EXAMPLE_DOORS, state.rooms.map((r) => r.id));
+  state.seq = nextSeq(state.rooms, state.doors);
+  reconcileDoors();
+}
+
 function loadSketch() {
   let d = null;
   try { d = JSON.parse(localStorage.getItem(SKETCH_KEY) || "null"); } catch (e) {}
-  if (!d || !Array.isArray(d.rooms)) return;
+  /* 没有存档（第一次打开，或存的东西读不出来）→ 铺上内置示例户型。
+   * 注意这里**只管「没有存档」这一种情况**：存档存在但房间被删光了（d.rooms 是空数组）
+   * 会走到下面的 ok.length 判断直接返回，画布就该是空的 —— 那是用户自己删的，不能替他恢复。 */
+  if (!d || !Array.isArray(d.rooms)) { applyExample(); return; }
   const ok = d.rooms.filter((r) => r && typeof r.id === "string" &&
     [r.x, r.y, r.w, r.h].every((v) => typeof v === "number" && isFinite(v)) && r.w > 0 && r.h > 0);
   if (!ok.length) return;
@@ -1637,6 +1681,47 @@ $("#clear").onclick = () => {
   saveSketch();      // 清空也要存，免得刷新又冒出来
   draw(); renderEditor(); renderDoorList();
   commitStep();      // 清空是破坏性操作，这一步必须能撤销回来
+};
+
+/* 「重置为示例」：把草图换回内置的示例户型（89㎡ 两室一厅，见上面的 EXAMPLE_ROOMS）。
+ * 点一下先变成「确定重置 / 取消」，第二下才真换 —— 故意不用 confirm()：
+ * 手机浏览器会拦弹窗，那弹窗在手机上又丑又容易点错。
+ * 和「清空」一样是破坏性操作，所以同样包在 beginStep/commitStep 里，撤销能整步收回来。 */
+const resetNote = $("#resetNote");
+const resetBtn = $("#resetDemo");
+resetNote.hidden = true;
+function showResetBtn() {
+  const row = $("#resetRow");
+  row.innerHTML = "";
+  row.appendChild(resetBtn);
+}
+resetBtn.onclick = () => {
+  resetNote.hidden = false;
+  resetNote.textContent = "会清掉现在画的房间和门洞，换回内置的示例户型（89㎡ 两室一厅）。清掉就找不回来了。";
+  const mkBtn = (text) => {
+    const b = document.createElement("button");
+    b.className = "ghost"; b.textContent = text;
+    return b;
+  };
+  const yes = mkBtn("确定重置"), no = mkBtn("取消");
+  yes.onclick = () => {
+    beginStep();
+    applyExample();        // 内置净化 + 自动归位，和「第一次打开」走的是同一份数据
+    setSel(null, null);    // 选中的那间房已经不在册了，先清掉，免得编辑面板对着旧对象改数据
+    state.view = null; state.pending = null;
+    saveSketch();
+    draw(); renderEditor(); renderDoorList();
+    commitStep();          // 和「清空」一样，这一步必须能撤销回来
+    resetNote.textContent = "已经换回示例户型，要改就直接拖、或者点房间改数字。";
+    showResetBtn();
+  };
+  no.onclick = () => {
+    resetNote.hidden = true; resetNote.textContent = "";
+    showResetBtn();
+  };
+  const row = $("#resetRow");
+  row.innerHTML = "";
+  row.appendChild(yes); row.appendChild(no);
 };
 
 /* ---------- 批量贴尺寸 ---------- */
