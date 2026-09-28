@@ -87,6 +87,15 @@ button{cursor:pointer; touch-action:manipulation}
 .seg{display:flex; flex-wrap:wrap; gap:6px}
 .seg button{flex:1; min-width:52px; min-height:42px; padding:0 6px; border:1px solid var(--line); background:var(--chip); border-radius:8px; font-size:14px}
 .seg button.on{background:var(--accent-soft); border-color:var(--accent); color:var(--accent); font-weight:700}
+/* 顶部「重新开始」那一排。重置是破坏性操作，本来按规矩永远排在最底下，
+   但手机上根本找不到它（2026-09-28 挪到标题底下），安全性改由紧挨着的
+   「撤回重置」兜底：破坏性按钮和它的撤销永远待在一起，手滑点完手指正好在撤销上。
+   这条规矩推翻了下面 JS 注释里那句"破坏性操作永远排在最底下"，是有意的。 */
+.top-actions{display:flex; flex-wrap:wrap; gap:8px; margin:2px 2px 12px}
+.top-actions .seg{flex:1 1 150px; margin:0}
+.top-actions #resetUndo{flex:1 1 120px; min-height:42px; padding:0 10px; border:1px solid var(--line); background:var(--chip); border-radius:8px; font-size:14px; color:var(--ink)}
+.top-actions .set-hint{flex:1 1 100%; margin:0}
+.top-actions button:disabled{opacity:.4; cursor:default}
 
 /* ---------- 卡片 ---------- */
 .card{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; margin-top:14px;}
@@ -156,6 +165,17 @@ select{min-height:40px; padding:7px 8px; border:1px solid var(--line); border-ra
     <h1>全屋通铺</h1>
     <p class="sub">墙把房间隔开，只有门洞相通：门口选「通铺」，砖缝就从这儿穿过去、全屋一张网；选「过门石」，两边各自重新排砖</p>
   </header>
+
+  <!-- 重新开始：「重置为示例」原先排在设置面板最底下（"破坏性操作永远排最底下"是当初
+       定的规矩），但手机上根本翻不到。2026-09-28 挪到标题正下方这个显眼位置，安全性
+       改由紧挨着的「撤回重置」兜底——破坏性按钮和它的撤销永远待在一起，手滑点完手指
+       正好落在旁边。撤回按钮初始态把 disabled 写死在标签上，别指望 JS 跑到才置灰：
+       启动那一小会儿按钮会是亮的、点下去没反应，用户会以为程序坏了。 -->
+  <div class="top-actions">
+    <div class="seg" id="resetSeg"></div>
+    <button id="resetUndo" disabled>↶ 撤回重置</button>
+    <p class="set-hint" id="resetNote" hidden></p>
+  </div>
 
   <section class="settings" id="settings">
     <div class="settings-box">
@@ -1850,35 +1870,64 @@ function setShowCuts(v){
   cutSw.appendChild(ccb);
   $("#settingsBody").appendChild(cutSw);
 
-  /* 「重置为示例」：破坏性操作，永远排在最底下（和草图那个「清空」同一个规矩）。
-     点一下先变成「确定重置 / 取消」，第二下才真清——故意不用 confirm()：
+  /* 「重置为示例」：点一下先变成「确定重置 / 取消」，第二下才真清——故意不用 confirm()：
      手机浏览器会拦弹窗，那弹窗在手机上也又丑又容易点错。
-     重置 = state 换回 defaultState()，跟"第一次打开、一个存档都没有"走的是同一份数据。 */
-  const resetRow = el("div", "set-row");
-  resetRow.appendChild(el("span", "set-label", "重新开始"));
-  const resetSeg = el("div", "seg");
-  const resetNote = el("p", "set-hint");
-  resetNote.hidden = true;
-  resetRow.appendChild(resetSeg); resetRow.appendChild(resetNote);
-  $("#settingsBody").appendChild(resetRow);
+     重置 = state 换回 defaultState()，跟"第一次打开、一个存档都没有"走的是同一份数据。
+
+     ★ 这个按钮 2026-09-28 从设置面板最底下挪到了页面顶部。原来那句"破坏性操作永远排在
+     最底下（和草图那个「清空」同一个规矩）"是有意推翻的：手机上根本翻不到，一个用户
+     找不到的按钮，再安全也没用。安全性改由紧挨着的「撤回重置」兜底——破坏性按钮和它的
+     撤销永远待在一起（这条才是真正要守的），手滑点完手指正好落在撤销上。
+
+     「撤回重置」：重置之前先拍一张快照捏在手里，点一下原样放回去。
+     快照就是落盘用的那串 JSON（和 save() 同一个写法），所以两边结构永远一致，
+     也不会多出新字段——localStorage 的键和数据结构一个都没动。
+     只有一层，而且只在内存里：刷新页面就没了（和草图那个撤销一个寿命，欢欢
+     2026-09-28 选的"撑到刷新为止"）。load() 只是校验、不做迁移，所以
+     JSON.parse 回来就是原样，不用再走一遍 load()。 */
+  const resetSeg = $("#resetSeg"), resetNote = $("#resetNote"), resetUndo = $("#resetUndo");
+  let resetSnap = null;                        // 重置前那份数据的 JSON 串；null = 没得撤回
+  const syncResetUndo = () => { resetUndo.disabled = resetSnap === null; };
+
+  // 这几个输入框不在 renderSettings 的重建范围内（它只在框空着的时候补一次），
+  // 换 state 之后必须自己把框里的旧值抹掉重填，否则框里留着上一套数、顶上摘要却已经是新的。
+  // 重置和撤回都走这一个函数，免得两边写岔。
+  const syncResetInputs = (s) => {
+    const ft = s.settings.floorTile || {};
+    const custom = ft.preset === "custom";
+    $("#tileW").value = (custom && isFinite(ft.w)) ? ft.w : "";
+    $("#tileH").value = (custom && isFinite(ft.h)) ? ft.h : "";
+    $("#nudgeX").value = s.settings.nudgeX || "";
+    $("#nudgeY").value = s.settings.nudgeY || "";
+    $("#wallGap").value = isFinite(s.settings.wallGap) ? s.settings.wallGap : "";
+  };
+  const afterStateSwap = () => {
+    save();
+    syncResetInputs(state);
+    renderSettings(); renderRooms(); renderDoors(); update(); syncCutUI();
+    syncResetUndo();
+  };
 
   const resetBtn = el("button", null, "重置为示例");
   const showResetBtn = () => { resetSeg.innerHTML = ""; resetSeg.appendChild(resetBtn); };
+  resetUndo.onclick = () => {
+    if (resetSnap === null) return;
+    state = JSON.parse(resetSnap);
+    resetSnap = null;                          // 只给撤一次，撤完就没了
+    afterStateSwap();
+    resetNote.hidden = false;
+    resetNote.textContent = "已经把你重置前那份数据原样放回来了。";
+  };
   resetBtn.onclick = () => {
     resetNote.hidden = false;
-    resetNote.textContent = "会清掉现在填的所有房间、门洞和设置，换回内置的示例户型（89㎡ 两室一厅）。清掉就找不回来了。";
+    resetNote.textContent = "会清掉现在填的所有房间、门洞和设置，换回内置的示例户型（89㎡ 两室一厅）。点错了的话，旁边「撤回重置」能拿回来。";
     const yes = el("button", null, "确定重置");
     const no  = el("button", null, "取消");
     yes.onclick = () => {
+      resetSnap = JSON.stringify(state);       // ★ 必须在 state 被换掉之前拍
       state = defaultState();
-      save();
-      // 这几个输入框不在 renderSettings 的重建范围内，得自己把旧值抹掉，
-      // 否则重置完了框里还留着上一套数（顶上摘要却已经是新的）。
-      $("#tileW").value = ""; $("#tileH").value = "";
-      $("#nudgeX").value = ""; $("#nudgeY").value = "";
-      $("#wallGap").value = isFinite(state.settings.wallGap) ? state.settings.wallGap : "";
-      renderSettings(); renderRooms(); renderDoors(); update(); syncCutUI();
-      resetNote.textContent = "已经换回示例户型，要改就直接改下面的数字。";
+      afterStateSwap();
+      resetNote.textContent = "已经换回示例户型，要改就直接改下面的数字。点错了？点旁边的「撤回重置」。";
       showResetBtn();
     };
     no.onclick = () => {
@@ -1889,6 +1938,7 @@ function setShowCuts(v){
     resetSeg.appendChild(yes); resetSeg.appendChild(no);
   };
   showResetBtn();
+  syncResetUndo();
 
   $("#cutToggle").onclick = () => setShowCuts(!state.settings.showCuts);
   // 添加按钮

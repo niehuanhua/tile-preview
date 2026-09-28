@@ -49,6 +49,9 @@ canvas{
   cursor:grab;
 }
 .btn-row{display:flex; flex-wrap:wrap; gap:8px; margin-top:10px}
+/* 「重置为示例」占的那一格。两段确认的「确定重置 / 取消」只替换这一格，
+ * 不能直接清空整行——那样会把旁边的「撤回重置」一起抹掉，点下去按钮会闪没。 */
+.seg{display:flex; flex-wrap:wrap; gap:8px; flex:1 1 auto}
 button{font:inherit; color:inherit; cursor:pointer; touch-action:manipulation;}
 button.primary, button.ghost { min-height:42px; padding:0 14px; border-radius:8px; font-weight:700; font-size:14px; flex:1; }
 button.primary{background:var(--accent-soft); color:var(--accent); border:1px solid var(--accent);}
@@ -87,6 +90,21 @@ textarea{min-height:112px; resize:vertical; line-height:1.65; white-space:pre; o
     <p class="diag" id="diag"></p>
   </header>
 
+  <!-- 「重置为示例」原先排在画布卡片的最底下（"破坏性操作永远排最底下"是当初定的规矩），
+       但手机上根本翻不到。2026-09-28 挪到标题正下方这个显眼位置，安全性改由紧挨着的
+       「撤回重置」兜底——破坏性按钮和它的撤销永远待在一起，手滑点完手指正好落在旁边。
+       撤回按钮初始态把 disabled 写死在标签上，别指望 JS 跑到才置灰：启动那一小会儿
+       按钮会是亮的、点下去没反应，用户会以为程序坏了。
+       ★ 注意别和画布那排里的「↶ 撤销」搞混：那个挨着「清空」，撤销的是画布上的编辑
+         步骤（拖房间、改数字），这条管的是"重置"这一个动作，是两条独立的链。 -->
+  <div class="btn-row" id="resetRow">
+    <!-- 两段确认的「确定重置 / 取消」替换的是 #resetSeg 这一格，不是整行——
+         直接清空整行会把旁边的「撤回重置」一起抹掉（点下去那一下按钮会闪没）。 -->
+    <span class="seg" id="resetSeg"><button class="ghost" id="resetDemo">重置为示例</button></span>
+    <button class="ghost" id="resetUndo" disabled>↶ 撤回重置</button>
+  </div>
+  <p class="hint" id="resetNote" hidden></p>
+
   <section class="card">
     <div class="canvas-wrap"><canvas id="cv"></canvas></div>
     <p class="hint" id="hint">点下面「＋ 添加房间」开始</p >
@@ -101,12 +119,7 @@ textarea{min-height:112px; resize:vertical; line-height:1.65; white-space:pre; o
       <button class="ghost" id="undo" disabled>↶ 撤销</button>
       <button class="ghost" id="clear">清空</button>
     </div>
-    <!-- 「重置为示例」单独占一行，不往上面那排里插：撤销紧挨清空的位置关系是特意排的
-         （手滑点完清空、手指正好落在撤销旁边），不该被新按钮挤开。 -->
-    <div class="btn-row" id="resetRow">
-      <button class="ghost" id="resetDemo">重置为示例</button>
-    </div>
-    <p class="hint" id="resetNote" hidden></p>
+    <!-- 「重置为示例」原来在这儿，2026-09-28 挪到页面顶部了（见上面 #resetRow） -->
   </section>
 
   <section class="card">
@@ -1686,18 +1699,41 @@ $("#clear").onclick = () => {
 /* 「重置为示例」：把草图换回内置的示例户型（89㎡ 两室一厅，见上面的 EXAMPLE_ROOMS）。
  * 点一下先变成「确定重置 / 取消」，第二下才真换 —— 故意不用 confirm()：
  * 手机浏览器会拦弹窗，那弹窗在手机上又丑又容易点错。
- * 和「清空」一样是破坏性操作，所以同样包在 beginStep/commitStep 里，撤销能整步收回来。 */
+ * 和「清空」一样是破坏性操作，所以同样包在 beginStep/commitStep 里，撤销能整步收回来。
+ *
+ * ★ 这个按钮 2026-09-28 从画布卡片最底下挪到了页面顶部。原来那句"破坏性操作永远排在
+ *   最底下"是有意推翻的：手机上根本翻不到，一个用户找不到的按钮，再安全也没用。
+ *   安全性改由紧挨着的「撤回重置」兜底——破坏性按钮和它的撤销永远待在一起（这条才是
+ *   真正要守的），手滑点完手指正好落在撤销上。 */
 const resetNote = $("#resetNote");
 const resetBtn = $("#resetDemo");
+const resetUndo = $("#resetUndo");
 resetNote.hidden = true;
+/* 「撤回重置」专用的一层快照：重置前那份草图的 sketchJSON 串；null = 没得撤回。
+ * 不复用 undoStack——那条链会被后续编辑挤到栈底、也可能被 UNDO_MAX 挤掉，
+ * 撤回要的是"不管中间干了什么，一直能退回重置前"。只有一层，而且只在内存里：
+ * 刷新页面就没了（和上面那条撤销链一个寿命，欢欢 2026-09-28 选的"撑到刷新为止"）。 */
+let resetSnap = null;
+const syncResetUndo = () => { resetUndo.disabled = resetSnap === null; };
+/* 只重建 #resetSeg 那一格（放过「重置为示例」），#resetUndo 不在这格里、不受影响 */
 function showResetBtn() {
-  const row = $("#resetRow");
-  row.innerHTML = "";
-  row.appendChild(resetBtn);
+  const seg = $("#resetSeg");
+  seg.innerHTML = "";
+  seg.appendChild(resetBtn);
 }
+resetUndo.onclick = () => {
+  if (resetSnap === null) return;
+  beginStep();           // 先给"现在"（刚换上的示例）拍一张，让撤回这个动作本身也能被撤销
+  applySnap(resetSnap);  // 把重置前那份放回去；选中态按 id 重绑，视野该复原时 applySnap 自己会扶正
+  resetSnap = null;      // 只给撤一次，撤完就没了
+  syncResetUndo();
+  commitStep();          // 落盘 + 进撤销栈，跟普通一步完全一样
+  resetNote.hidden = false;
+  resetNote.textContent = "已经把你重置前那份草图原样放回来了。";
+};
 resetBtn.onclick = () => {
   resetNote.hidden = false;
-  resetNote.textContent = "会清掉现在画的房间和门洞，换回内置的示例户型（89㎡ 两室一厅）。清掉就找不回来了。";
+  resetNote.textContent = "会清掉现在画的房间和门洞，换回内置的示例户型（89㎡ 两室一厅）。点错了的话，旁边「撤回重置」能拿回来。";
   const mkBtn = (text) => {
     const b = document.createElement("button");
     b.className = "ghost"; b.textContent = text;
@@ -1705,6 +1741,7 @@ resetBtn.onclick = () => {
   };
   const yes = mkBtn("确定重置"), no = mkBtn("取消");
   yes.onclick = () => {
+    resetSnap = sketchJSON();   // ★ 必须在 beginStep/applyExample 之前拍，拍的是"重置前"
     beginStep();
     applyExample();        // 内置净化 + 自动归位，和「第一次打开」走的是同一份数据
     setSel(null, null);    // 选中的那间房已经不在册了，先清掉，免得编辑面板对着旧对象改数据
@@ -1712,17 +1749,19 @@ resetBtn.onclick = () => {
     saveSketch();
     draw(); renderEditor(); renderDoorList();
     commitStep();          // 和「清空」一样，这一步必须能撤销回来
-    resetNote.textContent = "已经换回示例户型，要改就直接拖、或者点房间改数字。";
+    syncResetUndo();
+    resetNote.textContent = "已经换回示例户型，要改就直接拖、或者点房间改数字。点错了？点旁边的「撤回重置」。";
     showResetBtn();
   };
   no.onclick = () => {
     resetNote.hidden = true; resetNote.textContent = "";
     showResetBtn();
   };
-  const row = $("#resetRow");
-  row.innerHTML = "";
-  row.appendChild(yes); row.appendChild(no);
+  const seg = $("#resetSeg");
+  seg.innerHTML = "";
+  seg.appendChild(yes); seg.appendChild(no);
 };
+syncResetUndo();   // 标签上已经写死 disabled 了，这里只是让 JS 的状态跟标签对齐
 
 /* ---------- 批量贴尺寸 ---------- */
 /* 「房间N」从几号开始编：现有房间里有过 房间3 就从 4 起，免得重名。

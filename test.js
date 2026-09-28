@@ -1591,6 +1591,85 @@ slopeTest("回归锁 · 开着蹲便器时，地漏的落点量的是地漏不�
         `实际 ${sl3.plan.cutStyle} / ${sl3.plan.clearance}`);
 });
 
+/* ============================================================
+ * 二、示例数据（defaultState）的规矩 —— 直接从 index.html 原文里把 defaultState 抠出来跑
+ *
+ * 为什么要单独立一组：示例数据不是引擎，但它是**用户打开工具看到的第一眼**，
+ * 而且它是一份"讲规矩的样板"——四面墙的字母怎么摆，用户会照着学。
+ * 2026-09-28 出过一次：墙 A 和墙 B 的 alignEdge 写反了，A 墙（该是门对面、开窗）
+ * 被摆到了门那面、拿了门洞，B 墙反过来。图能画、测试全绿、肉眼不盯着字母看就发现不了。
+ * 所以这里把「字母 ↔ 方位 ↔ 门窗」三条一起锁死。
+ * ============================================================ */
+
+function loadDefaultState() {
+  const a = html.indexOf("const defaultState = () => ({");
+  if (a < 0) return null;
+  const b = html.indexOf("\n});", a);
+  if (b < 0) return null;
+  const src = html.slice(a, b + 4);
+  // defaultState 里引用了两个默认值工厂；这一组只关心墙卡，给空壳就够
+  const fn = new Function("defaultDrain", "defaultToilet", src + "\nreturn defaultState();");
+  return fn(() => ({}), () => ({}));
+}
+
+test("示例数据 · 四面墙的字母与方位（A=前 / B=后 / C=左 / D=右）", () => {
+  const st = loadDefaultState();
+  check("能从 index.html 原文里抠出 defaultState 并跑通（抠不出来说明写法变了，先修这里）",
+        !!(st && Array.isArray(st.cards)), st ? "" : "抠不出来或没有 cards");
+
+  const walls = (st.cards || []).filter((c) => c.type === "wall");
+  check("示例里有 4 面墙", walls.length === 4, `实际 ${walls.length} 面`);
+
+  // 字母 → 该压在(压地面哪条边 = alignEdge)。这张表就是需求原文：
+  //   A墙是人站在门口面对的那面墙，压在地面的前边，通常窗户就开在这面墙上；
+  //   B墙就是人所在的门口那面墙，门洞就开在这面墙上；C墙在左手边；D墙在右手边。
+  const WANT_EDGE = { A: "front", B: "back", C: "left", D: "right" };
+  for (const c of walls) {
+    const m = /墙\s*([A-Da-d])/.exec(c.name || "");
+    if (!m) { check(`墙「${c.name}」的名字里带 A~D 字母`, false); continue; }
+    const L = m[1].toUpperCase();
+    check(`墙 ${L} 压在地面的「${WANT_EDGE[L]}」（${c.name} 实际选了 ${c.alignEdge}）`,
+          c.alignEdge === WANT_EDGE[L], `期望 ${WANT_EDGE[L]}，实际 ${c.alignEdge}`);
+  }
+
+  // 门和窗的归属：门开在 B 墙，窗开在 A 墙
+  const byLetter = {};
+  for (const c of walls) {
+    const m = /墙\s*([A-Da-d])/.exec(c.name || "");
+    if (m) byLetter[m[1].toUpperCase()] = c;
+  }
+  const doorWalls = walls.filter((c) => c.door && c.door.on).map((c) => c.name);
+  const winWalls = walls.filter((c) => c.win && c.win.on).map((c) => c.name);
+  check("示例里恰好一面墙开门，且是 B 墙（门洞开在门口那面）",
+        doorWalls.length === 1 && byLetter.B && byLetter.B.door.on,
+        `开门的是：${doorWalls.join("、") || "（没有）"}`);
+  check("示例里恰好一面墙开窗，且是 A 墙（窗户开在门对面那面）",
+        winWalls.length === 1 && byLetter.A && byLetter.A.win.on,
+        `开窗的是：${winWalls.join("、") || "（没有）"}`);
+
+  // 前/后两面墙的宽度必须等于地面的宽度方向，左/右两面必须等于进深方向，
+  // 否则「墙地通缝」根本对不上（这条防的是改尺寸改串了方向）。
+  const floor = (st.cards || []).find((c) => c.type === "floor");
+  if (floor && floor.w > 0 && floor.h > 0) {
+    for (const L of ["A", "B"]) {
+      check(`墙 ${L} 的宽度 = 地面宽度 ${floor.w}（前/后墙横跨房间宽度）`,
+            byLetter[L] && byLetter[L].w === floor.w,
+            `墙 ${L} 宽 ${byLetter[L] && byLetter[L].w}，地面宽 ${floor.w}`);
+    }
+    for (const L of ["C", "D"]) {
+      check(`墙 ${L} 的宽度 = 地面进深 ${floor.h}（左/右墙横跨房间进深）`,
+            byLetter[L] && byLetter[L].w === floor.h,
+            `墙 ${L} 宽 ${byLetter[L] && byLetter[L].w}，地面进深 ${floor.h}`);
+    }
+  }
+
+  // 门的方位不能和地漏的「离后墙」互相打架：门在 B 墙，而 doorEdge 说的是
+  // 「门在图的哪条边」，两者必须是同一面墙，否则地漏/便器的前后全反。
+  check("doorEdge 指的那条边，和 B 墙的 alignEdge 是同一面（前/后不能反）",
+        st.doorEdge === "bottom" ? byLetter.B && byLetter.B.alignEdge === "back" : true,
+        `doorEdge=${st.doorEdge}，B 墙 alignEdge=${byLetter.B && byLetter.B.alignEdge}`);
+});
+
 if (!SLOPE_READY) {
   console.log(`\n⏸  地漏造型组（断言 13~25 + 命门）整组跳过：引擎还缺 ${_missApi.length} 个函数`);
   console.log(`   待实现：${_missApi.join(", ")}`);
