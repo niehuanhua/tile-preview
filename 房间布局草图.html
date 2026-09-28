@@ -10,6 +10,7 @@
   --paper:#F2F1ED; --card:#FFFFFF; --ink:#26292E; --ink-soft:#6A6F76;
   --line:#DFDCD4; --chip:#ECEAE4; --accent:#2B5E9B; --accent-soft:#E3EBF5;
   --ok:#2E7D46; --danger:#C0362C; --danger-soft:#F8E4E2;
+  --warn:#8A6100; --warn-soft:#FBF0D2;
 }
 @media (prefers-color-scheme: dark){
   :root:not([data-theme="light"]){
@@ -17,6 +18,7 @@
     --line:#34373D; --chip:#2A2D32;
     --accent:#7FA9DC; --accent-soft:#243246;
     --ok:#74C28C; --danger:#E5796F; --danger-soft:#3C2320;
+    --warn:#E0BC6B; --warn-soft:#3A2F16;
   }
 }
 *{box-sizing:border-box}
@@ -76,9 +78,19 @@ textarea{min-height:112px; resize:vertical; line-height:1.65; white-space:pre; o
 .room-line.on{border-color:var(--accent); background:var(--accent-soft); color:var(--accent); font-weight:700}
 .room-line.empty{border-style:dashed; color:var(--ink-soft); cursor:default}
 .room-line.far{border-color:var(--danger); background:var(--danger-soft); color:var(--danger); font-weight:700}
+/* 未量的房间：只把边框改成虚线，颜色一个字都不动。
+   画布上那间房也是虚线，两边对得上；而且不抢 .on（选中）和 .far（离太远）的
+   配色——那两个说的是别的事，没必要为了「未量」把它们盖掉。 */
+.room-line.est{border-style:dashed}
 .ok-banner{margin-top:10px; padding:10px 12px; background:#E4F0E7; color:var(--ok);
   border-radius:8px; font-size:13px; font-weight:700; text-align:center}
 @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]) .ok-banner{background:#1F3327;} }
+/* 「有几间房还没量尺寸」的黄字提醒，就贴在「应用到 house.html」按钮上面。
+ * 用黄不用红：--danger 在这一页的意思是「出错了 / 放不下」（门放不回去、房间重叠），
+ * 而这个是「提醒你看一眼」，导是照样能导的。两者不该长一个样。
+ * 左对齐（不是 .ok-banner 那样的居中）：它常有两行，居中会很难读。 */
+.warn-banner{margin:0 0 10px; padding:10px 12px; background:var(--warn-soft); color:var(--warn);
+  border-radius:8px; font-size:13px; font-weight:700; text-align:left}
 </style>
 </head>
 <body>
@@ -167,6 +179,9 @@ textarea{min-height:112px; resize:vertical; line-height:1.65; white-space:pre; o
       <label class="field"><span>长（mm）</span><input type="text" inputmode="numeric" id="rW"></label>
       <label class="field"><span>宽（mm）</span><input type="text" inputmode="numeric" id="rH"></label>
     </div>
+    <!-- 拖角这件事在画面上没有任何提示（把手只在选中时才画出来），所以
+         "什么时候能用"就在这儿说一句——这段文字跟把手是同一个生命周期。 -->
+    <p class="hint" style="text-align:left" id="roomHint"></p>
     <div class="btn-row">
       <button class="ghost" id="del" style="color:var(--danger)">删除这间</button>
     </div>
@@ -216,6 +231,7 @@ textarea{min-height:112px; resize:vertical; line-height:1.65; white-space:pre; o
   </section>
 
   <section class="card">
+    <div class="warn-banner" id="estWarn" style="display:none"></div>
     <button class="primary" id="apply" style="width:100%">应用到 house.html</button>
     <div class="ok-banner" id="ok" style="display:none">已写入！打开 house.html 就能看到。</div>
   </section>
@@ -236,6 +252,10 @@ const MIN_DOOR_MM = 300;         // 比这还窄的缝就不给开门了（点�
 const WALL_SLOP_PX = 12;         // 点墙的命中半径（屏幕像素，要调手感就调这一个）
 const DOOR_SNAP_MM = 10;         // 拖动门的时候吸附到多少毫米
 const DOOR_LABEL_MIN_PX = 34;    // 洞口在屏幕上短于这个就不写宽度数字了（太挤）
+const MIN_ROOM_MM = 300;         // 拖角能缩到的最小边长（mm）。再小就会拖成 0 或负数，
+                                 // 而 loadSketch 会把 w<=0 的房间整条丢掉——等于房间凭空消失
+const CORNER_SLOP_PX = 22;       // 拖角把手的命中半径（屏幕像素）。比 HIT_SLOP_PX 大一圈：
+                                 // 房间角上不像房间正中那么好点，手指又比鼠标粗
 
 /*ENGINE-START*/
 /* ================= 引擎段 =================
@@ -574,9 +594,92 @@ const parseRoomLines = (text, startNo) => {
   return { rooms, errors };
 };
 
+/* ---------- 「未量」标记 ----------
+ * 用户真正的工作顺序是两段：先照着结构图把房间摆个大概（尺寸全是估的），
+ * 等拿尺子量完了再回头填真数。这个标记就是拿来区分这两段的：
+ * 有了它，草稿阶段的房间可以画成虚线、导出时能被点出来，
+ * 但**不挡着人往下走**——量没量完是自己的事。
+ *
+ * ★ 为什么不干脆把没量的房间填成 0×0：
+ *   loadSketch() 会把 w<=0 或 h<=0 的房间**整条丢掉**（那是用来挡坏存档的），
+ *   所以「没量」要是用 0 表示，页面一刷新房间就凭空消失了。
+ *
+ * 约定：**缺省 = 已量**。老存档里没有 est 这个键 → 读出来 false，
+ * 行为跟改动前一模一样；导出时也一个字节都不多写。 */
+const isEst = (r) => !!(r && r.est);
+/* 用 delete 而不是 r.est = false：已量的房间存档里**一个 est 键都不留**，
+ * 这样「以前存下的文件」和「现在重新存一遍」是逐位相同的。 */
+const markMeasured = (r) => { if (r) delete r.est; };
+const markEst = (r) => { if (r) r.est = true; };
+
+/* ---------- 拖角改大小 ----------
+ * corner：0=左上 1=右上 2=右下 3=左下（顺时针）。
+ * 对角钉死当锚点——拖左上角时右下角原地不动，这符合所有人的直觉。
+ * 自由拉伸，不锁宽高比：户型草图本来就是要能把一间房单独拉长或拉宽。
+ * 返回新矩形，**不改传进来的那个对象**（调用方决定什么时候落笔）。
+ *
+ * minMM 兜底：拖过头会让边长变成 0 甚至负数，而那种房间 loadSketch 直接丢掉。
+ * 300 这个数和批量导入那边的下限是同一个（parseRoomLines 里的 MIN_MM）——
+ * 导不进来的尺寸，也不该能拖出来。
+ * 走参数不走常量：引擎段会被测试单独抽出来跑，读不到外面的 MIN_ROOM_MM。 */
+const resizeByCorner = (r, corner, mmX, mmY, minMM) => {
+  const m = minMM > 0 ? minMM : 300;
+  const x0 = r.x, y0 = r.y, x1 = r.x + r.w, y1 = r.y + r.h;
+  const west  = (corner === 0 || corner === 3);   // 拖的是左边 → 改 x0，右边钉住
+  const north = (corner === 0 || corner === 1);   // 拖的是上边 → 改 y0，下边钉住
+  const nx0 = west  ? Math.min(mmX, x1 - m) : x0;
+  const nx1 = west  ? x1 : Math.max(mmX, x0 + m);
+  const ny0 = north ? Math.min(mmY, y1 - m) : y0;
+  const ny1 = north ? y1 : Math.max(mmY, y0 + m);
+  return { x: nx0, y: ny0, w: nx1 - nx0, h: ny1 - ny0 };
+};
+
+/* ---------- 角把手的命中判定 ----------
+ * 只判一间房（画面上只给选中那间画把手，见绘制那段），所以这里也只用传一间。
+ * 取**最近**的那个角，不是「先撞上谁算谁」：房间被拖小以后四个角会挤在一起，
+ * 先撞上谁算谁的话，手指明明压在左上却抓到了右上，手感是坏的。
+ * 返回 0..3，没命中返回 -1。slopMM 同样走参数。 */
+const cornerHit = (r, x, y, slopMM) => {
+  if (!r) return -1;
+  const p = [[r.x, r.y], [r.x + r.w, r.y], [r.x + r.w, r.y + r.h], [r.x, r.y + r.h]];
+  let best = -1, bestD = Infinity;
+  for (let i = 0; i < 4; i++) {
+    const dx = x - p[i][0], dy = y - p[i][1];
+    if (Math.abs(dx) > slopMM || Math.abs(dy) > slopMM) continue;
+    const d = dx * dx + dy * dy;
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return best;
+};
+
+/* ---------- 拖角时的对齐吸附 ----------
+ * 跟 snapToRooms 不是一回事：那个是拿一个**大小已经定死**的方框去对左上角，
+ * 只挪位置不改尺寸；拖角改的是单条边，只能一条边一条边地吸。
+ * 候选值 = 每间邻居房的上下（或左右）两条边，各再 ±gap 留出墙缝该在的位置——
+ * 这样「拖到隔壁旁边」会自动停在墙缝宽度上，而不是随手压过去重叠。
+ * tolMM 同 SNAP_ROOM 的道理，走参数（引擎段读不到外面的常量）。 */
+const edgeCands = (rooms, selfId, gap, axis) => {
+  const out = [];
+  for (const o of rooms) {
+    if (o.id === selfId) continue;
+    if (axis === "x") out.push(o.x - gap, o.x, o.x + o.w, o.x + o.w + gap);
+    else              out.push(o.y - gap, o.y, o.y + o.h, o.y + o.h + gap);
+  }
+  return out;
+};
+const snapToEdges = (v, cands, tolMM) => {
+  let best = v, bestD = tolMM;
+  for (const c of cands) {
+    const d = Math.abs(v - c);
+    if (d < bestD) { bestD = d; best = c; }
+  }
+  return best;
+};
+
 const Engine = { numOr, rectOf, spanOv, rectOvArea, distToRange, doorAxis, doorRectOf, doorRect,
                  clampPos, thirdRoomOnDoor, doorView, sameWallDoorClash,
-                 findWallGap, freeRangeOnWall, sanitizeDoors, nextSeq, exportDoors, parseRoomLines };
+                 findWallGap, freeRangeOnWall, sanitizeDoors, nextSeq, exportDoors, parseRoomLines,
+                 isEst, markMeasured, markEst, resizeByCorner, cornerHit, edgeCands, snapToEdges };
 if (typeof module !== "undefined" && module.exports) module.exports = Engine;
 /*ENGINE-END*/
 
@@ -763,7 +866,16 @@ function loadSketch() {
   const ok = d.rooms.filter((r) => r && typeof r.id === "string" &&
     [r.x, r.y, r.w, r.h].every((v) => typeof v === "number" && isFinite(v)) && r.w > 0 && r.h > 0);
   if (!ok.length) return;
-  state.rooms = ok.map((r) => ({ id: r.id, name: r.name || "房间", x: r.x, y: r.y, w: r.w, h: r.h }));
+  /* ★ 房间对象在这里是**重新造一个**（只带这 6 个字段），不是就地用存档里那个。
+   *   所以 est 必须显式搬过来，漏了这一行的话「未量」标记一刷新就没了，
+   *   而且表面看不出错——房间还在，只是静悄悄变回「已量」。
+   *   反过来说：只给**未量**的房间写这个键，已量的房存出来还是干干净净 6 个字段，
+   *   跟改动之前的存档逐位一样。 */
+  state.rooms = ok.map((r) => {
+    const o = { id: r.id, name: r.name || "房间", x: r.x, y: r.y, w: r.w, h: r.h };
+    if (r.est) o.est = true;
+    return o;
+  });
   // 老存档没有 doors 字段 → sanitizeDoors 返回 []，不抛异常；指向已删房间的门也在这里吃掉
   state.doors = sanitizeDoors(d.doors, state.rooms.map((r) => r.id));
   // 编号接着已有的往下排，免得新加的房间/门 id 跟旧的重号。
@@ -1128,22 +1240,47 @@ function draw() {
       ctx.shadowOffsetY = 4;
     }
     
-    ctx.fillStyle = sel ? "rgba(43,94,155,0.30)" : "rgba(43,94,155,0.13)";
+    /* 未量的房：底色淡一档、边框走虚线。跟右边清单里那行的虚线框是同一种说法，
+     * 一眼就能分出「这只是我比划的」和「这是量过的」。 */
+    const est = isEst(r);
+    ctx.fillStyle = est ? (sel ? "rgba(43,94,155,0.16)" : "rgba(43,94,155,0.06)")
+                        : (sel ? "rgba(43,94,155,0.30)" : "rgba(43,94,155,0.13)");
     ctx.fillRect(X, Y, W, H);
-    ctx.strokeStyle = sel ? "#2B5E9B" : "rgba(43,94,155,0.55)";
+    ctx.strokeStyle = est ? "rgba(43,94,155,0.75)" : (sel ? "#2B5E9B" : "rgba(43,94,155,0.55)");
     ctx.lineWidth = sel ? 2.5 : 1.5;
+    /* ★ 虚线画完当场就关掉，别等下一帧：setLineDash 是**画布全局状态**，
+     *   漏着不还原的话，后面每一笔（门、把手、下一间房的框）都会莫名其妙变虚线。 */
+    if (est) ctx.setLineDash([7, 5]);
     ctx.strokeRect(X, Y, W, H);
-    
+    if (est) ctx.setLineDash([]);
+
     if (dragging) ctx.restore();
-    
+
     if (W > 55 && H > 26) {
       ctx.fillStyle = "#1B3D6B";
       ctx.font = "700 13px -apple-system, PingFang SC, sans-serif";
       ctx.textBaseline = "top";
+      ctx.textAlign = "start";
       ctx.fillText(r.name, X + 6, Y + 6);
       if (W > 90 && H > 48) {
         ctx.font = "600 11px -apple-system, PingFang SC, sans-serif";
         ctx.fillText(`${Math.round(r.w)}×${Math.round(r.h)}`, X + 6, Y + 24);
+        /* 未量的牌子挂在**右上角**，不是贴在名字后面：
+         * 贴名字后面（"客厅 未量"）会跟名字抢横向的位置，房间一窄就挤成一团。
+         * 门槛跟着尺寸那行一起用 W>90：一是牌子本身就要 40px 出头，
+         * 更要紧的是——这块牌子管的正是下面那个尺寸数字，数字不显示的地方，
+         * 它标给谁看呢。 */
+        if (est) {
+          ctx.save();
+          ctx.textBaseline = "top";
+          ctx.textAlign = "start";
+          const bw = Math.ceil(ctx.measureText("未量").width) + 12;
+          ctx.fillStyle = "rgba(43,94,155,0.88)";
+          ctx.fillRect(X + W - bw - 5, Y + 5, bw, 17);
+          ctx.fillStyle = "#fff";
+          ctx.fillText("未量", X + W - bw + 1, Y + 9);
+          ctx.restore();
+        }
         /* 面积再往下占一行。11px 的字画在 Y+40、到 Y+53 结束，所以房间至少
          * 要有 56px 高才放得下——留 3px 边，和上面名字那行（Y+6 起、26px 就放）
          * 是同一种松紧。门槛没定更高：矮房间（阳台这种 1200mm 进深的）也想知道
@@ -1155,6 +1292,29 @@ function draw() {
 
   // ★ 门画在房间**之后**，否则被房间盖住
   drawDoors(ctx, scale, offsetX, offsetY);
+
+  /* 四个角把手——拖它们改大小。画在**门之后**：把手是给人伸手抓的，
+   * 被门盖住一颗就等于那颗抓不到，而它偏偏是最常用的那个角。
+   *
+   * ★ 只画**选中那一间**的。六个房间每间挂四个就是 24 个小疙瘩铺满屏幕，
+   *   而且图上全是房间的时候根本分不清哪个把手连着哪间。
+   *   更要紧的是「画出来的一定点得到」：命中判定（pointerdown 那段）也只认选中那间，
+   *   两边同一个条件，不会出现看得见却拖不动的幽灵把手。
+   *   （没选中任何一间时把手全不画，所以第一次得先点一下房间——这跟右边
+   *     "选中了才出编辑器"是同一个节奏，不多一步。） */
+  if (state.selected && state.rooms.includes(state.selected)) {
+    const r = state.selected;
+    const corners = [[r.x, r.y], [r.x + r.w, r.y], [r.x + r.w, r.y + r.h], [r.x, r.y + r.h]];
+    for (const [mx, my] of corners) {
+      ctx.beginPath();
+      ctx.arc(px(mx), py(my), 6, 0, Math.PI * 2);
+      ctx.fillStyle = "#fff";
+      ctx.fill();
+      ctx.lineWidth = 2.5;          // 比命中半径（CORNER_SLOP_PX）看起来小得多，
+      ctx.strokeStyle = "#2B5E9B";  // 是有意的：画大了挡房间，反正点得到就够了
+      ctx.stroke();
+    }
+  }
 
   if (!state.rooms.length) {
     ctx.fillStyle = getCSS("--ink-soft");
@@ -1214,28 +1374,52 @@ canvas.addEventListener("pointerdown", (e) => {
   const { x, y } = toMM(e);
   const slopMM = HIT_SLOP_PX / state.view.scale;
 
-  /* ★ 四级命中，顺序不能反——墙就贴在房间的边上，先判房间的话永远点不到墙：
+  /* ★ 五级命中，顺序不能反——墙就贴在房间的边上，先判房间的话永远点不到墙：
+   *   ⓪ 选中那间房的四个角把手 → 拖角改大小（新）
    *   ① 已有的门 → 拖这道门（必须排最前，否则会在同一位置再叠一道重叠的门）
    *   ② 两间房中间的墙 → 候选，**抬手时才真开**（见 endPointer）
    *   ③ 房间 → 选中 + 拖动（原逻辑）
    *   ④ 都没点到 → 平移画布（原逻辑）
    * 点墙的容差按屏幕像素换算，所以放大缩小手感一致；
-   * 真机上小房间难点的兜底是「房间清单永远能选中任何房间」，要调就调 WALL_SLOP_PX。 */
-  const dHit = doorHitTest(x, y, slopMM);
-  const wHit = dHit ? null
+   * 真机上小房间难点的兜底是「房间清单永远能选中任何房间」，要调就调 WALL_SLOP_PX。
+   *
+   * ⓪ 为什么能排在最前面、而不像①那样有讲究：
+   *   把手**只出现在选中那一间房上**，所以「先让把手赢」这件事的影响面就只有
+   *   一间房的四个角。① 之所以必须最靠前，是因为它防的是「在同一位置再叠一道门」——
+   *   拖角只会改尺寸、根本不开门，把那个老 bug 放不回来。
+   *   反过来，把手要是不排最前就永远点不到：它天生就落在房间的角上，
+   *   而那个角正好也在房间的命中区里。
+   *   选中房间四角附近的**门**会被让位——但那种门本来也就压在角上、
+   *   位置是错的，先点一下空白取消选中，门照样拖得动。 */
+  const selRoom = (state.selected && state.rooms.includes(state.selected)) ? state.selected : null;
+  const cHit = selRoom ? cornerHit(selRoom, x, y, CORNER_SLOP_PX / state.view.scale) : -1;
+  const dHit = cHit >= 0 ? null : doorHitTest(x, y, slopMM);
+  const wHit = (cHit >= 0 || dHit) ? null
     : findWallGap(state.rooms, x, y, WALL_SLOP_PX / state.view.scale,
                   MIN_DOOR_MM, state.doors, state.doorW);
-  const rHit = (dHit || wHit) ? null : hitTest(x, y, slopMM);
+  const rHit = (cHit >= 0 || dHit || wHit) ? null : hitTest(x, y, slopMM);
 
   // 立刻高亮，给视觉反馈
-  if (dHit) setSel(null, dHit);
+  /* ★ 抓角把手时房间必须**保持选中**，不能走 setSel(null)：把手是"只有选中才画"的，
+   *   一松选中，下一帧那四个把手就消失了——手指还按着，目标却没了。 */
+  if (cHit >= 0) setSel(selRoom, null);
+  else if (dHit) setSel(null, dHit);
   else if (wHit) setSel(null, null);     // 墙上还没门，先清掉选中
   else setSel(rHit, null);
   renderEditor();
   draw();
-  if ((dHit || rHit) && navigator.vibrate) { try { navigator.vibrate(6); } catch (err) {} }
+  if ((dHit || rHit || cHit >= 0) && navigator.vibrate) { try { navigator.vibrate(6); } catch (err) {} }
 
   const common = { room:null, sx:x, sy:y, moved:false, startTime:Date.now(), pointerId:e.pointerId };
+  if (cHit >= 0) {
+    /* r0 = 按下那一刻的矩形。整个拖动过程都以它为基准算，**不是**在当前值上累加：
+     * 累加的话每一帧都会重新吸附一次，手会被网格一格一格地"粘"住、越拖越偏。 */
+    state.pending = Object.assign(common, {
+      mode:"resize", room:selRoom, corner:cHit,
+      r0:{ x:selRoom.x, y:selRoom.y, w:selRoom.w, h:selRoom.h },
+    });
+    return;
+  }
   if (dHit) {
     const g = doorView(dHit, state.rooms, state.doors);
     const ax = g.ok ? { vertical:g.vertical, lo:g.lo, hi:g.hi } : null;
@@ -1297,6 +1481,32 @@ canvas.addEventListener("pointermove", (e) => {
     pos = Math.min(Math.max(pos, p.free.lo), p.free.hi);
     if (p.vertical) p.door.y = pos; else p.door.x = pos;
     draw();
+    return;
+  }
+
+  /* ★ 这一档必须排在下面「挪房间」之前：拖角的时候 p.room 也是有值的
+   *   （要拿它改尺寸），不拦住就会掉进挪房间那一档，变成整间房跟着手指跑。 */
+  if (p.mode === "resize") {
+    const { x, y } = toMM(e);
+    const distPx = Math.hypot(x - p.sx, y - p.sy) * state.view.scale;
+    if (!p.moved && distPx < DRAG_THRESHOLD_PX) return;
+    p.moved = true;
+    /* 先吸 100mm 网格，再吸邻居的边（横竖各吸各的）。顺序不能反——
+     * 反过来的话，刚吸到邻居墙边的那个值会被网格再推开 100mm 以内的一点点，
+     * 看着就像"吸附压根没生效"。先粗后细才对。 */
+    let mx = Math.round(x / SNAP_GRID) * SNAP_GRID;
+    let my = Math.round(y / SNAP_GRID) * SNAP_GRID;
+    const g = gapMM();
+    mx = snapToEdges(mx, edgeCands(state.rooms, p.room.id, g, "x"), SNAP_ROOM);
+    my = snapToEdges(my, edgeCands(state.rooms, p.room.id, g, "y"), SNAP_ROOM);
+    const n = resizeByCorner(p.r0, p.corner, mx, my, MIN_ROOM_MM);
+    p.room.x = n.x; p.room.y = n.y; p.room.w = n.w; p.room.h = n.h;
+    // 拖到画面外就重算视野，跟挪房间那一档保持一致
+    if (anyRoomOutside()) state.view = null;
+    draw();
+    /* 挪房间那一档不用刷编辑面板（x/y/w/h 里只有 w/h 在面板上，而拖房间不改它们）；
+     * 拖角改的正是 w/h，不刷的话手指在拖、上面的数字纹丝不动，人就不知道该松手了。 */
+    renderEditor();
     return;
   }
 
@@ -1417,6 +1627,9 @@ function endPointer(e) {
     reconcileDoors();      // 房间动过，把挂在墙上的门夹回共用段里
     saveSketch();          // 拖动结束就存一份，刷新不丢
     if (anyRoomOutside()) state.view = null;   // 拖出画面了就自动收回来
+    /* 拖角改的是 w/h，面板上那两个框得跟最后落定的数字对上。
+     * reconcileDoors() 之后也再刷一次：万一有门被夹没了，门面板不该留着旧数字。 */
+    renderEditor();
   }
   commitStep();   // 正常结尾：这一拖/这一点算一步
   draw();
@@ -1433,6 +1646,27 @@ function renderEditor() {
   $("#rName").value = state.selected.name;
   $("#rW").value = state.selected.w;
   $("#rH").value = state.selected.h;
+  renderRoomHint();
+}
+
+/* ---------- 选中卡片上那行小字 ----------
+ * 「未量」和「拖角」这两个新玩法在画布上自己说不清楚：虚线得有人告诉你是
+ * 什么意思，把手更是要选中了才画出来。所以在这张卡片里补一句，跟着选中的
+ * 那间房翻面——刚加完房间这行就在，正好接住"我不想现在量尺寸"的犹豫。
+ * 拖角不改 est（见拖角落笔那段），所以量过的房间拖完还是量过的。
+ *
+ * ★ 为什么单开一个函数、不直接写进 renderEditor() 里：
+ *   renderEditor() 会把 #rW / #rH 的 value 重新赋一遍，而**打字的时候不能碰它**——
+ *   手指还在框里，赋值会把光标弹到末尾，parseInt 吃掉的字母（"4200a"、"04200"）
+ *   也会被顺手抹掉。所以打字那条路只调这一个函数。 */
+function renderRoomHint() {
+  const box = $("#roomHint");
+  if (!box) return;
+  const r = state.selected;
+  box.textContent = !r ? ""
+    : isEst(r)
+      ? "这间还没量尺寸，图上画的是虚线。先拖着四个角摆个大概；量好了把长和宽填进上面两格，就算量过了。"
+      : "拖着房间的四个角就能改大小，对角那个角不动，长和宽跟着变。";
 }
 
 /* ---------- 选中的门 ---------- */
@@ -1456,13 +1690,46 @@ function renderDoorEditor() {
     : `⚠ ${g.why}`;
 }
 
+/* ---------- 导出前的黄字提醒：还剩几间房没量尺寸 ----------
+ * 只提醒，不拦。「先画个大概、以后再量」就是让草图阶段能没有尺寸地存在，
+ * 到导出这一步再不吭声就过分了——导过去 house.html 会拿这个估数去排版、出下料单，
+ * 用户得知道那是个估数。量好了回来填一下，这行自己就没了。
+ * 用黄不用红：--danger 在这一页是「出错了 / 放不下」（门放不回去、房间重叠），
+ * 这个是「你再看一眼」，两回事。 */
+let _estWarnKey = null;
+function renderEstWarn() {
+  const box = $("#estWarn");
+  if (!box) return;
+  const un = state.rooms.filter(isEst);
+  /* ★ 自己记一份 key，不复用 _listKey：那道闸是按「房间清单」的内容拦的，
+   *   拦下来时这条提醒也会跟着不更新（删光房间时清单会退化成「还没有房间」，
+   *   但提醒得跟着一起消失）。而且 draw 拖动时每帧都调一次，这里必须只读不写。 */
+  const key = un.map((r) => r.name).join("|");
+  if (key === _estWarnKey) return;
+  _estWarnKey = key;
+  if (!un.length) { box.style.display = "none"; box.textContent = ""; return; }
+  /* 名字多了就只报前 6 个、剩下的折成「等 N 间」。折的那句尾字是「间」，
+   * 后面直接接「还没量尺寸」就行；没折的时候尾字是房间名，得空一格才不断句。 */
+  const more = un.length > 6;
+  const names = un.slice(0, 6).map((r) => r.name).join("、")
+    + (more ? ` 等 ${un.length} 间` : "");
+  box.textContent = `⚠ ${names}${more ? "" : " "}还没量尺寸 —— 导过去先按草图上的大概数算，`
+    + `量好了回来填一下就行。`;
+  box.style.display = "";
+}
+
 /* ---------- 房间清单：一眼看出有没有房间跑到很远的地方 ---------- */
 let _listKey = "";
 function renderRoomList() {
   const box = $("#roomList");
   if (!box) return;
+  /* 排在那道「没变化就直接 return」的闸**前面**：这条提醒跟房间清单的 key 无关，
+   * 被闸拦下来时它照样得更新。它自己也有防抖（_estWarnKey），不重复写 DOM。 */
+  renderEstWarn();
+  /* ★ est 必须进这个 key：不进的话，在右边把尺寸一填、标记从「未量」变成已量，
+   *   这一行会因为「key 没变」直接 return，屏幕上的「（估）」就那么挂着不消失。 */
   const key = JSON.stringify(state.rooms.map((r) => [r.name, Math.round(r.x), Math.round(r.y),
-    Math.round(r.w), Math.round(r.h), r === state.selected]));
+    Math.round(r.w), Math.round(r.h), r === state.selected, isEst(r)]));
   if (key === _listKey) return;        // 没变化就不重建（拖动时每帧都会走一次 draw）
   _listKey = key;
   box.innerHTML = "";
@@ -1476,10 +1743,13 @@ function renderRoomList() {
   const far = farRoom();
   state.rooms.forEach((r) => {
     const d = document.createElement("div");
-    d.className = "room-line" + (r === state.selected ? " on" : "") + (r === far ? " far" : "");
+    d.className = "room-line" + (r === state.selected ? " on" : "")
+      + (r === far ? " far" : "") + (isEst(r) ? " est" : "");
     /* 面积不用另外进上面那个 _listKey：它是由 w/h 算出来的，
      * 而 w/h 本来就在 key 里，尺寸一变 key 就变、这行必然重建。 */
-    d.textContent = `${r.name}　x ${Math.round(r.x)}　y ${Math.round(r.y)}　${Math.round(r.w)}×${Math.round(r.h)}　${areaLabel(r)}`
+    /* 「估」直接挂在尺寸后面，不是挂在行尾：这行里唯一不可信的就是那两个数，
+     * 标记就得贴着它，别让人还得自己对应是哪一格。 */
+    d.textContent = `${r.name}　x ${Math.round(r.x)}　y ${Math.round(r.y)}　${Math.round(r.w)}×${Math.round(r.h)}${isEst(r) ? "（估）" : ""}　${areaLabel(r)}`
       + (r === far ? "　← 这间离得太远，把画面撑小了" : "");
     d.onclick = () => { setSel(r, null); renderEditor(); draw(); };
     box.appendChild(d);
@@ -1598,15 +1868,19 @@ $("#rName").addEventListener("input", (e) => {
   editStep();
   if (state.selected) { state.selected.name = e.target.value; draw(); saveSoon(); }
 });
+/* 宽 / 高两个框：**填进一个有效数字就算这间量过了**（欢欢 2026-09-28 定的规矩）。
+ * 不加勾选框——多一个要记得点的东西，就多一个会忘的地方；
+ * 「打了尺寸就算已量」和她脑子里的顺序是同一件事，不用额外记。
+ * 清空输入框不算（v > 0 那道守卫），所以擦掉重打不会把标记抖来抖去。 */
 $("#rW").addEventListener("input", (e) => {
   editStep();
   const v = parseInt(e.target.value, 10);
-  if (state.selected && v > 0) { state.selected.w = v; draw(); if (anyRoomOutside()) { state.view = null; draw(); } saveSoon(); }
+  if (state.selected && v > 0) { state.selected.w = v; markMeasured(state.selected); renderRoomHint(); draw(); if (anyRoomOutside()) { state.view = null; draw(); } saveSoon(); }
 });
 $("#rH").addEventListener("input", (e) => {
   editStep();
   const v = parseInt(e.target.value, 10);
-  if (state.selected && v > 0) { state.selected.h = v; draw(); if (anyRoomOutside()) { state.view = null; draw(); } saveSoon(); }
+  if (state.selected && v > 0) { state.selected.h = v; markMeasured(state.selected); renderRoomHint(); draw(); if (anyRoomOutside()) { state.view = null; draw(); } saveSoon(); }
 });
 $("#del").onclick = () => {
   const r = state.selected;
@@ -1635,6 +1909,10 @@ $("#add").onclick = () => {
     id: "r" + (++state.seq),
     name: "房间" + (state.rooms.length + 1),
     x, y, w: 3000, h: 3000,
+    /* ★ 新加的房间一律先当「未量」：画布上是一间 3×3 米的虚线框，
+     *   想拉成多大拖四个角就行，不逼着人当场掏尺子。
+     *   量完了在右边填一次长和宽，虚线自己就变实线。 */
+    est: true,
   };
   state.rooms.push(r);
   setSel(r, null);
@@ -1885,6 +2163,16 @@ $("#apply").onclick = () => {
   const gapTxt = state.gapMode === "zero" ? "贴死（间隙 0）" : `留墙厚 ${state.wall}mm`;
   const L = [`草图里有 ${state.rooms.length} 间房、${state.doors.length} 道门，要写进 house.html。`,
              `房间之间：${gapTxt}，这个设置会一起带过去。`];
+  /* 未量的房间**照样能导**，但必须在按下去之前说清楚导的是估数——
+   * 导过去 house.html 会拿这几个数排版、算下料，量完再导一次就行。 */
+  const unEst = state.rooms.filter(isEst);
+  if (unEst.length) {
+    const more = unEst.length > 6;
+    const nm = unEst.slice(0, 6).map((r) => r.name).join("、")
+      + (more ? ` 等 ${unEst.length} 间` : "");
+    L.push("", `⚠ ${nm}${more ? "" : " "}还没量尺寸，会按草图上这个大概数导过去。`
+      + `量好了再导一次就行。`);
+  }
   if (nR || nD) {
     L.push("", `house.html 现在存着 ${nR} 间房、${nD} 道门。应用之后：`);
     if (nR) L.push(`· 那 ${nR} 间房 → 换成草图这 ${state.rooms.length} 间`);

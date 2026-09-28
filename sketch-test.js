@@ -4,7 +4,10 @@
  *
  * 最要紧的两条：
  *   测试 1  草图的 exportDoors 倒出来的门，喂进 house.html 的真引擎必须全部合法
- *           （house.html 的规矩是「一道门不合法 → 整张图拒绝渲染」，串味了就是白屏）
+ *           （house.html 遇到不合法门洞是**跳过那道门**、红字提醒、其余照排——
+ *            不是白屏。所以串味的代价不是"一眼看出来"，而是那道门**悄没声地没了**：
+ *            两间房不再连通 → 分区规则跟着变 → 全屋砖缝对不上、下料清单也是错的。
+ *            只有机器能抓住这种错。）
  *   测试 2  草图的 doorAxis/doorRectOf 和 house.html 的 doorRect 逐字段一致
  *           （就是这条把「改了 house.html 要同步改草图」从注释变成机器检查）
  *
@@ -40,8 +43,9 @@ const near = (a, b, tol = 1e-9) => Math.abs(a - b) <= tol;
 const rnd = (n) => Math.floor(Math.random() * n);
 
 /* ============ 测试 1：跨工具契约（最要紧的一条） ============
- * house.html 的规矩是「一道门不合法 → 整张图拒绝渲染、白屏」。
- * 所以草图导出的每一道门，都必须能被 house.html 的真引擎接受。 */
+ * house.html 遇到不合法门洞是**跳过那道门 + 红字**（house.html:791 的 continue），
+ * 其余照常排砖、照常出清单。所以草图导出的每一道门都必须能被 house.html 的
+ * 真引擎接受——被跳过的那道门不会报错崩掉，只会**安安静静地消失**。 */
 
 const SETTINGS = {
   floorTile: { preset: "750×1500", w: 750, h: 1500 },
@@ -641,6 +645,133 @@ test("测试 4f：小数取整——毫米没有小数位", () => {
   const o = S.parseRoomLines("客厅 4200.6x3600.4", 1);
   check("4200.6 × 3600.4 → 4201 × 3600（四舍五入到毫米）",
         o.rooms[0].w === 4201 && o.rooms[0].h === 3600, JSON.stringify(o.rooms[0]));
+});
+
+/* ============ 测试 5：草稿模式（未量的房间 + 拖角改大小） ============
+ * 这一组守的是「先画个大概、以后再填实测」这条路。三个后果都不是崩溃型的，
+ * 而是**悄没声地错**：标记丢了 → 房间看着是量过的；拖成 0 宽 → 刷新后房间消失。
+ * 所以全部由机器盯着。 */
+
+test("测试 5a：est 标记——缺省算「已量」，标回去要连键一起删掉", () => {
+  const fresh = { id: "r1", name: "客厅", x: 0, y: 0, w: 3000, h: 3000 };
+  check("新房间（没有 est 键）→ isEst 为 false（老存档一个字节都不变）", S.isEst(fresh) === false);
+  check("null / undefined 也不炸", S.isEst(null) === false && S.isEst(undefined) === false);
+
+  const r = { id: "r2", name: "主卧", x: 0, y: 0, w: 3000, h: 3000 };
+  S.markEst(r);
+  check("markEst 之后 isEst 为 true", S.isEst(r) === true);
+  check("序列化出来就是 est:true", JSON.stringify(r).includes('"est":true'), JSON.stringify(r));
+
+  S.markMeasured(r);
+  check("markMeasured 之后 isEst 为 false", S.isEst(r) === false);
+  /* ★ 这条是「老存档逐位不变」的锁：必须是 delete，写成 r.est = false
+   *   会让每个已量的房间都多出一个 "est":false，存档就不是原来那个了。 */
+  check("markMeasured 是把键删掉，不是写成 false（\"est\" in r === false）",
+        !("est" in r), JSON.stringify(r));
+  check("删干净后字段正好是改动前那 6 个",
+        Object.keys(r).sort().join(",") === "h,id,name,w,x,y", Object.keys(r).join(","));
+  check("反复标来标去不会留下痕迹",
+        (() => { S.markEst(r); S.markMeasured(r); S.markEst(r); S.markMeasured(r);
+                 return Object.keys(r).length === 6; })());
+  check("传 null 不炸", (S.markEst(null), S.markMeasured(null), true));
+});
+
+test("测试 5b：拖角——对角钉死，返回新矩形，不改传进来的对象", () => {
+  const R = { id: "r1", x: 1000, y: 2000, w: 3000, h: 4000 };   // 右下角在 (4000, 6000)
+
+  const c2 = S.resizeByCorner(R, 2, 5000, 7000, 300);           // 右下角拖到 (5000,7000)
+  check("右下：左上角原地不动，右下角跟着走",
+        c2.x === 1000 && c2.y === 2000 && c2.w === 4000 && c2.h === 5000, JSON.stringify(c2));
+
+  const c0 = S.resizeByCorner(R, 0, 500, 1500, 300);            // 左上角拖到 (500,1500)
+  check("左上：右下角钉死在 (4000,6000)",
+        c0.x === 500 && c0.y === 1500 && c0.w === 3500 && c0.h === 4500
+        && c0.x + c0.w === 4000 && c0.y + c0.h === 6000, JSON.stringify(c0));
+
+  const c1 = S.resizeByCorner(R, 1, 5000, 1500, 300);           // 右上
+  check("右上：左下角钉死；上边动、下边不动",
+        c1.x === 1000 && c1.y === 1500 && c1.w === 4000 && c1.h === 4500, JSON.stringify(c1));
+
+  const c3 = S.resizeByCorner(R, 3, 500, 7000, 300);            // 左下
+  check("左下：右上角钉死；左边动、右边不动",
+        c3.x === 500 && c3.y === 2000 && c3.w === 3500 && c3.h === 5000, JSON.stringify(c3));
+
+  check("R 本身一个字段都没被改", R.x === 1000 && R.y === 2000 && R.w === 3000 && R.h === 4000,
+        JSON.stringify(R));
+});
+
+test("测试 5c：拖角的下限——永远不会拖出 loadSketch 会丢掉的房间", () => {
+  const R = { x: 1000, y: 2000, w: 3000, h: 4000 };
+  check("右下拖到左边老远 → 宽度正好卡在 300，不是 0 也不是负数",
+        S.resizeByCorner(R, 2, -99999, -99999, 300).w === 300
+        && S.resizeByCorner(R, 2, -99999, -99999, 300).h === 300);
+  const up = S.resizeByCorner(R, 0, 99999, 99999, 300);
+  check("左上拖到右下老远 → 右下角仍然钉死，边长卡在 300",
+        up.x === 3700 && up.y === 5700 && up.w === 300 && up.h === 300, JSON.stringify(up));
+  check("缩到极限时「钉死」和「撞下限」同时成立：x+w 还是 4000", up.x + up.w === 4000);
+  check("minMM 传 0 / 不传 → 兜底 300（引擎段读不到外面的 MIN_ROOM_MM）",
+        S.resizeByCorner(R, 2, -99999, -99999, 0).w === 300
+        && S.resizeByCorner(R, 2, -99999, -99999).w === 300);
+
+  /* 穷举一遍：不管往哪儿拖，出来的房间都必须是 loadSketch 愿意留下的那种
+     （w>0 && h>0），否则页面一刷新房间就凭空消失了。 */
+  let bad = null;
+  for (const corner of [0, 1, 2, 3]) {
+    for (const tx of [-5000, 0, 1000, 3999, 4000, 4001, 9000]) {
+      for (const ty of [-5000, 0, 2000, 5999, 6000, 6001, 9000]) {
+        const n = S.resizeByCorner(R, corner, tx, ty, 300);
+        if (!(n.w > 0 && n.h > 0 && n.w >= 300 && n.h >= 300)) bad = { corner, tx, ty, n };
+      }
+    }
+  }
+  check("4 个角 × 49 个落点：边长一律 >= 300（没有能被拖成 0 的房间）", bad === null,
+        bad ? JSON.stringify(bad) : "");
+});
+
+test("测试 5d：角把手命中——取最近的角，不是先撞上谁算谁", () => {
+  const R = { x: 0, y: 0, w: 1000, h: 1000 };
+  const hit = (x, y, slop) => S.cornerHit(R, x, y, slop);
+
+  check("正压四个角 → 0 / 1 / 2 / 3",
+        hit(0, 0, 20) === 0 && hit(1000, 0, 20) === 1
+        && hit(1000, 1000, 20) === 2 && hit(0, 1000, 20) === 3);
+  check("差一点也算（正好等于 slop 时算命中）", hit(20, 20, 20) === 0);
+  check("超出 slop 就不算", hit(21, 0, 20) === -1);
+  check("房间正中不命中", hit(500, 500, 20) === -1);
+  check("传 null → -1（没有选中房间时不该炸）", S.cornerHit(null, 0, 0, 20) === -1);
+
+  /* ★ 这条才是「取最近」的锁：slop 放到 600 时，(550,0) 同时落在左上和右上
+   *   的命中框里。按循环顺序先撞上 0（左上），可它离右上更近——手指明明压在
+   *   右边，抓到的却是左边那个角，房间会朝反方向变形。房间被拖小以后四个角
+   *   挤在一起，这就是常态。 */
+  check("两点都在范围内时，取更近的那个（(550,0) → 右上而不是左上）",
+        S.cornerHit(R, 550, 0, 600) === 1, String(S.cornerHit(R, 550, 0, 600)));
+  check("下边同理（(450,1000) → 左下而不是右下）",
+        S.cornerHit(R, 450, 1000, 600) === 3, String(S.cornerHit(R, 450, 1000, 600)));
+});
+
+test("测试 5e：拖角吸附——候选边要排除自己，且吸的是最近的一条", () => {
+  const rooms = [
+    { id: "self", x: 1000, y: 0,    w: 2000, h: 3000 },
+    { id: "b",    x: 4000, y: 0,    w: 3000, h: 3000 },
+  ];
+  const xs = S.edgeCands(rooms, "self", 240, "x");
+  check("排除自己：自己的 4 条边一个都不在里面",
+        !xs.includes(1000) && !xs.includes(3000), JSON.stringify(xs));
+  check("邻居的边各带 ±gap 两个候选（4000-240、4000、7000、7000+240）",
+        xs.join(",") === "3760,4000,7000,7240", JSON.stringify(xs));
+  const ys = S.edgeCands(rooms, "self", 240, "y");
+  check("竖轴同理（邻居 y 是 0~3000）", ys.join(",") === "-240,0,3000,3240", JSON.stringify(ys));
+
+  check("差得比容差远 → 原样不动（3500 离最近的 3760 还差 260）",
+        S.snapToEdges(3500, xs, 100) === 3500);
+  check("差在容差内 → 吸过去（3740 离 3760 只差 20）",
+        S.snapToEdges(3740, xs, 100) === 3760);
+  check("正好等于容差不算（要严格小于）", S.snapToEdges(3660, xs, 100) === 3660);
+  check("多个候选都在范围内时取最近的",
+        S.snapToEdges(3900, [3760, 4000, 7000], 200) === 4000,
+        String(S.snapToEdges(3900, [3760, 4000, 7000], 200)));
+  check("候选表空 → 原样返回", S.snapToEdges(1234, [], 500) === 1234);
 });
 
 /* ============ 汇总 ============ */
