@@ -1014,5 +1014,246 @@ test("起铺角 · 不碰老路径：没传 opt、或 mode 不是 corner 时结�
         e.corner === null && near(e.GX, 401), `corner=${JSON.stringify(e.corner)} GX=${e.GX}`);
 });
 
+/* ==========================================================================
+ * 每间房自己的地砖规格（2026-09-28）
+ *
+ * 需求原话：「卫生间的地砖尺寸与房间的地砖尺寸是不同的，需要一个选择尺寸的地方。
+ *            另外房间与客厅之间如果加了过门石打断不通缝，那么房间里面的砖的尺寸也可能不同」
+ *
+ * 三条骨架，缺一条这个功能就是错的：
+ *   ① **一个区只能有一种砖**。通铺连着的房间共用一张砖网（砖缝要从门口穿过去），
+ *      两种尺寸在几何上根本立不住。所以界面按"房间"呈现，引擎按"区"定砖。
+ *   ② **定砖房怎么挑必须跟面积无关**。用"面积最大的那间"当定砖房的话，
+ *      用户把房间尺寸改一改，砖规格就跟着悄悄换一种：图上一片安静，下料清单全错。
+ *      这是最难查的一类 bug，所以规则钉死成：基准房 → 第一间显式设过的 → 全屋默认。
+ *   ③ **没设过的老存档逐位不变**。规格存在 settings.roomTiles 这个**独立容器**里，
+ *      不塞进 settings.floorTile —— 自定义长/短边那两个 input 是整对象替换，
+ *      塞进去的话用户敲一个数字，全屋每间房的规格会被一次抹光。
+ * ==========================================================================*/
+const twoRoom = (over) => {
+  const o = over || {};
+  return {
+    settings: Object.assign({ floorTile:{ preset:"800×800", w:800, h:800 }, direction:"horizontal",
+                              grout:2, wallGap:5, baseRoom:"r1", baseMode:"center",
+                              nudgeX:0, nudgeY:0 }, o.settings || {}),
+    rooms: o.rooms || [
+      { id:"r1", name:"客厅",   x:0,    y:0, w:4200, h:3600 },
+      { id:"r2", name:"卫生间", x:4440, y:0, w:2400, h:2000 },
+    ],
+    doors: o.doors || [],
+  };
+};
+/* 客厅 → 卫生间那道门。threshold 就是"这儿砌了条过门石"，两边各自重新起铺。 */
+const doorWC = (over) => Object.assign({ id:"d1", from:"r1", to:"r2", at:800, width:800,
+                                         threshold:false }, over || {});
+const T300 = { preset:"300×300", w:300, h:300 };
+const T600 = { preset:"600×600", w:600, h:600 };
+
+/* 把一份方案的"可观测结果"打成一个串：判决用，别拿它当稳定接口 */
+const snap = (p) => JSON.stringify({
+  ok:p.ok, errors:p.errors, warnings:p.warnings,
+  areas:p.areas.map(a => ({ GX:a.GX, GY:a.GY, tile:a.tile, baseId:a.baseId, rooms:a.rooms })),
+  rooms:p.rooms.map(r => ({ fill:r.fill, rect:r.rect, comp:r.comp })),
+  whole:p.summary.wholeCount, pieces:p.summary.pieceCount,
+  tiled:p.summary.tiledArea, buy:p.summary.buyCount,
+  bySpec:p.summary.buyBySpec, specs:p.summary.specs,
+  cuts:p.summary.cutGroups, notch:p.summary.notchCount,
+});
+
+test("每间房规格 · 老存档（压根没有 roomTiles 这个键）逐位不变", () => {
+  const plain = twoRoom();
+  const p0 = E.housePlan(plain);
+
+  // ① 空容器  ② 别人的脏容器（指向已删房间 / 数值是坏的）
+  const empty = twoRoom(); empty.settings.roomTiles = {};
+  const junk  = twoRoom();
+  junk.settings.roomTiles = { r1:{ w:0, h:0 }, r2:{ w:"800", h:null }, ghost:{ w:600, h:600 }, "":null };
+  const p1 = E.housePlan(empty), p2 = E.housePlan(junk);
+
+  check("空 roomTiles 与没有这个键：结果逐位相同", snap(p0) === snap(p1));
+  check("脏 roomTiles 一律当作没设，不抛异常、也不改变结果", snap(p0) === snap(p2));
+  check("脏数据没在结果里留下 \"NaN\"", !snap(p2).includes("NaN"), snap(p2).slice(0, 120));
+
+  // ③ 每间房都显式设成"跟全屋默认一模一样" —— 数字上也必须一个不差
+  const same = twoRoom();
+  same.settings.roomTiles = { r1:{ preset:"800×800", w:800, h:800 },
+                              r2:{ preset:"800×800", w:800, h:800 } };
+  check("全都设成跟默认一样时，排砖结果逐位相同（只是来源变显式）",
+        snap(p0) === snap(E.housePlan(same)));
+});
+
+test("每间房规格 · 引擎不改写 settings（规格必须住在独立容器里）", () => {
+  /* 这条是防"把 roomTiles 塞进 floorTile"那个坑的哨兵：
+   * 自定义长/短边那两个 input 是**整对象替换**，塞进去的话用户敲一个数字，
+   * 全屋每间房的规格会被一次抹光。引擎要是自己往 settings 里写东西，同样会踩到。 */
+  const st = twoRoom({ settings:{ roomTiles:{ r2:T300 }, baseRoom:"r1" } });
+  const before = JSON.stringify(st.settings);
+  const p = E.housePlan(st);
+  check("跑完之后 settings 一个字节没动", JSON.stringify(st.settings) === before);
+  check("roomTiles 仍在原来的位置、内容不变",
+        st.settings.roomTiles.r2.w === 300 && st.settings.floorTile.w === 800);
+  check("plan 里确实用上了那间房的规格（不然这条锁是空的）", p.ok);
+});
+
+test("每间房规格 · 通铺连着的一区只能有一种砖：以基准房为准", () => {
+  /* 客厅是基准房，卫生间自己设了 300 ——但两块地通着，只能有一种砖。
+   * 期望：整区按客厅的 800 排，并且**明确告诉用户**卫生间那个设置没生效、怎么才能生效。 */
+  const st = twoRoom({ settings:{ roomTiles:{ r2:T300 }, baseRoom:"r1" } });
+  const p = E.housePlan(st);
+
+  check("区里只有一张网、一种砖：按基准房客厅的 800", p.areas.length === 1 &&
+        p.areas[0].tile.x === 800 && p.areas[0].tile.y === 800,
+        JSON.stringify(p.areas.map(a => a.tile)));
+  check("整区用的是基准房的尺寸（不是卫生间那个 300）", p.summary.specs.length === 1 &&
+        p.summary.specs[0].w === 800, JSON.stringify(p.summary.specs));
+  check("给了一条警告，点名是「卫生间」另设了尺寸", p.warnings.some(w => w.includes("卫生间")),
+        JSON.stringify(p.warnings));
+  check("警告里说清了怎么才能真的分开（把门改成过门石）",
+        p.warnings.some(w => w.includes("过门石")), JSON.stringify(p.warnings));
+  check("没把这条当成错误拦下来——图照排、只是提醒", p.ok === true && p.errors.length === 0,
+        JSON.stringify(p.errors));
+});
+
+test("每间房规格 · 定砖房绝不按面积挑（改个尺寸不能悄悄换一种砖）", () => {
+  /* 客厅 4200×3600 比卫生间 2400×2000 大得多。故意**不设** baseRoom，
+   * 只有卫生间显式设过 300 —— 定砖的必须是卫生间（"第一间显式设过的房"），
+   * 而不是"面积最大的那间"。要是按面积挑，用户把客厅尺寸改一改，
+   * 砖规格就会跟着从 300 变成 800，而图上什么都看不出来。 */
+  const st = twoRoom({ settings:{ baseRoom:"", roomTiles:{ r2:T300 } } });
+  const p = E.housePlan(st);
+  check("没有基准房时，定砖的是那间**显式设过**的房（卫生间 300），不是面积最大的客厅",
+        p.areas.length === 1 && p.areas[0].tile.x === 300 && p.areas[0].tile.y === 300,
+        JSON.stringify(p.areas.map(a => a.tile)));
+
+  // 把客厅改大改小，砖规格一个毫米都不许动
+  const grown = twoRoom({ settings:{ baseRoom:"", roomTiles:{ r2:T300 } },
+                          rooms:[ { id:"r1", name:"客厅", x:0, y:0, w:9000, h:6000 },
+                                  { id:"r2", name:"卫生间", x:9240, y:0, w:2400, h:2000 } ] });
+  check("把另一间房放大到 9000×6000，砖规格仍然钉死在 300",
+        E.housePlan(grown).areas[0].tile.x === 300,
+        JSON.stringify(E.housePlan(grown).areas[0].tile));
+  check("房间清单顺序反过来，结果一样（挑法跟遍历次序无关）", (() => {
+    const rev = twoRoom({ settings:{ baseRoom:"", roomTiles:{ r2:T300 } },
+                          rooms:[ { id:"r2", name:"卫生间", x:4440, y:0, w:2400, h:2000 },
+                                  { id:"r1", name:"客厅",   x:0,    y:0, w:4200, h:3600 } ] });
+    return E.housePlan(rev).areas[0].tile.x === 300;
+  })());
+});
+
+test("每间房规格 · 过门石一断，两边各用各的尺寸", () => {
+  /* 这就是欢欢那条需求的正面场景：客厅铺 800，卫生间隔一道过门石铺 300。 */
+  const st = twoRoom({ settings:{ roomTiles:{ r2:T300 }, baseRoom:"r1" },
+                       doors:[ doorWC({ threshold:true }) ] });
+  const p = E.housePlan(st);
+
+  check("断成了两个区", p.areas.length === 2, JSON.stringify(p.areas.map(a => a.rooms)));
+  const aL = p.areas.find(a => a.rooms.includes("r1")), aW = p.areas.find(a => a.rooms.includes("r2"));
+  check("客厅那一区是 800", aL && aL.tile.x === 800 && aL.tile.y === 800, JSON.stringify(aL && aL.tile));
+  check("卫生间那一区是 300", aW && aW.tile.x === 300 && aW.tile.y === 300, JSON.stringify(aW && aW.tile));
+  /* 两个区**各排各的网**：格线原点不同，而且每个区自己的步进 = 本区砖 + 缝。
+   * 这条才是"真的分了区"的硬证据 —— 只看 tile 字段的话，就算两个区共用一张网、
+   * 只是把 tile 记成两个数，图像上也照样一塌糊涂却测不出来。 */
+  const rmOf = (id) => p.rooms.find(r => r.id === id);
+  check("两个区的格线原点不一样（各排各的，不是一个原点硬套）",
+        aL.GX !== aW.GX || aL.GY !== aW.GY, `${aL.GX},${aL.GY} vs ${aW.GX},${aW.GY}`);
+  check("客厅那间房按 800+2 的步进铺", near(rmOf("r1").gx.step, 802), rmOf("r1").gx.step);
+  check("卫生间那间房按 300+2 的步进铺（不是被客厅的网罩着）",
+        near(rmOf("r2").gx.step, 302) && near(rmOf("r2").gy.step, 302),
+        `${rmOf("r2").gx.step}/${rmOf("r2").gy.step}`);
+  check("这种正当用法**不该**冒出那条'没生效'的警告",
+        !p.warnings.some(w => w.includes("没生效")), JSON.stringify(p.warnings));
+
+  /* 过门石是"断开"的唯一开关：同一套数据，把它改成通铺，就必须合回一个区。 */
+  const merged = E.housePlan(twoRoom({ settings:{ roomTiles:{ r2:T300 }, baseRoom:"r1" },
+                                       doors:[ doorWC({ threshold:false }) ] }));
+  check("把过门石改回通铺 → 合回一个区、统一按客厅的 800",
+        merged.areas.length === 1 && merged.areas[0].tile.x === 800,
+        JSON.stringify(merged.areas.map(a => a.tile)));
+});
+
+test("每间房规格 · 下料清单按原砖规格分开，不许把两种砖合成一个数", () => {
+  const st = twoRoom({ settings:{ roomTiles:{ r2:T300 }, baseRoom:"r1" },
+                       doors:[ doorWC({ threshold:true }) ] });
+  const p = E.housePlan(st), s = p.summary;
+
+  check("两种规格各占一行", s.buyBySpec.length === 2, JSON.stringify(s.buyBySpec));
+  check("大的规格排前面（800 在 300 前）",
+        s.buyBySpec[0].w === 800 && s.buyBySpec[1].w === 300, JSON.stringify(s.buyBySpec));
+  check("每行的备料数 = ceil((整砖 + 裁砖) × 1.05)",
+        s.buyBySpec.every(b => b.buy === Math.ceil((b.whole + b.pieces) * 1.05)),
+        JSON.stringify(s.buyBySpec));
+  check("各规格的整砖数加起来 = 全屋整砖数（一块不多一块不少）",
+        s.buyBySpec.reduce((n, b) => n + b.whole, 0) === s.wholeCount,
+        `${s.buyBySpec.map(b => b.whole).join("+")} vs ${s.wholeCount}`);
+  check("各规格的裁砖数加起来 = 全屋裁砖数（口径必须与 pieceCount 一致）",
+        s.buyBySpec.reduce((n, b) => n + b.pieces, 0) === s.pieceCount,
+        `${s.buyBySpec.map(b => b.pieces).join("+")} vs ${s.pieceCount}`);
+  check("每一条裁砖行都挂着它**本来的**那种砖的规格（不然清单上算不出该切多少）",
+        s.cutGroups.every(g => (g.specW === 800 && g.specH === 800) || (g.specW === 300 && g.specH === 300)),
+        JSON.stringify(s.cutGroups.filter(g => ![800, 300].includes(g.specW))));
+  check("清单里两种规格都真的出现过（不然上面几条是空转）",
+        s.cutGroups.some(g => g.specW === 800) && s.cutGroups.some(g => g.specW === 300),
+        JSON.stringify(s.cutGroups.map(g => g.specW)));
+
+  /* 老字段 buyCount 的含义**没变**：只有一种规格时才说得通，留着只为兼容老调用方。
+   * 这条锁住的是"别顺手把它改成按规格相加"——那是没意义的数（800 的整砖 + 300 的整砖 = ？）。 */
+  check("buyCount 还是老的 `ceil((整砖+裁砖)×1.05)`，没被偷换成按规格相加",
+        s.buyCount === Math.ceil((s.wholeCount + s.pieceCount) * 1.05),
+        `${s.buyCount} vs ${Math.ceil((s.wholeCount + s.pieceCount) * 1.05)}`);
+});
+
+test("每间房规格 · 单规格时下料清单一个字段都没变（老户型逐位不变）", () => {
+  /* 上面那条证明"多规格分得开"，这条证明"单规格压根没变样"。
+   * 两条缺一不可：只测多规格的话，把老路径改坏了也发现不了。 */
+  const p = E.housePlan(twoRoom({ doors:[ doorWC({ threshold:true }) ] }));
+  check("只有一种规格时，buyBySpec 恰好一行、且数值就是老口径",
+        p.summary.buyBySpec.length === 1 &&
+        p.summary.buyBySpec[0].buy === p.summary.buyCount &&
+        p.summary.buyBySpec[0].whole === p.summary.wholeCount &&
+        p.summary.buyBySpec[0].pieces === p.summary.pieceCount,
+        JSON.stringify(p.summary.buyBySpec) + " / " + p.summary.buyCount);
+  check("specs 里的 w/h 就是全屋那个尺寸本身（不是复制出来的另一个数）",
+        p.summary.specs.length === 1 && p.summary.specs[0].w === 800 && p.summary.specs[0].h === 800,
+        JSON.stringify(p.summary.specs));
+  check("没设 roomTiles 时不会因为这条新逻辑多出任何警告",
+        !p.warnings.some(w => w.includes("没生效")), JSON.stringify(p.warnings));
+});
+
+test("每间房规格 · 界面和引擎共用同一份分区结果（tileZones）", () => {
+  /* 界面要靠它决定"每间房那个尺寸选择器是能改的还是灰的"。
+   * 两边各写一套的话，早晚会漂成"界面显示能改、实际改了没用"——最难查的状态。 */
+  for (const st of [
+    twoRoom(),
+    twoRoom({ settings:{ roomTiles:{ r2:T300 }, baseRoom:"r1" } }),
+    twoRoom({ settings:{ roomTiles:{ r2:T300 }, baseRoom:"r1" }, doors:[ doorWC({ threshold:true }) ] }),
+    twoRoom({ settings:{ baseRoom:"", roomTiles:{ r2:T600 } }, doors:[ doorWC({ threshold:true }) ] }),
+  ]) {
+    const p = E.housePlan(st);
+    const zs = E.tileZones(st.settings, st.rooms.map(r => Object.assign({}, r, { rect:{ x:r.x, y:r.y, w:r.w, h:r.h } })),
+                           p.doors);
+    check("tileZones 的区划分与 housePlan 完全一致",
+          JSON.stringify(zs.map(z => z.rooms)) === JSON.stringify(p.areas.map(a => a.rooms)),
+          JSON.stringify(zs.map(z => z.rooms)) + " vs " + JSON.stringify(p.areas.map(a => a.rooms)));
+    check("tileZones 定的砖规格与 housePlan 排砖用的那个一致",
+          JSON.stringify(zs.map(z => z.spec)) === JSON.stringify(p.areas.map(a => a.spec)),
+          JSON.stringify(zs.map(z => z.spec)) + " vs " + JSON.stringify(p.areas.map(a => a.spec)));
+    check("tileZones 指认的定砖房真的在那个区里",
+          zs.every(z => z.specRoomId === null || z.rooms.includes(z.specRoomId)),
+          JSON.stringify(zs.map(z => [z.specRoomId, z.rooms])));
+  }
+});
+
+test("每间房规格 · 绘图端的兜底：区里没有 tile 字段时回落到参考区", () => {
+  /* 绘制是按区取网的。老代码那儿写的是 plan.tile（参考区的），多规格时画错。
+   * 现在按 A.tile 取；这条锁住"没有 tile 字段也能退回老行为"，别让老存档画不出来。 */
+  const p = E.housePlan(twoRoom());
+  check("每个区都带着自己那份 tile", p.areas.every(a => a.tile && a.tile.x > 0 && a.tile.y > 0),
+        JSON.stringify(p.areas.map(a => a.tile)));
+  check("单区时区的 tile 与全屋 tile 一致",
+        p.areas[0].tile.x === p.tile.x && p.areas[0].tile.y === p.tile.y);
+  check("每个区都带着自己那份 spec（下料清单要按它分组）",
+        p.areas.every(a => a.spec && a.spec.w > 0 && a.spec.h > 0));
+});
+
 console.log(`\n结果：${_pass} 通过，${_fail} 失败`);
 process.exit(_fail ? 1 : 0);

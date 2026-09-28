@@ -152,6 +152,28 @@ button{cursor:pointer; touch-action:manipulation}
 .room-top{display:flex; align-items:center; gap:8px}
 .room-tag{flex:none; font-size:12px; color:var(--ink-soft); font-weight:700}
 .room-fields{display:grid; grid-template-columns:1fr 1fr; gap:8px}
+/* ---- 房间卡片里的「这一间用哪种砖」 ----
+ * 平时整块只有一个按钮，点开才长出选择器：常驻一排 chip 会把每张房卡撑得很长，
+ * 而多数房间里本来就没有第二种规格。 */
+.room-tile{margin-top:2px}
+.rt-btn{display:flex; align-items:center; gap:6px; width:100%; min-height:44px; padding:0 12px;
+  border:1px solid var(--line); border-radius:8px; background:var(--chip); color:var(--ink);
+  font:inherit; font-size:14px; text-align:left}
+.rt-btn b{font-weight:700; font-variant-numeric:tabular-nums}
+.rt-btn .rt-tail{margin-left:auto; flex:none; font-size:12px; font-weight:700; color:var(--ink-soft)}
+/* 跟着同区别的房走的：整块灰掉（点了只解释、不给改） */
+.rt-btn.follow{color:var(--ink-soft)}
+/* 自己设过却没生效（同区通铺连着、只能有一种砖）。这个必须显眼——
+   不吭声的话，用户只会看到"我填的数没起作用"，还以为工具坏了。 */
+.rt-btn.clash{border-color:var(--warn); color:var(--warn)}
+.rt-btn.clash .rt-tail{color:var(--warn)}
+.rt-why{margin:6px 0 0; padding:8px 10px; border-radius:8px; background:var(--chip);
+  font-size:12.5px; line-height:1.5; color:var(--ink-soft)}
+/* 选择器底板用 --paper：房卡本身是 --card，这样能看出一块内嵌的面板 */
+.rt-pick{margin-top:8px; padding:10px; border:1px solid var(--line); border-radius:8px; background:var(--paper)}
+.rt-pick .chips{margin-bottom:2px}
+.rt-pick .set-hint{margin:10px 0 0}
+.rt-pick .custom-inputs{grid-template-columns:1fr 1fr}
 .cut-list{margin-top:10px; padding:10px 12px; background:var(--chip); border-radius:8px;
   font-variant-numeric:tabular-nums; font-size:14px; line-height:1.7; white-space:pre-wrap; word-break:break-word}
 .plan-legend{margin-top:8px; font-size:12px; color:var(--ink-soft)}
@@ -184,11 +206,13 @@ select{min-height:40px; padding:7px 8px; border:1px solid var(--line); border-ra
         <span class="chev">▾</span>
       </button>
       <div class="settings-body" id="settingsBody">
-        <div class="set-row"><span class="set-label">地砖规格</span><div class="chips" id="tileChips"></div></div>
+        <div class="set-row"><span class="set-label">默认地砖规格</span><div class="chips" id="tileChips"></div></div>
         <div class="custom-inputs" id="tileCustom">
           <label class="field mini"><span>长边</span><input type="text" inputmode="numeric" id="tileW" placeholder="如 800"></label>
           <label class="field mini"><span>短边</span><input type="text" inputmode="numeric" id="tileH" placeholder="如 800"></label>
         </div>
+        <p class="set-hint">这里是<b>全屋默认</b>。某一间要用别的尺寸（比如卫生间、厨房），
+          到下面那张房间卡片里单独设。</p>
         <div class="set-row"><span class="set-label">铺贴方向</span>
           <div class="seg" id="dirSeg">
             <button data-v="horizontal">长边横着</button>
@@ -319,6 +343,48 @@ const Engine = (() => {
   const laidDims = (spec, direction) => {
     const a = Math.min(spec.w, spec.h), b = Math.max(spec.w, spec.h);
     return direction === "horizontal" ? { x:b, y:a } : { x:a, y:b };
+  };
+
+  /* ---- 每间房自己的地砖规格（可选）----
+   * 存哪儿：settings.roomTiles[房间id] = {preset, w, h}，**单独一个容器**。
+   * 千万不要塞进 settings.floorTile 里面：自定义长/短边那两个 input 的监听是
+   * **整对象替换**（s.floorTile = {preset:"custom", w:…, h:…}），
+   * 塞进去的话用户在长边框里敲一个数字，全屋每间房的规格会被一次抹光。
+   *
+   * 读的时候守卫到底：w/h 不是正数就当作"这间房没单独设过"，回落到全屋默认。
+   * 房间被删掉后残留的条目**不删**（删了就没法撤回），只是永远读不到。
+   *
+   * 注意语义：这里返回的是"这间房**显式**设过没有"。返回 null ≠ 用不了它，
+   * 而是"它跟随"——跟随谁由它所在的区决定（见 housePlan 里 specPick 那段）。 */
+  const specOf = (s, roomId) => {
+    const rt = s && s.roomTiles;
+    if (!rt || roomId == null) return null;
+    const hit = rt[roomId];
+    if (!hit || typeof hit !== "object") return null;
+    const w = numOr(hit.w, 0), h = numOr(hit.h, 0);
+    if (!(w > 0) || !(h > 0)) return null;          // 脏数据 → 当作没设
+    return { preset: typeof hit.preset === "string" ? hit.preset : "custom", w, h };
+  };
+
+  /* 每个区分别用哪种砖、以哪间房为准 —— 引擎和界面**共用这一份**。
+   * 界面要拿它决定"每间房那个尺寸选择器该是能改的还是灰的"，引擎要拿它排砖。
+   * 两边各写一套的话，早晚会漂成"界面显示能改、实际改了没用"这种最难查的状态。
+   *
+   * 定砖房怎么挑，顺序钉死、不掺面积：
+   *   ① 设置里选的基准房若在本区 → 就是它（显式设过用它的，没设过就用全屋默认）；
+   *   ② 否则本区里第一间**显式设过**砖规格的房（list 是房间清单顺序，稳定）；
+   *   ③ 都没有 → 全屋默认规格，specRoomId 为 null。
+   * ②里**绝不能**用"面积最大"回落：那样用户把房间尺寸改一改，砖规格就跟着
+   * 悄悄换一种，图上一片安静、清单全错。
+   * 一间房都没显式设过时（所有老存档）spec 恒等于 floorTile → 结果逐位不变。 */
+  const tileZones = (s, rooms, doors) => {
+    const base = (s && s.floorTile) || null;
+    return areasOf(rooms, doors).map((list) => {
+      const rs = list.map(id => rooms.find(r => r.id === id));
+      const pick = rs.find(r => r.id === (s && s.baseRoom)) || rs.find(r => specOf(s, r.id));
+      return { rooms:list, specRoomId: pick ? pick.id : null,
+               spec: (pick && specOf(s, pick.id)) || base };
+    });
   };
 
   const compatible = (a, b) => {
@@ -734,29 +800,55 @@ const Engine = (() => {
     /* 分区：墙和过门石一起把全屋切成几张各排各的砖网（规则见 areasOf 上面那段）。
      * 一块过门石都没放时 areasOf 直接返回一整组 → 下面每个区算出来的原点就是以前那一个，
      * 逐位相同，老户型的结果不会因为这次改动变样。 */
-    const comps = areasOf(rooms, out.doors);
+    const zs = tileZones(s, rooms, out.doors);
     out.areas = [];
-    for (const list of comps) {
+    for (const zi of zs) {
+      const list = zi.rooms;
       const rs = list.map(id => rooms.find(r => r.id === id));
       /* 本区以哪间房起铺：设置里选的那间若在本区就用它；
        * 否则用本区里面积最大的一间——一样大就取房间清单里靠前的
-       * （sort 是稳定的，并列时自然保留 rs 的原顺序，而 rs 就是清单顺序）。 */
+       * （sort 是稳定的，并列时自然保留 rs 的原顺序，而 rs 就是清单顺序）。
+       * 注意：这是**起铺角**的基准房，跟"用哪种砖"是两回事，别合并。 */
       const pick = rs.find(r => r.id === s.baseRoom)
                 || rs.slice().sort((a, b) => (b.rect.w * b.rect.h) - (a.rect.w * a.rect.h))[0];
+      /* 本区用哪种砖：以本区的"定砖房"为准（挑法见 tileZones 上面那段）。
+       * 一个区的房间共用一张砖网（砖缝要穿过门口对上），所以**只能有一种砖**。 */
+      const zoneSpec = zi.spec, tz = laidDims(zoneSpec, s.direction);
+      const specPick = zi.specRoomId ? rooms.find(r => r.id === zi.specRoomId) : null;
+      /* 同区里"跟着走"的房间却自己设过另一种规格 → 说清楚这一区按谁的排，
+       * 并告诉用户真想分开该怎么办。不说的话，他只会看到自己设的数字没生效。 */
+      if (specPick) {
+        const diffs = rs.filter(r => r.id !== specPick.id && specOf(s, r.id) &&
+                                     (specOf(s, r.id).w !== zoneSpec.w || specOf(s, r.id).h !== zoneSpec.h));
+        if (diffs.length) out.warnings.push(
+          `「${roomName(specPick)}」这一区是通铺连着的（共用一张砖网、砖缝要穿过去），只能有一种砖：` +
+          `这里面「${diffs.map(roomName).join("」「")}」另设了尺寸，没生效。` +
+          `真要各用各的，得把中间那道门改成「过门石」把它断开`);
+      }
       /* startCorner 兜个 "tl"：baseMode 是 "corner" 却没有角时，basePhase 会掉进
        * layoutAxis("corner") 那个分支——那不是居中、也不是起铺角，是"靠一边"，静默走错版。
        * 与其让存档的脏字段决定用哪一版，不如钉死在左上。 */
-      const ab = basePhase(rs, pick.id, t, g, s.baseMode, { x:s.nudgeX, y:s.nudgeY },
+      const ab = basePhase(rs, pick.id, tz, g, s.baseMode, { x:s.nudgeX, y:s.nudgeY },
                            { corner:s.startCorner || "tl", gap:wallGap, sliver:CUT_IGNORE_MM });
       if (!ab.ok) return out;
       out.areas.push({ id:out.areas.length, baseId:ab.baseId, baseName:ab.baseName,
-                       GX:ab.GX, GY:ab.GY, rooms:list, corner:ab.corner });
+                       GX:ab.GX, GY:ab.GY, rooms:list, corner:ab.corner,
+                       /* 本区的砖规格。绘制端要按区取它，不能再拿 out.tile（那是参考区的）。
+                        * 多一种规格时 out.tile 仍然只描述参考区——别改它的含义，往外**加**字段。 */
+                       tile:{ x:tz.x, y:tz.y }, spec:zoneSpec,
+                       /* 本区"用哪种砖"是哪间房说了算（rule 见 tileZones 上面那段）。
+                        * 界面上只有这间房的尺寸选择器是可点的，同区其余房显示"跟随 XX"。
+                        * **界面不许自己再推一遍这个规则**——一旦两处不一致，用户点了没反应、
+                        * 或者点了改的跟图上画的不是一间房，是最难查的那类 bug。
+                        * 注意它跟 baseId/baseName（起铺角以哪间房为准）是两回事，别合并。 */
+                       specRoomId: specPick ? specPick.id : null,
+                       specRoomName: specPick ? roomName(specPick) : null });
     }
     const compOf = (id) => out.areas.findIndex(a => a.rooms.includes(id));
     /* grid 是"参考房那个区"的网。单区时它就是全屋那张网，老代码照旧能用；
      * 多区时它只是"最主要的那张"，画图和文案都会按区分别取。 */
     const home = out.areas.find(a => a.rooms.includes(s.baseRoom)) || out.areas[0];
-    out.grid = { GX:home.GX, GY:home.GY, pX:t.x + g, pY:t.y + g,
+    out.grid = { GX:home.GX, GY:home.GY, pX:home.tile.x + g, pY:home.tile.y + g,
                  baseId:home.baseId, baseName:home.baseName };
 
     /* 全屋同一块砖的归并：按"区号 + 格线序号 (i,j)"认。
@@ -765,10 +857,14 @@ const Engine = (() => {
      * **区号不能省**：不同区的网是各排各的，同一个序号 i 在两个区里是不同的物理位置；
      * 归并到一起会算出一块"面积正好等于整砖"的假砖，两块真裁砖就从清单里消失了。 */
     const cells = new Map();
-    const addCell = (comp, i, j, piece, kind) => {
+    /* tw/th = 这一格**是哪一种规格**的砖上的那一格。必须跟着格子记下来：
+     * 全屋一种砖时 tileArea 是个常数，多一种规格之后它就是错的——
+     * 拿 800 的面积去比 600 那格里的小块，整砖会被判成异形砖，下料清单跟着错。
+     * 同一个 key（区号+i+j）里的碎片必然同规格：一个区只有一种砖，而 key 里带区号。 */
+    const addCell = (comp, i, j, piece, kind, tw, th) => {
       const key = comp + ":" + i + ":" + j;
       let c = cells.get(key);
-      if (!c) { c = { i, j, pieces:[], area:0, kinds:new Set() }; cells.set(key, c); }
+      if (!c) { c = { i, j, pieces:[], area:0, kinds:new Set(), tw, th }; cells.set(key, c); }
       c.pieces.push(piece); c.area += piece.w * piece.h; c.kinds.add(kind);
     };
 
@@ -781,13 +877,14 @@ const Engine = (() => {
       const pad = sideGaps(R, rooms, r.id, wallGap);
       const fill = { x:R.x + pad[0], y:R.y + pad[2],
                      w:R.w - pad[0] - pad[1], h:R.h - pad[2] - pad[3] };
-      const gx = latticeSegments(A.GX, t.x, g, fill.x, fill.x + fill.w);
-      const gy = latticeSegments(A.GY, t.y, g, fill.y, fill.y + fill.h);
+      const gx = latticeSegments(A.GX, A.tile.x, g, fill.x, fill.x + fill.w);
+      const gy = latticeSegments(A.GY, A.tile.y, g, fill.y, fill.y + fill.h);
       const tiles = [];
       for (const sy of gy.segments) for (const sx of gx.segments) {
         tiles.push({ x:sx.start, y:sy.start, w:sx.width, h:sy.width, gi:sx.i, gj:sy.i,
                      cut: !!(sx.cut || sy.cut) });
-        addCell(ci, sx.i, sy.i, { x:sx.start, y:sy.start, w:sx.width, h:sy.width }, "room");
+        addCell(ci, sx.i, sy.i, { x:sx.start, y:sy.start, w:sx.width, h:sy.width }, "room",
+                A.tile.x, A.tile.y);
       }
       const warn = [];
       /* 1/3 规矩比的是**内缩前**的边条宽度（把靠墙缝加回去），不是裁完的净宽。
@@ -817,7 +914,9 @@ const Engine = (() => {
          *   师傅**看得见**的那条边。拿 nominal 比会漏掉最典型的那个 case：
          *   起铺角 1619 的房间，真边条 5mm（该忽略），加回 5mm 靠墙缝正好凑成 10，
          *   比出来"不小于 10"照样报警——把说好要忽略的零头又喊了一遍。 */
-        if (nominal < Math.min(t.x, t.y) / 3 && real >= CUT_IGNORE_MM)
+        // 1/3 比的是**本区**那种砖（A.tile），不是全屋默认那种——卫生间 300 砖的
+        // 1/3 是 100mm，拿客厅 800 砖的 1/3（266.7）去比，警告就永远不会响。
+        if (nominal < Math.min(A.tile.x, A.tile.y) / 3 && real >= CUT_IGNORE_MM)
           warn.push(`边缘裁砖最窄 ${Math.round(real)}mm（不足 1/3 砖），请现场定夺`);
       }
       if (gx.segments.dense || gy.segments.dense)
@@ -847,12 +946,13 @@ const Engine = (() => {
       const dwx = ( d.vertical && d.wallT > 1e-6) ? wallGap : 0;
       const dwy = (!d.vertical && d.wallT > 1e-6) ? wallGap : 0;
       const Df = { x:D.x - dwx, y:D.y - dwy, w:D.w + dwx * 2, h:D.h + dwy * 2 };
-      const gx = latticeSegments(A.GX, t.x, g, Df.x, Df.x + Df.w);
-      const gy = latticeSegments(A.GY, t.y, g, Df.y, Df.y + Df.h);
+      const gx = latticeSegments(A.GX, A.tile.x, g, Df.x, Df.x + Df.w);
+      const gy = latticeSegments(A.GY, A.tile.y, g, Df.y, Df.y + Df.h);
       d.fill = Df;
       d.comp = ci;
       for (const sy of gy.segments) for (const sx of gx.segments)
-        addCell(ci, sx.i, sy.i, { x:sx.start, y:sy.start, w:sx.width, h:sy.width }, "door");
+        addCell(ci, sx.i, sy.i, { x:sx.start, y:sy.start, w:sx.width, h:sy.width }, "door",
+                A.tile.x, A.tile.y);
     }
 
     /* 过门石没能把两边分开的两种情况，都要说出来——
@@ -910,29 +1010,46 @@ const Engine = (() => {
       }
     }
 
-    // 逐块判定：整砖 / 裁砖
-    const tileArea = t.x * t.y;
+    /* 逐块判定：整砖 / 裁砖。
+     * 全屋可能有好几种规格（每区一种），所以"整砖"要拿**这一格自己那种砖**的面积去比，
+     * 不能再用一个全局 tileArea：拿 800 的面积去比卫生间 300 砖那格里的小块，
+     * 每一块都会被判成异形裁砖，整砖数是 0、下料清单整张错。
+     * specs 按规格分组累加，供"每种规格各买多少"用。 */
     let wholeCount = 0, crossDoorWhole = 0, areaMM = 0;
-    const cuts = [], notches = [];
+    const cuts = [], notches = [], specs = new Map();
+    const specSlot = (w, h) => {
+      const k = w + "×" + h;
+      let sp = specs.get(k);
+      if (!sp) { sp = { w, h, whole:0, pieces:0 }; specs.set(k, sp); }
+      return sp;
+    };
     for (const c of cells.values()) {
-      const full = Math.abs(c.area - tileArea) < 1e-6;
+      const cArea = c.tw * c.th, sp = specSlot(c.tw, c.th);
+      const full = Math.abs(c.area - cArea) < 1e-6;
       if (full) {
-        wholeCount++;
+        wholeCount++; sp.whole++;
         if (c.kinds.has("door")) crossDoorWhole++;
         continue;
       }
       const hasDoor = c.kinds.has("door");
       const pieces = c.pieces;
+      /* 这一格要裁几块：跨门口开缺口的算 1 块，被墙切开的按**碎片数**算
+       * （和下面 pieceCount 的口径必须一致，否则"每种规格备几块"会少算）。 */
+      sp.pieces += hasDoor ? 1 : Math.max(1, pieces.length);
+      /* sw/sh = 这一块**该用多大**的砖（裁之前）。跨门口开缺口那条提示要报整砖尺寸，
+       * 归并裁砖清单也要按规格分开——同一行里混着 800 的边条和 600 的边条，
+       * 用户拿去店里报不清。 */
       if (hasDoor) {
         // 跨门口的砖：缝穿过去，但门口比砖窄时要开缺口（两侧避开墙）
         notches.push({ i:c.i, j:c.j, area:c.area, pieces:pieces.length });
-        cuts.push({ kind:"notch", count:1, w:t.x, h:t.y, area:c.area, pieces });
+        cuts.push({ kind:"notch", count:1, w:c.tw, h:c.th, sw:c.tw, sh:c.th, area:c.area, pieces });
       } else if (pieces.length > 1) {
         // 被墙切成几块的砖：每一块都是独立要裁的
-        pieces.forEach(p => cuts.push({ kind:"piece", count:1, w:p.w, h:p.h, area:p.w * p.h, pieces:[p] }));
+        pieces.forEach(p => cuts.push({ kind:"piece", count:1, w:p.w, h:p.h, sw:c.tw, sh:c.th,
+                                        area:p.w * p.h, pieces:[p] }));
       } else {
         const p = pieces[0];
-        cuts.push({ kind:"piece", count:1, w:p.w, h:p.h, area:p.w * p.h, pieces });
+        cuts.push({ kind:"piece", count:1, w:p.w, h:p.h, sw:c.tw, sh:c.th, area:p.w * p.h, pieces });
       }
     }
     /* 真正铺砖的那几个矩形（房间 rect 让掉靠墙缝 + 通铺门口外扩过的门条）。
@@ -944,21 +1061,43 @@ const Engine = (() => {
       .concat(out.doors.filter(d => !d.threshold).map(d => d.fill));
     for (const rect of out.region) areaMM += rect.w * rect.h;
 
-    // 按尺寸归并裁块（同一尺寸合并计数）
+    /* 按尺寸归并裁块（同一尺寸合并计数）。
+     * key 里**必须带上是哪种规格的原砖**（裁之前的 sw×sh）：
+     * 不带的话，客厅 800 砖裁出来的 300×300 和卫生间 300 砖裁出来的 300×300
+     * 会并成同一行，"×N" 是两种砖加在一起，用户照着买一定错。
+     * 只有一种规格时 key 分类不变、每组也还是原来那几组，输出逐位一样。 */
     const groupMap = new Map();
     for (const c of cuts) {
-      const key = c.kind === "notch" ? "notch" : `${Math.round(c.w)}×${Math.round(c.h)}`;
+      const sw = c.sw != null ? c.sw : t.x, sh = c.sh != null ? c.sh : t.y;
+      const base = c.kind === "notch" ? "notch" : `${Math.round(c.w)}×${Math.round(c.h)}`;
+      const key = base + "@" + sw + "×" + sh;
       let it = groupMap.get(key);
-      if (!it) { it = { kind:c.kind, w:Math.round(c.w), h:Math.round(c.h), count:0, area:0 }; groupMap.set(key, it); }
+      if (!it) {
+        it = { kind:c.kind, w:Math.round(c.w), h:Math.round(c.h), count:0, area:0,
+               specW:sw, specH:sh };
+        groupMap.set(key, it);
+      }
       it.count += c.count; it.area += c.area;
     }
-    const cutGroups = [...groupMap.values()].sort((a, b) => (b.w * b.h) - (a.w * a.h));
+    /* 排序：先按原砖规格（大的在前），同规格内再按裁块面积（大的在前）。
+     * **不能**只按裁块面积排——多规格时会把两种砖的行交错插在一起，清单没法看。 */
+    const cutGroups = [...groupMap.values()].sort((a, b) =>
+      (b.specW * b.specH) - (a.specW * a.specH) || (b.w * b.h) - (a.w * a.h));
     const pieceCount = cuts.reduce((n, c) => n + c.count, 0);
     const cutArea = cuts.reduce((a, c) => a + c.area, 0);
     /* 校验用：整砖面积 + 裁块面积 == 砖面合计 == 铺贴面积 − 砖缝面积
      * （砖格之间那几毫米缝不铺砖，靠墙那一圈缝也不铺，所以砖面合计天然比房间面积小
-     *   一点点，这是对的。groutArea 因此是「砖缝 + 靠墙缝」的合计，不只是砖缝。） */
-    const tiledArea = wholeCount * tileArea + cutArea;
+     *   一点点，这是对的。groutArea 因此是「砖缝 + 靠墙缝」的合计，不只是砖缝。）
+     * 整砖那块按规格分别乘：全屋一种砖时 specs 只有一个条目、w/h 就是 t.x/t.y，
+     * sp.whole * (sp.w * sp.h) 与原来的 wholeCount * tileArea 逐位相同。 */
+    let tiledArea = cutArea;
+    for (const sp of specs.values()) tiledArea += sp.whole * (sp.w * sp.h);
+    /* 每种规格各备多少块：规格不同不能相加（800 的整砖和 300 的整砖不是一回事）。
+     * 单一规格时这里恰好等于原来的 ceil((整砖+裁砖)*1.05)，逐位不变。 */
+    const buyBySpec = [...specs.values()]
+      .sort((a, b) => (b.w * b.h) - (a.w * a.h))
+      .map(sp => ({ w:sp.w, h:sp.h, whole:sp.whole, pieces:sp.pieces,
+                    buy: Math.ceil((sp.whole + sp.pieces) * 1.05) }));
     out.summary = {
       tile: { x:t.x, y:t.y, grout:g },
       areaMM,
@@ -967,7 +1106,12 @@ const Engine = (() => {
       wholeCount, crossDoorWhole, pieceCount,
       cutGroups,
       notchCount: notches.length,
+      /* buyCount 是"全屋合计备几块"，只有一种规格时才有意义，也才和以前一字不差。
+       * 多规格时把不同规格的块数加在一起是没意义的数（800 的整砖 + 300 的整砖 = ？），
+       * 界面上要按 buyBySpec 分开报；这里保留它只为兼容老调用方。 */
       buyCount: Math.ceil((wholeCount + pieceCount) * 1.05),
+      buyBySpec,
+      specs: buyBySpec.map(sp => ({ w:sp.w, h:sp.h })),
       checkArea: tiledArea,
     };
     out.ok = out.errors.length === 0;
@@ -975,7 +1119,8 @@ const Engine = (() => {
   };
 
   return { numOr, mod, roomRect, roomName, roomsBBox, rectOverlapArea, basePhase,
-           latticeSegments, toLocal, wallBetween, isFlush, areasOf, doorRect, housePlan };
+           latticeSegments, toLocal, wallBetween, isFlush, areasOf, doorRect,
+           specOf, tileZones, housePlan };
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = Engine;
 /*ENGINE-END*/
@@ -1374,6 +1519,10 @@ function renderSummary(){
   bits.push(`缝 ${s.grout}mm`);
   // 靠墙缝走 numOr 兜底 5：老存档里压根没这个字段，直接写 s.wallGap 会显示 "undefinedmm"
   bits.push(`靠墙 ${numOr(s.wallGap, 5)}mm`);
+  /* 单独设过砖的房间有几间。顶部选的是全屋默认，单设的房在下面卡片里——
+   * 不在这儿提一句的话，面板收起来以后完全看不出"这屋不止一种砖"。 */
+  const nSpec = state.rooms.filter(r => Engine.specOf(s, r.id)).length;
+  if (nSpec) bits.push(`${nSpec} 间单独设了砖`);
   // 起铺方式只在**不是默认**时才占一个字：默认那版（居中对称）说它等于白说，
   // 还把摘要行挤长。角的具体位置也不写进来——紧跟着的 #cornerHint 说得比这清楚。
   if (s.baseMode === "corner") bits.push("起铺角");
@@ -1397,6 +1546,7 @@ function numField(obj, key, label, ph, onChange){
 function renderRooms(){
   const box = $("#roomRows");
   box.innerHTML = "";
+  openTileRoom = null;      // 整块都拆了重建，摊开的选择器跟着一起没了
   state.rooms.forEach((r, i) => {
     const row = el("div", "room-row");
     const top = el("div", "room-top");
@@ -1421,9 +1571,207 @@ function renderRooms(){
     grid.appendChild(numField(r, "w", "长（mm）", "如 4200"));
     grid.appendChild(numField(r, "h", "宽（mm）", "如 3600"));
     row.appendChild(grid);
+    /* 这一间用哪种砖。里面**只放按钮**，摊开的选择器挂在 .room-tile 外面
+     * （见 renderRoomTiles）：整块会被反复清空重建，选择器里那两个自定义
+     * 输入框要是也在里面，打一个字就被销毁一次。 */
+    const tileRow = el("div", "room-tile");
+    tileRow.dataset.room = r.id;
+    row.appendChild(tileRow);
     box.appendChild(row);
   });
   if (!state.rooms.length) box.appendChild(el("p", "card-sub", "还没有房间——点下面加一间"));
+}
+
+/* ============================================================
+ * 每间房的砖规格
+ *
+ * 用户脑子里的单位是「房间」，引擎的单位是「区」——一个区里的房间共用一张砖网
+ * （砖缝要从门口穿过去对上），所以**一个区只能有一种砖**。两边靠下面这条规则调和：
+ *
+ *   · 设置面板顶部那个规格 = 全屋默认，没单独设过的房都用它；
+ *   · 每个区的「定砖房」由引擎的 tileZones 挑（设置里选的基准房 → 本区第一个
+ *     自己设过尺寸的房），**只有它的选择器能点**；
+ *   · 同区其余房显示「跟随 XX」，点了只给解释、不给改——真要各用各的，
+ *     得先把中间那道门改成「过门石」把区断开。
+ *
+ * 界面**不许自己再推一遍「谁说了算」**：谁是定砖房一律取自 plan.areas[].specRoomId，
+ * 那是引擎算完直接带出来的。两处各推一遍的话，一旦不一致就会出现"点了没反应"
+ * 或者"点了改的是另一间房"，图上一片安静、清单全错。
+ * 它跟 baseId/baseName（起铺角以哪间房为准）是两回事，别合并。
+ * ============================================================ */
+let openTileRoom = null;   // 现在摊开着的是哪间房（瞬态，不进存档、不占 localStorage）
+
+function renderRoomTiles(plan){
+  const areas = (plan && plan.ok && Array.isArray(plan.areas)) ? plan.areas : [];
+  const zoneOf = (id) => areas.find(a => a.rooms.includes(id)) || null;
+
+  // 摊开着的那间房要是没了、或者不再是本区的定砖房了，先收掉
+  if (openTileRoom && !zoneOf(openTileRoom)) openTileRoom = null;
+
+  $$(".room-tile").forEach((box) => {
+    const r = state.rooms.find(x => x.id === box.dataset.room);
+    if (!r) return;
+    const row = box.parentElement;
+    const old = row && $(".rt-pick", row);
+    if (old) old.remove();
+    box.innerHTML = "";
+
+    const z = zoneOf(r.id);
+    // 分区还没算出来（长宽填一半、房间重叠…）就先不显示，别瞎猜一个规格给他看
+    if (!z) return;
+    const t = z.spec || state.settings.floorTile;
+    const mine = Engine.specOf(state.settings, r.id);
+    const isOwner = z.specRoomId === r.id;
+    /* 本区还没定砖房（specRoomId 为 null，即本区谁都没单独设过）时，**本区每间房都能设**——
+     * 谁先设谁就当定砖房。这一条是必须的：默认户型里所有房间都没设过，
+     * 要是只有"定砖房"能点，那整区（客厅也在内）会全部灰着，这功能在最常见的户型里直接是死的。
+     * 设下去之后引擎的规则②就会把这间房挑成定砖房，同区其余房立刻变成"跟随"。 */
+    const canSet = isOwner || !z.specRoomId;
+    // 自己设过、却没生效（同区通铺连着）。引擎已经发过一条警告，这里再给个视觉记号。
+    const clash = !canSet && mine && (mine.w !== t.w || mine.h !== t.h);
+    /* 摊开的是哪一间就认哪一间，**别在这儿判 canSet**：跟随房点开就是要看 whyFollow 的，
+     * 在这儿把它清掉的话，点一下弹不出任何东西（"点了没反应"）。
+     * 分区变了导致"原来能设的房变成跟随房"时也不用特殊处理：
+     * 下面那个 if (!canSet) 分支自然会把它从选择器换成解释。 */
+    const open = openTileRoom === r.id;
+
+    const btn = el("button", "rt-btn" + (canSet ? "" : " follow") + (clash ? " clash" : ""));
+    btn.appendChild(el("span", null, "地砖"));
+    btn.appendChild(el("b", null, `${t.w}×${t.h}`));
+    /* tail 的措辞按"这间房现在是什么身份"分四种，别混：
+     *   定砖房 · 自己设过  → 改
+     *   定砖房 · 用的全屋默认（设置里选的基准房就是这么个状态） → 用全屋默认 · 改
+     *   本区还没定砖房 → 跟着全屋默认 · 可设（点了就能设，但要知道会带走整个区）
+     *   本区已被别人定了 → 跟随 XX（灰的，点了只解释） */
+    btn.appendChild(el("span", "rt-tail", isOwner ? (mine ? "改" : "用全屋默认 · 改")
+      : (canSet ? "跟着全屋默认 · 可设" : `跟随 ${z.specRoomName}`)));
+    btn.onclick = () => {
+      openTileRoom = open ? null : r.id;      // 一次只摊开一间，再点一下收起来
+      renderRoomTiles(planCache);
+    };
+    box.appendChild(btn);
+
+    if (!open) return;
+    if (!canSet) { box.appendChild(whyFollow(r, z, mine)); return; }
+    /* 选择器挂在 .room-tile **外面**：上面那句 box.innerHTML = "" 会反复清空这一块，
+     * 而选择器里有正在打字的输入框。 */
+    const pick = buildTilePicker(r, z, isOwner);
+    syncTilePicker(pick);
+    row.appendChild(pick);
+  });
+}
+
+/* 把规格写进 settings.roomTiles[房号]。
+ *
+ * 为什么单开一个容器、不挂在 state.rooms[i].tile 上：
+ *   ① 房间对象是从「房间布局草图」导进来的，往里加字段会污染导入导出的数据格式；
+ *   ② 房间删了再加、房号重用时会带着旧尺寸复活；
+ *   ③ 老存档里压根没这个键，引擎靠 specOf 兜底 → 逐位不变，不用迁移。
+ * 也**不能**挂在 settings.floorTile 里（byRoom 那种写法）：顶部面板选一次规格就整个
+ * 换掉 floorTile 对象，挂在上面的一起被抹掉——这是最早那版方案不成立的原因。 */
+function setRoomSpec(id, preset, w, h){
+  const s = state.settings;
+  if (!s.roomTiles || typeof s.roomTiles !== "object") s.roomTiles = {};
+  if (!(w > 0) || !(h > 0)) { delete s.roomTiles[id]; return; }
+  s.roomTiles[id] = { preset, w, h };
+}
+function dropRoomSpec(id){
+  const s = state.settings;
+  if (!s.roomTiles || typeof s.roomTiles !== "object") return;
+  delete s.roomTiles[id];
+  // 一间都不剩就把容器也删掉：JSON.stringify 不写空对象，
+  // 存档里干干净净，跟从没设过一模一样
+  if (!Object.keys(s.roomTiles).length) delete s.roomTiles;
+}
+
+/* 定砖房的尺寸选择器。预设 chip + 自己填长边短边（跟顶部面板同一套习惯）。 */
+function buildTilePicker(r, z, isOwner){
+  const s = state.settings, def = s.floorTile;
+  const wrap = el("div", "rt-pick");
+  wrap.dataset.room = r.id;
+  /* 本区还没定砖房、这间又不是基准房：他在这儿设一个，**整个区**都会跟着换。
+   * 不先说清楚的话，他在主卧挑了 600×600，回头发现客厅也变成 600 了，只会觉得工具坏了。
+   * （这跟 whyFollow 是两码事：那个是"改不动"，这个是"改得动、但代价是整个区"。） */
+  const others = (z.rooms || []).filter((id) => id !== r.id)
+    .map((id) => (state.rooms.find((x) => x.id === id) || {}).name || id);
+  if (!isOwner && others.length) {
+    wrap.appendChild(el("p", "set-hint",
+      `这一区（还有${others.map((n) => `「${n}」`).join("")}）是通铺连着的，` +
+      `砖缝要从门口穿过去，所以整区只能用同一种砖。你在这儿设一个，这一区就都按它排。`));
+  }
+  const chips = el("div", "chips");
+
+  const defChip = el("button", "chip", `全屋默认 ${def.w}×${def.h}`);
+  defChip.dataset.def = "1";
+  defChip.onclick = () => { dropRoomSpec(r.id); save(); renderRoomTiles(planCache); update(); };
+  chips.appendChild(defChip);
+
+  TILE_PRESETS.forEach((p) => {
+    const [w, h] = p.split("×").map(Number);
+    const b = el("button", "chip", p);
+    b.dataset.w = w; b.dataset.h = h;
+    b.onclick = () => { setRoomSpec(r.id, p, w, h); save(); renderRoomTiles(planCache); update(); };
+    chips.appendChild(b);
+  });
+  wrap.appendChild(chips);
+
+  wrap.appendChild(el("p", "set-hint", "选一个常用规格，或者在下面自己填长边、短边（毫米）："));
+  const box = el("div", "custom-inputs");
+  box.style.display = "grid";
+  // cur 只在这儿攒：两边都填了才写进存档。半套尺寸（填了长没填短）会被 specOf
+  // 当脏数据丢掉，与其留个看不懂的中间态，不如明说"还没生效"。
+  const cur = { w:0, h:0 };
+  [["长边","w"],["短边","h"]].forEach(([lab, k]) => {
+    const f = el("label", "field mini");
+    f.appendChild(el("span", null, lab));
+    const inp = el("input");
+    inp.type = "text"; inp.inputMode = "numeric"; inp.placeholder = "如 600";
+    inp.addEventListener("input", () => {
+      const v = parseMM(inp.value);
+      cur[k] = (v > 0) ? v : 0;
+      if (cur.w > 0 && cur.h > 0) setRoomSpec(r.id, "custom", cur.w, cur.h);
+      else dropRoomSpec(r.id);
+      save(); renderRoomTiles(planCache); update();
+    });
+    f.appendChild(inp);
+    box.appendChild(f);
+  });
+  wrap.appendChild(box);
+  return wrap;
+}
+
+/* 选择器里 chip 的高亮 + 自定义那两个框的值，**就地同步、不重建**。
+ * 重建会连输入框一起销毁：正在打字的人输一个字光标就跳走。
+ * （.room-tile 那个按钮倒是随便重建，它里面没有输入框。） */
+function syncTilePicker(pick){
+  const s = state.settings;
+  const mine = Engine.specOf(s, pick.dataset.room);
+  $$(".chip", pick).forEach((b) => {
+    const on = b.dataset.def ? !mine
+             : (!!mine && mine.w === +b.dataset.w && mine.h === +b.dataset.h);
+    b.classList.toggle("on", on);
+  });
+  const ins = $$("input", pick);
+  // 正在打字就别去动它的值，否则光标会被顶到末尾、数字还可能被吃掉
+  if (ins.some(i => i === document.activeElement)) return;
+  ins[0].value = mine ? mine.w : "";
+  ins[1].value = mine ? mine.h : "";
+}
+
+/* 跟着同区别的房走的房间：不给改，但必须说清楚为什么、以及真想改该怎么办。
+ * 措辞不带责备——他设的时候没错，是后来那道门把两间房连成一片区的。 */
+function whyFollow(r, z, mine){
+  const nm = z.specRoomName || "基准房";
+  const t = z.spec;
+  const clash = mine && (mine.w !== t.w || mine.h !== t.h);
+  const p = el("p", "rt-why");
+  p.textContent = clash
+    ? `你在这间设的是 ${mine.w}×${mine.h}，但它跟「${nm}」是通铺连着的——两间房共用一张砖网、` +
+      `砖缝要从门口穿过去，只能用同一种砖，所以按「${nm}」的 ${t.w}×${t.h} 排。` +
+      `真要各用各的，把中间那道门改成「过门石」把两边断开就行。`
+    : `这间跟「${nm}」是通铺连着的，两间房共用一张砖网、砖缝要从门口穿过去，只能用同一种砖，` +
+      `所以跟着「${nm}」用 ${t.w}×${t.h}。想让它用别的尺寸，把中间那道门改成「过门石」把两边断开。`;
+  return p;
 }
 
 function roomSelect(val, onPick){
@@ -1554,8 +1902,12 @@ function drawPlan(plan){
      * fill 由引擎算好（housePlan 里 d.fill = Df），这里不再自己算一遍，免得两处漂。
      * 贴死（wallT=0）的门 fill === rect，外扩为 0，这里天然正确。 */
     const F = d.fill || R;
-    const gx = Engine.latticeSegments(A.GX, plan.tile.x, plan.tile.grout, F.x, F.x + F.w);
-    const gy = Engine.latticeSegments(A.GY, plan.tile.y, plan.tile.grout, F.y, F.y + F.h);
+    /* 砖规格取**这道门所在那个区**的（A.tile），和 A.GX 同一个来源。
+     * 拿 plan.tile（参考区那张）来画别的区：网原点对、砖大小不对，门口那几块
+     * 会跟两侧房间的缝错开，看着像贴歪了——多规格时这是必然发生的。 */
+    const AT = A.tile || plan.tile;
+    const gx = Engine.latticeSegments(A.GX, AT.x, plan.tile.grout, F.x, F.x + F.w);
+    const gy = Engine.latticeSegments(A.GY, AT.y, plan.tile.grout, F.y, F.y + F.h);
     ctx.save();
     ctx.translate(OX + F.x * s, OY + F.y * s);
     paintTiles(ctx, Engine.toLocal(gx, F.x), Engine.toLocal(gy, F.y), s, F.w * s, F.h * s);
@@ -1588,9 +1940,16 @@ function drawPlan(plan){
   const baseTxt = plan.areas.length > 1
     ? `${plan.areas.length} 个区，分别以${plan.areas.map((a) => `「${a.baseName}」`).join("")}为准起铺`
     : `以「${plan.grid.baseName}」为准起铺`;
+  /* 一行里报砖规格：只有一种就照旧「砖 800×800」（跟改动前一字不差）；
+   * 有两种以上时全列出来太挤，报「砖 2 种」+ 面积最大的那种，下面设置栏里
+   * 每间房各自写着，清单里也按规格分开——这里只负责别让人以为全屋还是一块砖。 */
+  const specList = (plan.summary && plan.summary.specs) || [];
+  const tileTxt = specList.length > 1
+    ? `砖 ${specList.length} 种（${specList.map(s => `${s.w}×${s.h}`).join(" / ")}）`
+    : `砖 ${plan.tile.x}×${plan.tile.y}`;
   $("#planSub").textContent =
     `全屋 ${(bb.w / 1000).toFixed(2)} × ${(bb.h / 1000).toFixed(2)} m　` +
-    `砖 ${plan.tile.x}×${plan.tile.y}　${baseTxt}`;
+    `${tileTxt}　${baseTxt}`;
 }
 
 /* ---------------- 状态栏 / 清单 / 明细 ---------------- */
@@ -1644,15 +2003,33 @@ function renderCutList(plan){
   const box = $("#cutList");
   if (!plan.ok || !plan.summary) { box.textContent = "—"; return; }
   const S = plan.summary, lines = [];
+  const multi = (S.buyBySpec || []).length > 1;
   lines.push(`铺贴面积：${(S.areaMM / 1e6).toFixed(2)} m²（含通铺门口过道）`);
   lines.push(`整砖：${S.wholeCount} 块` + (S.crossDoorWhole ? `（其中 ${S.crossDoorWhole} 块直接跨门口）` : ""));
   lines.push(`要裁的砖：${S.pieceCount} 块，按尺寸分：`);
-  S.cutGroups.forEach((g) => {
-    if (g.kind === "notch") lines.push(`  跨门口开缺口 ×${g.count}（整砖 ${Math.round(S.tile.x)}×${Math.round(S.tile.y)}，两侧开口）`);
-    else lines.push(`  ${g.w} × ${g.h} mm　×${g.count}`);
-  });
-  lines.push(`——————`);
-  lines.push(`按 5% 损耗备料：约 ${S.buyCount} 块`);
+  /* 全屋一种砖：照旧一张平铺的清单，一个字都不变。
+   * 多种规格：先按**原砖规格**分节报，因为「每种买几块」是分不开的——
+   * 把 800 的边条和 300 的边条并成一行，用户拿去店里报不清，也备不对货。 */
+  if (!multi) {
+    S.cutGroups.forEach((g) => {
+      if (g.kind === "notch") lines.push(`  跨门口开缺口 ×${g.count}（整砖 ${Math.round(S.tile.x)}×${Math.round(S.tile.y)}，两侧开口）`);
+      else lines.push(`  ${g.w} × ${g.h} mm　×${g.count}`);
+    });
+    lines.push(`——————`);
+    lines.push(`按 5% 损耗备料：约 ${S.buyCount} 块`);
+  } else {
+    lines.push(`（全屋有 ${S.buyBySpec.length} 种砖，下面按原砖规格分开列，别混着买）`);
+    S.buyBySpec.forEach((sp) => {
+      lines.push(`——————`);
+      lines.push(`原砖 ${sp.w}×${sp.h} mm`);
+      lines.push(`  整砖 ${sp.whole} 块；要裁 ${sp.pieces} 块：`);
+      S.cutGroups.filter((g) => g.specW === sp.w && g.specH === sp.h).forEach((g) => {
+        if (g.kind === "notch") lines.push(`    跨门口开缺口 ×${g.count}（整砖 ${sp.w}×${sp.h}，两侧开口）`);
+        else lines.push(`    ${g.w} × ${g.h} mm　×${g.count}`);
+      });
+      lines.push(`  按 5% 损耗备料：约 ${sp.buy} 块`);
+    });
+  }
   box.textContent = lines.join("\n");
 }
 
@@ -1700,6 +2077,7 @@ function update(){
   renderStatuses(plan);
   renderCutList(plan);
   renderRoomDetails(plan);
+  renderRoomTiles(plan);
   syncAreaHint(plan);
   // 起铺角那两行（角选择行 + 小字）跟着**引擎算出来的结果**走，不是跟着设置走：
   // "选了起铺角但自动退回了居中"这种状态，只有 plan 里才有。
