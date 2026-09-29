@@ -774,6 +774,240 @@ test("测试 5e：拖角吸附——候选边要排除自己，且吸的是最�
   check("候选表空 → 原样返回", S.snapToEdges(1234, [], 500) === 1234);
 });
 
+/* ============ 测试 6：缝里补过道（矩形 + L / T / 十字等多边形） ============
+ * 这一组守的是「点一下缝，缝里自己长出一条过道」。全部是纯函数，没有界面。
+ *
+ * 两条承重的东西，别的都可以商量、这两条不行：
+ *   ① **拐角护栏**。户型某个角上的空地不算过道。少了它，一个已经排满的示例户型
+ *      会冒出两千多处假过道（实测 9690 个点里 2073 次），而且它们最细的那块是
+ *      2300，软上限 2400——只差 100mm，靠收紧尺寸门槛根本挡不住。见 6a 的扫描。
+ *   ② **拼块之间严丝合缝**。一条 L 形过道会被拆成几间房（数据模型里一间房就是
+ *      一个矩形），它们之间必须缝宽 0——house.html 的 isFlush 靠这一条把几块
+ *      认成同一个铺贴区，否则砖缝会在拐角处断掉。见 6a 的 L 形断言。 */
+
+const MIN_MM = 300, MAX_MM = 2400;          // 就是页面上的 MIN_ROOM_MM / CORRIDOR_MAX_MM
+const GAP = 240;                            // 默认墙厚（gapMM() 在 gapMode !== "zero" 时返回 state.wall）
+
+/* 缝宽 gapSize 的一对左右并排的房间（缝里那就是过道的位子） */
+const pairLR = (gapSize, h = 6000) => [
+  { id: "w1", name: "客厅", x: 0, y: 0, w: 3000, h },
+  { id: "w2", name: "主卧", x: 3000 + gapSize, y: 0, w: 3000, h },
+];
+const at = (rooms, px, py, gap = GAP, min = MIN_MM, max = MAX_MM) =>
+  S.corridorAt(rooms, px, py, gap, min, max);
+const box = (r) => `${r.x},${r.y},${r.w}×${r.h}`;
+const boxes = (rs) => rs.map(box).sort().join(" + ");
+
+/* 两块拼块之间「缝有多宽、贴了多长」。缝宽 0 且贴了正长度 = 真正的严丝合缝。
+ * 不直接比面积，是因为面积对得上、中间却裂着一条缝的情形也是有的。 */
+function seam(ra, rb) {
+  const xo = Math.min(ra.x + ra.w, rb.x + rb.w) - Math.max(ra.x, rb.x);
+  const yo = Math.min(ra.y + ra.h, rb.y + rb.h) - Math.max(ra.y, rb.y);
+  if (xo > 1e-6 && yo <= 1e-6)                       // 上下贴：看竖缝
+    return { gap: Math.abs((ra.y + ra.h) - rb.y) <= 1e-6 || Math.abs((rb.y + rb.h) - ra.y) <= 1e-6
+                  ? 0 : Math.max(ra.y, rb.y) - Math.min(ra.y + ra.h, rb.y + rb.h), len: xo };
+  if (yo > 1e-6 && xo <= 1e-6)                       // 左右贴：看横缝
+    return { gap: Math.abs((ra.x + ra.w) - rb.x) <= 1e-6 || Math.abs((rb.x + rb.w) - ra.x) <= 1e-6
+                  ? 0 : Math.max(ra.x, rb.x) - Math.min(ra.x + ra.w, rb.x + rb.w), len: yo };
+  return { gap: NaN, len: 0 };
+}
+
+test("测试 6a：corridorAt——矩形缝，缝里点一下就出过道", () => {
+  const R = pairLR(1480);                      // 净宽 = 1480 - 2×240 = 1000
+
+  for (const [px, py] of [[3740, 3000], [3010, 3000], [4470, 3000], [3740, 10], [3740, 5990]]) {
+    const g = at(R, px, py);
+    check(`缝里 (${px},${py}) → 3240,0,1000×6000`,
+          g.ok && boxes(g.rects) === "3240,0,1000×6000", g.ok ? boxes(g.rects) : g.code);
+  }
+  /* ★ 上面 3010 和 4470 这两条才是「按边内缩 + 最近空格」的锁：
+   *   手指压在离邻居 10mm 的地方，落在充气后的墙带里。种子要是取「手指所在的格子」，
+   *   这两个位置会得到「被占」→ 整条缝点不动，而那正是缝最容易被点到的地方。 */
+
+  check("点在房间里 → inroom", at(R, 1500, 3000).code === "inroom");
+  check("点在户型外 → outside", at(R, -500, 3000).code === "outside");
+  check("一间房都没有 → nocorridor", at([], 100, 100).code === "nocorridor");
+
+  const z = at(R, 3740, 3000, 0);              // 贴死模式：不充气，一条边都不缩
+  check("gap=0（贴死模式）→ 3000,0,1480×6000，一条边都不缩",
+        z.ok && boxes(z.rects) === "3000,0,1480×6000", z.ok ? boxes(z.rects) : z.code);
+
+  /* 普通 240 墙缝：整条缝都被两边的充气房间压住，一个空格子都没有。
+   * 这条要是错了，她点一下普通的墙就不再是「开门」，而是凭空多一间过道。 */
+  const v = at(pairLR(240), 3120, 3000);
+  check("普通 240 墙缝 → nocorridor（不误判成过道）", v.code === "nocorridor", v.code);
+
+  /* 缝的一边由两间房上下拼成 → 过道照样是一条整的，不该被中间那道 240 缝截断 */
+  const split = [
+    { id: "w1", name: "客厅", x: 0, y: 0, w: 3000, h: 6000 },
+    { id: "w2", name: "主卧", x: 4480, y: 0, w: 3000, h: 3000 },
+    { id: "w3", name: "次卧", x: 4480, y: 3000, w: 3000, h: 3000 },
+  ];
+  const sp = at(split, 3740, 3000);
+  check("一边由两间房拼成 → 仍然是 3240,0,1000×6000（跨得过墙角那道缝）",
+        sp.ok && boxes(sp.rects) === "3240,0,1000×6000", sp.ok ? boxes(sp.rects) : sp.code);
+
+  const up = at([{ id: "a", name: "客厅", x: 0, y: 0, w: 6000, h: 3000 },
+                 { id: "b", name: "主卧", x: 0, y: 4480, w: 6000, h: 3000 }], 3000, 3740);
+  check("上下两间房 → 横过道 0,3240,6000×1000",
+        up.ok && boxes(up.rects) === "0,3240,6000×1000", up.ok ? boxes(up.rects) : up.code);
+
+  check("邻居就是缝两边那两间", at(R, 3740, 3000).neighbours.map((r) => r.name).sort().join(",")
+        === "主卧,客厅", at(R, 3740, 3000).neighbours.map((r) => r.name).join(","));
+});
+
+test("测试 6a-2：corridorAt——尺寸门槛（过道净宽 = 缝 − 2×gap）", () => {
+  const cases = [
+    [700,  "narrow", null],       // 净宽 220，比 MIN_ROOM_MM 还窄
+    [780,  null, "3240,0,300×6000"],   // 净宽 300，**刚好**够（临界值）
+    [1000, null, "3240,0,520×6000"],
+    [1480, null, "3240,0,1000×6000"],
+    [2880, null, "3240,0,2400×6000"],  // 净宽 2400，**刚好**够（软上限）
+    [2900, "toobig", null],            // 净宽 2420，超出上限
+  ];
+  for (const [gapSize, code, want] of cases) {
+    const g = at(pairLR(gapSize), 3000 + gapSize / 2, 3000);
+    check(`缝 ${gapSize} → ${code ? "拒绝（" + code + "）" : want}`,
+          code ? (!g.ok && g.code === code) : (g.ok && boxes(g.rects) === want),
+          g.ok ? boxes(g.rects) : g.code);
+  }
+});
+
+test("测试 6a-3：corridorAt——L 形缝，出来是严丝合缝的两块", () => {
+  /* 一个 L 形的缝：上面一条横的（通到底）、左边下来一条竖的。
+   * 四个房间把 L 的轮廓围出来，LC 是右端那个「封口」的角。 */
+  const L = [
+    { id: "L1", name: "上",   x: 0,    y: 0,    w: 8000, h: 2000 },
+    { id: "L2", name: "左下", x: 0,    y: 2000, w: 2000, h: 4000 },
+    { id: "L3", name: "右下", x: 3000, y: 3000, w: 5000, h: 3000 },
+    { id: "LC", name: "封口", x: 7000, y: 2000, w: 1000, h: 1000 },
+  ];
+  const want = "2240,2240,4520×520 + 2240,2760,520×3240";
+
+  /* 横臂两个点、竖臂两个点、拐角一个点——L 的每一段都要能点到 */
+  for (const [px, py] of [[2500, 2500], [5000, 2500], [2500, 4000], [2500, 5500], [2240, 2240]]) {
+    const g = at(L, px, py);
+    check(`L 形落点 (${px},${py}) → 两块 ${want}`,
+          g.ok && boxes(g.rects) === want, g.ok ? boxes(g.rects) : g.code);
+  }
+
+  /* ★ 承重不变量：两块之间缝宽必须是 0。
+   *   数据模型里一间房就是一个矩形，L 只能拆成两块；只要缝是 0，
+   *   house.html 的 isFlush 就把它们当同一间房，砖缝从第一块直接穿到第二块，
+   *   铺出来、看起来都是一条完整的 L 形过道。缝只要不是 0，拐角处砖缝就断了。 */
+  const g = at(L, 2500, 2500);
+  const s = seam(g.rects[0], g.rects[1]);
+  check("两块之间严丝合缝：缝宽 0mm，且贴着的长度是 520mm（不是点接触）",
+        s.gap === 0 && s.len === 520, `缝宽 ${s.gap}，贴了 ${s.len}`);
+
+  const ov = (a, b) => Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x))
+                     * Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+  check("两块互不重叠（重叠面积 0）——house.html 有重叠就整张图判死",
+        ov(g.rects[0], g.rects[1]) === 0, String(ov(g.rects[0], g.rects[1])));
+
+  /* 按 id 比，不按中文名比——中文的排序规则跟着 locale 走，写成断言会自己咬自己 */
+  check("四间房全都挨着这条 L 形过道（邻居齐了）",
+        g.neighbours.map((r) => r.id).sort().join(",") === "L1,L2,L3,LC",
+        g.neighbours.map((r) => r.name).join(","));
+});
+
+test("测试 6a-4：corridorAt——十字形拆 3 块、T 形拆 2 块", () => {
+  /* 十字：四间房占住四个象限，中间空出一个十字。 */
+  const cross = [
+    { id: "q1", name: "左上", x: 0,    y: 0,    w: 3260, h: 3260 },
+    { id: "q2", name: "右上", x: 4740, y: 0,    w: 3260, h: 3260 },
+    { id: "q3", name: "左下", x: 0,    y: 4740, w: 3260, h: 3260 },
+    { id: "q4", name: "右下", x: 4740, y: 4740, w: 3260, h: 3260 },
+  ];
+  const c = at(cross, 4000, 4000);
+  check("十字形 → 3 块：3500,0,1000×8000 + 0,3500,3500×1000 + 4500,3500,3500×1000",
+        c.ok && boxes(c.rects) === "0,3500,3500×1000 + 3500,0,1000×8000 + 4500,3500,3500×1000",
+        c.ok ? boxes(c.rects) : c.code);
+  check("十字形的四间房全是邻居", c.neighbours.length === 4, String(c.neighbours.length));
+
+  /* T 形：上面一整条、下面左右两间，中间空出一个 T。 */
+  const tee = [
+    { id: "t1", name: "上",   x: 0,    y: 0,    w: 5000, h: 2000 },
+    { id: "t2", name: "左下", x: 0,    y: 3000, w: 2000, h: 2000 },
+    { id: "t3", name: "右下", x: 3000, y: 3000, w: 2000, h: 2000 },
+  ];
+  const t = at(tee, 2500, 4000);
+  check("T 形 → 2 块：0,2240,5000×520 + 2240,2760,520×2240",
+        t.ok && boxes(t.rects) === "0,2240,5000×520 + 2240,2760,520×2240",
+        t.ok ? boxes(t.rects) : t.code);
+  const ts = seam(t.rects[0], t.rects[1]);
+  check("T 形的两块之间同样是缝宽 0", ts.gap === 0 && ts.len === 520, `缝宽 ${ts.gap}，贴了 ${ts.len}`);
+  check("T 形的三间房全是邻居", t.neighbours.length === 3, String(t.neighbours.length));
+});
+
+test("测试 6a-5：★ 拐角护栏——已排满的示例户型，一个点都补不出过道", () => {
+  /* ★ 这一条是整个功能的**安全网**。失败是静默的（普通的「取消选中」不该闪红字），
+   *   所以宁可一个字都不提示，就必须保证误判率是零。
+   *   扫的是本页内置的示例户型（89㎡ 两室一厅）的外接矩形，100mm 网格。
+   *   无护栏时这一扫是 2073 次误判成功，最细的那块 2300——离软上限 2400 只差 100mm。 */
+  const SAMPLE = [
+    { id: "r1", name: "客厅",   x: 0,    y: 0,    w: 6900, h: 4400 },
+    { id: "r2", name: "主卧",   x: 0,    y: 4640, w: 3800, h: 3900 },
+    { id: "r3", name: "次卧",   x: 4040, y: 4640, w: 2860, h: 3800 },
+    { id: "r4", name: "厨房",   x: 7140, y: 0,    w: 2300, h: 2000 },
+    { id: "r5", name: "卫生间", x: 7140, y: 2240, w: 2300, h: 2100 },
+    { id: "r6", name: "阳台",   x: 0,    y: 8780, w: 3700, h: 1400 },
+  ];
+  for (const step of [100, 200]) {
+    let hits = null, n = 0;
+    for (let x = 0; x <= 9440; x += step) for (let y = 0; y <= 10180; y += step) {
+      n++;
+      const g = at(SAMPLE, x, y);
+      if (g.ok && hits === null) hits = { x, y, rects: boxes(g.rects) };
+    }
+    check(`示例户型 ${step}mm 网格扫 ${n} 个点 → 成功 0 次`, hits === null,
+          hits ? `(${hits.x},${hits.y}) → ${hits.rects}` : "");
+  }
+  /* 空户型的四个角本来也不该认（一间房都没有，先撞上 nocorridor 那条） */
+  check("只有一间房时点它旁边 → 不认（拐角护栏管的是有户型的那一档）",
+        !at([{ id: "a", name: "客厅", x: 0, y: 0, w: 3000, h: 3000 }], 3120, 0).ok);
+});
+
+test("测试 6b：corridorName——按名字里的最大编号 +1，不是数个数", () => {
+  const nm = (names) => S.corridorName(names.map((n, i) => ({ id: "r" + i, name: n })), "过道");
+  check("一间都没有 → 过道", nm([]) === "过道", nm([]));
+  check("已经有一间 → 过道2", nm(["过道"]) === "过道2", nm(["过道"]));
+  check("过道 + 过道2 → 过道3", nm(["过道", "过道2"]) === "过道3", nm(["过道", "过道2"]));
+  /* ★ 这条才是「最大编号 +1」的锁：删掉中间那间再加，按数量算会撞出第二个「过道2」。 */
+  check("只剩「过道3」→ 过道4（不是回到过道2）", nm(["过道3"]) === "过道4", nm(["过道3"]));
+  check("没有过道时不受别的房间影响 → 过道", nm(["客厅", "主卧"]) === "过道", nm(["客厅", "主卧"]));
+  /* 用正则而不是 startsWith：「过道口」不是编号 0 的「过道」。 */
+  check("「过道口」不误伤 → 过道2", nm(["过道", "过道口"]) === "过道2", nm(["过道", "过道口"]));
+  check("「过道口」自己 → 过道（不把它当成已有过道）", nm(["过道口"]) === "过道", nm(["过道口"]));
+  check("传 null 不炸", S.corridorName(null, "过道") === "过道");
+});
+
+test("测试 6c：est 继承——邻居里有一间没量，补出来的过道也是没量", () => {
+  const L = [
+    { id: "L1", name: "上",   x: 0,    y: 0,    w: 8000, h: 2000 },
+    { id: "L2", name: "左下", x: 0,    y: 2000, w: 2000, h: 4000 },
+    { id: "L3", name: "右下", x: 3000, y: 3000, w: 5000, h: 3000 },
+    { id: "LC", name: "封口", x: 7000, y: 2000, w: 1000, h: 1000 },
+  ];
+  const g0 = at(L, 2500, 2500);
+  check("全量过 → 邻居里没有未量的（过道跟邻居一样是已量）",
+        g0.neighbours.every((n) => !S.isEst(n)));
+
+  S.markEst(L[2]);                                  // 「右下」这间还没量
+  const g1 = at(L, 2500, 2500);
+  check("把一间邻居标成未量 → 它出现在邻居里",
+        g1.neighbours.some((n) => n.id === "L3"), g1.neighbours.map((n) => n.id).join(","));
+  /* 页面上的 tryCorridorAt 就是拿这一条决定 est 的：过道的尺寸完全由邻居推导，
+   * 所以只要有一间邻居没量，整批新过道都是未量。 */
+  check("→ 于是整批过道都该是未量的（neighbours.some(isEst) 为真）",
+        g1.neighbours.some((n) => S.isEst(n)));
+
+  S.markEst(L[3]);                                  // 再标一间
+  check("标两间也一样", at(L, 2500, 2500).neighbours.some((n) => S.isEst(n)));
+  S.markMeasured(L[2]); S.markMeasured(L[3]);
+  check("量完标回来 → 又变回已量", at(L, 2500, 2500).neighbours.every((n) => !S.isEst(n)));
+});
+
 /* ============ 汇总 ============ */
 console.log(`\n${_fail ? "❌" : "✅"} 通过 ${_pass} 条，失败 ${_fail} 条`);
 process.exit(_fail ? 1 : 0);

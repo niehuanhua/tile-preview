@@ -169,6 +169,7 @@ textarea{min-height:112px; resize:vertical; line-height:1.65; white-space:pre; o
         <span>自己填墙厚（mm）</span>
         <input type="text" inputmode="numeric" id="wallCustom" placeholder="240">
       </label>
+      <p class="hint" style="text-align:left" id="gapTip"></p>
     </div>
   </section>
 
@@ -238,7 +239,7 @@ textarea{min-height:112px; resize:vertical; line-height:1.65; white-space:pre; o
 </div>
 
 <script>
-const BUILD = "2026-09-18 13:49";  // 版本号：手机上看看对不对，就知道是不是旧页面了
+const BUILD = "2026-09-29 21:21";  // 版本号：手机上看看对不对，就知道是不是旧页面了
 
 const STORE_KEY = "houseTileV1";   // house.html 的存档（导出时往这里写）
 const SKETCH_KEY = "houseSketchV1"; // 草图自己的存档（和 house.html 分开，互不干扰）
@@ -254,6 +255,10 @@ const DOOR_SNAP_MM = 10;         // 拖动门的时候吸附到多少毫米
 const DOOR_LABEL_MIN_PX = 34;    // 洞口在屏幕上短于这个就不写宽度数字了（太挤）
 const MIN_ROOM_MM = 300;         // 拖角能缩到的最小边长（mm）。再小就会拖成 0 或负数，
                                  // 而 loadSketch 会把 w<=0 的房间整条丢掉——等于房间凭空消失
+const CORRIDOR_MAX_MM = 2400;    // 自动补出来的「过道」最宽能有多宽（mm）。再宽就不像过道了，
+                                 // 那是客厅、是没摆房间的空地。注意这是**软**上限：无头实测
+                                 // 示例户型里 2073 处误判的最细那块卡在 2300，跟 2400 只差 100mm，
+                                 // 所以挡住它们的是拐角护栏，不是这个数（见 corridorFreeAt 的注）
 const CORNER_SLOP_PX = 22;       // 拖角把手的命中半径（屏幕像素）。比 HIT_SLOP_PX 大一圈：
                                  // 房间角上不像房间正中那么好点，手指又比鼠标粗
 
@@ -676,10 +681,156 @@ const snapToEdges = (v, cands, tolMM) => {
   return best;
 };
 
+/* ---------- 缝里补过道 ----------
+ * 房间摆好之后中间空出来的那条缝就是过道。缝窄，手指头比它还粗，在里面拖一间房
+ * 摆准是不可能的——所以这一间交给算的，不交给量的。
+ *
+ * 语义：**缝就是墙**。相邻两间房永远正好隔 gapMM()（edgeCands 就是拿
+ * o.x - gap / o.x + o.w + gap 当吸附位的），墙厚就是那条缝本身，不属于任何一间房。
+ * 所以把每间房按 gap 向外**充气**，剩下的自由区就是「能放过道的地方」，
+ * 过道的边自然落在离邻居 gap 的位置——跟手拖一间房摆进去的结果逐位相同。
+ * gap === 0（贴死模式）时充气量为 0，缝多宽过道就多宽。
+ *
+ * 多边形：自由区可以是任意正交多边形（L、T、十字都行），但一间房在数据模型里
+ * 只能是 {x,y,w,h} 一个矩形，所以最后要**分解成几块**，一块一间房、名字连号。
+ * 分解出来的块两两之间严丝合缝（缝 = 0），house.html 的 isFlush 会把它们当成
+ * 同一间房——铺贴上就是一条完整的 L 形过道，只是房间里多了一行。
+ *
+ * 全部走参数：引擎段会被 sketch-test.js 抽出来在独立作用域里跑，读不到外面的常量。 */
+const infl = (r, g) => ({ x: r.x - g, y: r.y - g, w: r.w + 2 * g, h: r.h + 2 * g });
+const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
+/* 严格在内部：压在房间的**边**上不算「在房里」，这样贴着脸点缝也能补出过道
+ * （实测 3010 / 3740 / 4470 三处同解）。 */
+const inside = (R, px, py) => px > R.x + 1e-6 && px < R.x + R.w - 1e-6 &&
+                              py > R.y + 1e-6 && py < R.y + R.h - 1e-6;
+const rectDist = (rx, ry, rw, rh, px, py) =>
+  Math.hypot(distToRange(px, rx, rx + rw), distToRange(py, ry, ry + rh));
+
+const corridorFreeAt = (rooms, px, py, gap) => {
+  const rs = rooms || [];
+  if (!rs.length) return { code: "nocorridor" };
+  for (const r of rs) if (inside(r, px, py)) return { code: "inroom" };
+  const x0 = Math.min(...rs.map((r) => r.x)), x1 = Math.max(...rs.map((r) => r.x + r.w));
+  const y0 = Math.min(...rs.map((r) => r.y)), y1 = Math.max(...rs.map((r) => r.y + r.h));
+  if (px < x0 - 1e-6 || px > x1 + 1e-6 || py < y0 - 1e-6 || py > y1 + 1e-6) return { code: "outside" };
+
+  /* 坐标压缩：切在**充气后**的边上，不是原始房间的边上。
+   * ⚠️ 切错这一步后果是灾难性的：缝会被包进一个粗格子里，而那个格子被充气后的
+   *    房间压住 → 整条缝判成「被占」→ 什么都补不出来（上一版就是这么全盘失败的）。 */
+  const I = rs.map((r) => infl(r, gap));
+  const XS = new Set([x0, x1]), YS = new Set([y0, y1]);
+  for (const q of I) {
+    XS.add(clamp(q.x, x0, x1)); XS.add(clamp(q.x + q.w, x0, x1));
+    YS.add(clamp(q.y, y0, y1)); YS.add(clamp(q.y + q.h, y0, y1));
+  }
+  const X = [...XS].sort((a, b) => a - b), Y = [...YS].sort((a, b) => a - b);
+  const NX = X.length - 1, NY = Y.length - 1;
+  const occ = (i, j) => I.some((q) => q.x < X[i + 1] - 1e-6 && q.x + q.w > X[i] + 1e-6 &&
+                                      q.y < Y[j + 1] - 1e-6 && q.y + q.h > Y[j] + 1e-6);
+
+  /* ⚠️ 种子取**离手指最近的那个空格子**，不是「手指所在的格子」。
+   *    缝里贴着脸的位置（如 3010）落在充气后的墙带里，取所在格子会得到「被占」，
+   *    缝的靠边那一半就点不动了——而那恰恰是缝最容易被点到的地方。 */
+  let si = -1, sj = -1, best = Infinity;
+  for (let i = 0; i < NX; i++) for (let j = 0; j < NY; j++) {
+    if (occ(i, j)) continue;
+    const d = rectDist(X[i], Y[j], X[i + 1] - X[i], Y[j + 1] - Y[j], px, py);
+    if (d < best - 1e-6) { best = d; si = i; sj = j; }
+  }
+  if (si < 0 || best > 2 * gap + 1e-6) return { code: "nocorridor" };
+
+  const E = Array.from({ length: NX }, () => new Array(NY).fill(false));
+  const st = [[si, sj]];
+  E[si][sj] = true;
+  while (st.length) {
+    const [i, j] = st.pop();
+    for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const a = i + di, b = j + dj;
+      if (a < 0 || b < 0 || a >= NX || b >= NY || E[a][b] || occ(a, b)) continue;
+      E[a][b] = true; st.push([a, b]);
+    }
+  }
+
+  /* ★ 拐角护栏：户型某个角上的空地，不算过道。
+   * 没有这一行，一个已经排满的示例户型会冒出大片假过道——实测扫 9690 个点，
+   * 无护栏时 2073 次误判成功，而且它们最细的那块**全都卡在 fat = 2300**，
+   * 软上限是 2400，只差 100mm：靠收紧尺寸门槛是挡不住的，必须留这一行。
+   * （为什么是「拐角」而不是「至少一对相对边被顶满」：同一批夹具上做对照实跑，
+   *   拐角这条五个真夹具全过、示例户型假阳性 0；另一条误杀了十字形和 T 形。） */
+  if (E[0][0] || E[NX - 1][0] || E[0][NY - 1] || E[NX - 1][NY - 1]) return { code: "notgap" };
+  return { ok: true, X, Y, E, NX, NY };
+};
+
+/* 把自由区**分解**成若干个互不重叠、严丝合缝的矩形。
+ * 贪心：按行扫一遍、按列扫一遍，每遍都是「先横着尽量伸、再整条竖着尽量伸」
+ * （整条都能盖住才肯伸），盖住就清掉。两遍结果可能不同（L 形一样，十字形不同），
+ * 取**最细的那块更细**的一份——更细的那份更像过道。结果确定、可断言。 */
+const corridorRects = (free) => {
+  const { X, Y, E, NX, NY } = free;
+  const decomp = (major) => {
+    const D = E.map((c) => c.slice());
+    const out = [];
+    const NI = major === "row" ? NX : NY, NJ = major === "row" ? NY : NX;
+    const get = (i, j) => (major === "row" ? D[i][j] : D[j][i]);
+    const clr = (i, j) => { if (major === "row") D[i][j] = false; else D[j][i] = false; };
+    for (let j = 0; j < NJ; j++) for (let i = 0; i < NI; i++) {
+      if (!get(i, j)) continue;
+      let i2 = i;
+      while (i2 + 1 < NI && get(i2 + 1, j)) i2++;
+      let j2 = j;
+      outer: while (j2 + 1 < NJ) {
+        for (let k = i; k <= i2; k++) if (!get(k, j2 + 1)) break outer;
+        j2++;
+      }
+      for (let a = i; a <= i2; a++) for (let b = j; b <= j2; b++) clr(a, b);
+      out.push(major === "row"
+        ? { x: X[i], y: Y[j], w: X[i2 + 1] - X[i], h: Y[j2 + 1] - Y[j] }
+        : { x: X[j], y: Y[i], w: X[j2 + 1] - X[j], h: Y[i2 + 1] - Y[i] });
+    }
+    return out;
+  };
+  const fat = (rs) => Math.max(...rs.map((r) => Math.min(r.w, r.h)));
+  const rowRs = decomp("row"), colRs = decomp("col");
+  return fat(colRs) < fat(rowRs) - 1e-6 ? colRs : rowRs;
+};
+
+const corridorAt = (rooms, px, py, gap, minMM, maxMM) => {
+  const free = corridorFreeAt(rooms, px, py, gap);
+  if (!free.ok) return free;
+  const rects = corridorRects(free);
+  /* 任何一块不过关 → 整次作废。宁可不出，也不出一条半截的过道。 */
+  for (const r of rects) {
+    const s = Math.min(r.w, r.h);
+    if (s < minMM - 1e-6) return { code: "narrow" };
+    if (s > maxMM + 1e-6) return { code: "toobig" };
+  }
+  /* 邻居 = 充气后跟过道有重叠的房间。给 est 继承用：过道的尺寸完全由邻居推导，
+   * 所以只要有一间邻居是未量的，整批新过道都是未量。 */
+  const neighbours = (rooms || []).filter((r) => {
+    const q = infl(r, gap);
+    return rects.some((p) => q.x < p.x + p.w + 1e-6 && q.x + q.w > p.x - 1e-6 &&
+                             q.y < p.y + p.h + 1e-6 && q.y + q.h > p.y - 1e-6);
+  });
+  return { ok: true, rects, neighbours };
+};
+
+/* 起名：取名字里出现的**最大编号 +1**，不是数个数。
+ * 跟 batchStartNo 同一个规矩——她删掉中间一间再加，按数量算就会撞出两个「过道2」。
+ * 用正则而不是 startsWith：这样「过道口」不会被当成编号 0 的「过道」。 */
+const corridorName = (rooms, prefix) => {
+  let max = 0;
+  for (const r of (rooms || [])) {
+    const m = String((r && r.name) || "").match(new RegExp("^" + prefix + "(\\d*)$"));
+    if (m) max = Math.max(max, m[1] ? Number(m[1]) : 1);
+  }
+  return max ? prefix + (max + 1) : prefix;
+};
+
 const Engine = { numOr, rectOf, spanOv, rectOvArea, distToRange, doorAxis, doorRectOf, doorRect,
                  clampPos, thirdRoomOnDoor, doorView, sameWallDoorClash,
                  findWallGap, freeRangeOnWall, sanitizeDoors, nextSeq, exportDoors, parseRoomLines,
-                 isEst, markMeasured, markEst, resizeByCorner, cornerHit, edgeCands, snapToEdges };
+                 isEst, markMeasured, markEst, resizeByCorner, cornerHit, edgeCands, snapToEdges,
+                 infl, clamp, inside, rectDist, corridorFreeAt, corridorRects, corridorAt, corridorName };
 if (typeof module !== "undefined" && module.exports) module.exports = Engine;
 /*ENGINE-END*/
 
@@ -1331,6 +1482,7 @@ function draw() {
 
   $("#hint").textContent = state.rooms.length
     ? ("点两间房中间那道墙开门 · 按住门顺着墙拖 · 空白处拖动画布 · ＋－缩放"
+       + " · 点房间中间那道缝自动补出「过道」"
        + (state.gapMode === "zero" ? " · 房间靠近时直接贴上去（间隙 0）"
                                    : ` · 房间靠近时自动留 ${state.wall}mm 墙`))
     : "点下面「＋ 添加房间」开始";
@@ -1554,6 +1706,41 @@ canvas.addEventListener("wheel", (e) => {
 $("#zin").onclick  = () => { const s = canvasCssSize(); zoomAt(1.25, s.w / 2, s.h / 2); };
 $("#zout").onclick = () => { const s = canvasCssSize(); zoomAt(1 / 1.25, s.w / 2, s.h / 2); };
 
+/* 在缝里补一条「过道」。缝是 L 形的就补出连号的好几间（见 corridorAt 的注释）。
+ * 返回 true = 补成了（抬手那条分支照常结算），false = 这儿不是缝，什么都没发生。
+ *
+ * ★ 失败必须**静默**：普通的「点空白 = 取消选中」也要走这条路，不该闪红字。
+ *   正因为静默，误判的代价全压在走廊算法的拐角护栏上（示例户型扫 9690 点，误判 0 次）。 */
+function tryCorridorAt(px, py) {
+  const r = corridorAt(state.rooms, px, py, gapMM(), MIN_ROOM_MM, CORRIDOR_MAX_MM);
+  if (!r.ok) return false;
+
+  /* est 继承：过道的尺寸完全是从邻居推导出来的，只要有一间邻居还没量，
+   * 整批新过道就都是未量的。不新增字段——est 是现成的那一套。 */
+  const est = r.neighbours.some((n) => isEst(n));
+  const add = [];
+  for (const q of r.rects) {
+    /* id 编号先算出来、**别在这里自增**——同 openDoorOnWall 1717 的注释：
+     * 下面那条否决会让整件事作废，在这里自增就白白浪费掉号。真落地了再一起 +n。 */
+    add.push({ id: "r" + (state.seq + 1 + add.length),
+               name: corridorName(state.rooms.concat(add), "过道"),
+               x: q.x, y: q.y, w: q.w, h: q.h, est });
+  }
+
+  /* ★ 否决：多出几间房有可能让一道**本来好好的门**失效（门两边被塞进第三间房之类）。
+   * 宁可整件事作废，也不让她的户型凭空多一道红门——同 openDoorOnWall 1730 那条原则。 */
+  const next = state.rooms.concat(add);
+  for (const d of state.doors) {
+    if (doorView(d, state.rooms, state.doors).ok && !doorView(d, next, state.doors).ok) return false;
+  }
+
+  state.seq += add.length;
+  for (const q of add) state.rooms.push(q);
+  saveSketch();
+  renderEditor(); draw();
+  return true;
+}
+
 /* 点墙开一道门。位置用 findWallGap 挑中的那一点（已经夹进共用段），
  * 宽度用「新门默认」，放不下就退到这道墙能容纳的最大值——
  * 先开出来、再让他改宽度，比"点了没反应"强。 */
@@ -1592,6 +1779,18 @@ function endPointer(e) {
   const p = state.pending;
   state.pending = null;
   if (!p) { commitStep(); draw(); return; }
+
+  /* ★ 缝里补过道：抬手、没拖动 → 先试试这儿是不是一条过道；补成了这一步就到此为止。
+   *  ① 为什么必须在 commitStep() 之前：创建要发生在本步【之内】。放到函数开头去的话，
+   *     那时过道还没建、快照跟当前状态一模一样，这一步会被当成空操作丢掉，补出来的过道撤销不了。
+   *     跟下面 mode:"wall" 那条注释是同一个道理。
+   *  ② 为什么 mode:"wall" 也要走这条——最要命的一条：doorAxis 对 wallT 只判负、不判上限，
+   *     findWallGap 又只要求缝宽 ≥ MIN_DOOR_MM，所以【一条 1480 的缝在那两处眼里是一道合法的墙】。
+   *     只挂 mode:"pan" 的话，这个功能在缝里根本点不出来，抬手反而会开出一道穿过过道的门。
+   *     缝宽到能当过道时，那儿没有墙，就不该开门。 */
+  if (!p.moved && (p.mode === "pan" || p.mode === "wall")) {
+    if (tryCorridorAt(p.sx, p.sy)) { commitStep(); return; }
+  }
 
   /* ★ 开门在**抬手**做，不在按下做：这是本条交互的安全设计。
    * 从墙上起手想平移画布很常见，按下就开门的话每拖一次画布就多一道门。
@@ -1666,7 +1865,13 @@ function renderRoomHint() {
   box.textContent = !r ? ""
     : isEst(r)
       ? "这间还没量尺寸，图上画的是虚线。先拖着四个角摆个大概；量好了把长和宽填进上面两格，就算量过了。"
-      : "拖着房间的四个角就能改大小，对角那个角不动，长和宽跟着变。";
+      /* 过道是自动补出来的，它和邻居之间的那几道墙**没有门**（她的选择：不自动开）。
+       * ⚠️ 这里是**按名字认**的（startsWith 让「过道2」也命中）——脆的，她把名字
+       *    改成「走廊」就不认了。刻意不为一句提示语加持久化字段：那要走 loadSketch
+       *    那条搬运路，不值当。 */
+      : r.name.startsWith("过道")
+        ? "这间过道是自动补出来的，它和邻居之间没有门。点它和邻居中间那道墙，就能开一道门。"
+        : "拖着房间的四个角就能改大小，对角那个角不动，长和宽跟着变。";
 }
 
 /* ---------- 选中的门 ---------- */
@@ -1931,6 +2136,19 @@ function syncWallUI() {
   $("#wallPreset").value = isPreset ? String(state.wall) : "custom";
   $("#wallCustomBox").style.display = isPreset ? "none" : "";
   if (!isPreset) $("#wallCustom").value = state.wall;
+  /* 过道的门槛是**跟着这个墙厚走的**，所以提示得长在这儿、数字得是活的。
+   * 门槛 = MIN_ROOM_MM + 2×gapMM()：过道净宽要够 MIN_ROOM_MM，而缝的两边各被
+   * 邻居占掉一个墙厚（缝就是墙本身，不归任何一间房）。墙 240 → 780。 */
+  const t = $("#gapTip");
+  if (t) t.textContent = state.gapMode === "zero"
+    ? "点两间房中间空出来的那道缝，会自动补出一间「过道」；缝是 L 形的，就沿 L 补出"
+      + `连号的两间过道。贴死模式下缝有多宽过道就有多宽，够 ${MIN_ROOM_MM}mm 就行。`
+    : `点两间房中间空出来的那道缝，会自动补出一间「过道」；缝是 L 形的，就沿 L 补出`
+      + `连号的两间过道（房间里会多一行，铺砖时它们算同一间）。缝要够宽才算过道——`
+      + `现在留 ${state.wall}mm 墙，缝得 ≥ ${MIN_ROOM_MM + 2 * gapMM()}mm；`
+      + `窄于这个数就是一道普通墙缝，点在它上面还是开门的那个动作。`
+      + `（手拖房间时吸附半径是 500mm，缝容易停在 240 或 740 往上，740~${
+          MIN_ROOM_MM + 2 * gapMM() - 1} 这一小段够不着，想要过道就把缝再拖宽一点。）`;
 }
 $("#gapMode").addEventListener("change", (e) => {
   beginStep();
