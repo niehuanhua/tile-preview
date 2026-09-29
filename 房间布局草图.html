@@ -239,7 +239,7 @@ textarea{min-height:112px; resize:vertical; line-height:1.65; white-space:pre; o
 </div>
 
 <script>
-const BUILD = "2026-09-29 21:21";  // 版本号：手机上看看对不对，就知道是不是旧页面了
+const BUILD = "2026-09-30 06:56";  // 版本号：手机上看看对不对，就知道是不是旧页面了
 
 const STORE_KEY = "houseTileV1";   // house.html 的存档（导出时往这里写）
 const SKETCH_KEY = "houseSketchV1"; // 草图自己的存档（和 house.html 分开，互不干扰）
@@ -256,9 +256,9 @@ const DOOR_LABEL_MIN_PX = 34;    // 洞口在屏幕上短于这个就不写宽�
 const MIN_ROOM_MM = 300;         // 拖角能缩到的最小边长（mm）。再小就会拖成 0 或负数，
                                  // 而 loadSketch 会把 w<=0 的房间整条丢掉——等于房间凭空消失
 const CORRIDOR_MAX_MM = 2400;    // 自动补出来的「过道」最宽能有多宽（mm）。再宽就不像过道了，
-                                 // 那是客厅、是没摆房间的空地。注意这是**软**上限：无头实测
-                                 // 示例户型里 2073 处误判的最细那块卡在 2300，跟 2400 只差 100mm，
-                                 // 所以挡住它们的是拐角护栏，不是这个数（见 corridorFreeAt 的注）
+                                 // 那是客厅、是没摆房间的空地。这是**软**上限：真正把
+                                 // 「一片空地」跟「一条缝」分开的是 corridorSealed 那条判据
+                                 // （两头都得撞在房间上），这个数只兜住"太肥的缝"这一档
 const CORNER_SLOP_PX = 22;       // 拖角把手的命中半径（屏幕像素）。比 HIT_SLOP_PX 大一圈：
                                  // 房间角上不像房间正中那么好点，手指又比鼠标粗
 
@@ -751,14 +751,10 @@ const corridorFreeAt = (rooms, px, py, gap) => {
     }
   }
 
-  /* ★ 拐角护栏：户型某个角上的空地，不算过道。
-   * 没有这一行，一个已经排满的示例户型会冒出大片假过道——实测扫 9690 个点，
-   * 无护栏时 2073 次误判成功，而且它们最细的那块**全都卡在 fat = 2300**，
-   * 软上限是 2400，只差 100mm：靠收紧尺寸门槛是挡不住的，必须留这一行。
-   * （为什么是「拐角」而不是「至少一对相对边被顶满」：同一批夹具上做对照实跑，
-   *   拐角这条五个真夹具全过、示例户型假阳性 0；另一条误杀了十字形和 T 形。） */
-  if (E[0][0] || E[NX - 1][0] || E[0][NY - 1] || E[NX - 1][NY - 1]) return { code: "notgap" };
-  return { ok: true, X, Y, E, NX, NY };
+  /* 「这块自由区算不算过道」交给 corridorSealed 一块一块地判（见它上面那段注）。
+   * 这里只把自由区连同**种子格**一起交出去——种子格是「手指底下那一格」，
+   * corridorAt 拿它兜底：手指底下没缝，就不许在屋子别处凭空冒出一间过道。 */
+  return { ok: true, X, Y, E, NX, NY, seed: [si, sj] };
 };
 
 /* 把自由区**分解**成若干个互不重叠、严丝合缝的矩形。
@@ -794,16 +790,84 @@ const corridorRects = (free) => {
   return fat(colRs) < fat(rowRs) - 1e-6 ? colRs : rowRs;
 };
 
+/* ★ 一块自由区到底算不算「过道」，就看它是不是**夹在两间房中间的一条缝**。
+ *
+ * 沿这块的长边取 5 个横截面（竖着走的长条量横截面、横着走的量竖截面），
+ * 每个横截面上，从那一格往两头延伸，看**两头是不是都撞在房间上**：
+ * 撞到房间 = 这头被堵住；撞到户型外框 = 这头通着外头的空地。
+ * 过半数的横截面两头都堵着，这块就是过道。
+ *
+ * 为什么取「多数」而不是只看正中那一个：十字形的正中是四条臂的交叉口，
+ * 在那儿量，横截面顺着另一条臂一直通到天边，正中那一个必然不合格。
+ * 为什么沿长边取点、而不是「整块贴不贴户型外框」：真的缝常常一头通到旁边的
+ * 空地上、再拐到户型角上，按整块判会把真缝一起毙掉。
+ *
+ * ——这一条取代了原来的「拐角护栏」。旧护栏判的是**整片自由区**：四个外框角
+ * 的格子只要有一个落在自由区里，整次补过道就作废。可缝跟空地连通是常态
+ * （示例户型把次卧推开 760，缝的下端就拐进右下角那片空地），于是真缝跟着陪葬：
+ * 实测在缝中间 (4180,6500) 点下去拿到 notgap，什么也补不出来。
+ * 新判据只看**这一块自己**，邻居是房间还是空地，一块一块分得清。 */
+const corridorSealed = (free, r) => {
+  const { X, Y, E, NX, NY } = free;
+  /* 落在第几格：取「不大于 v 的那个最大格边界」，正好落在格线上时归右边那格。 */
+  const cell = (arr, v) => {
+    let k = 0;
+    while (k + 1 < arr.length - 1 && arr[k + 1] <= v + 1e-6) k++;
+    return k;
+  };
+  const sealedAt = (i, j, vertical) => {
+    if (!E[i][j]) return false;
+    let a = i, b = i, c = j, d = j;
+    while (a > 0 && E[a - 1][j]) a--;
+    while (b < NX - 1 && E[b + 1][j]) b++;
+    while (c > 0 && E[i][c - 1]) c--;
+    while (d < NY - 1 && E[i][d + 1]) d++;
+    /* 竖着走的长条看横截面（左右两头都得是房间）；横着走的看竖截面。 */
+    return vertical ? (a > 0 && b < NX - 1) : (c > 0 && d < NY - 1);
+  };
+  const vertical = r.w <= r.h;
+  const span = vertical ? r.h : r.w;
+  const from = vertical ? r.y : r.x;
+  let hit = 0;
+  for (let k = 1; k <= 5; k++) {
+    const t = from + (span * k) / 6;
+    if (sealedAt(cell(X, vertical ? r.x + r.w / 2 : t),
+                 cell(Y, vertical ? t : r.y + r.h / 2), vertical)) hit++;
+  }
+  return hit * 2 > 5;                       // 5 个里至少 3 个
+};
+
 const corridorAt = (rooms, px, py, gap, minMM, maxMM) => {
   const free = corridorFreeAt(rooms, px, py, gap);
   if (!free.ok) return free;
-  const rects = corridorRects(free);
-  /* 任何一块不过关 → 整次作废。宁可不出，也不出一条半截的过道。 */
-  for (const r of rects) {
+  const all = corridorRects(free);
+  /* 逐块过筛：太窄的、太宽的、以及「贴着户型外框的空地」全剔掉。
+   * ——原来的规矩是「任何一块不过关 → 整次作废」。自由区只有一块时那条规矩
+   *   跟现在等价；只有当自由区里**既有真缝又有空地**时才显出差别，而那恰恰是
+   *   常态：缝总归要跟旁边的空地连通。所以旧规矩下真缝永远补不出来。 */
+  let sawNarrow = false, sawBig = false;
+  const rects = all.filter((r) => {
     const s = Math.min(r.w, r.h);
-    if (s < minMM - 1e-6) return { code: "narrow" };
-    if (s > maxMM + 1e-6) return { code: "toobig" };
+    if (s < minMM - 1e-6) { sawNarrow = true; return false; }
+    if (s > maxMM + 1e-6) { sawBig = true; return false; }
+    return corridorSealed(free, r);
+  });
+  if (!rects.length) {
+    /* 一块都没留下：把最贴近的原因报出去——测试和提示都靠它区分
+     * 「缝太窄」/「缝太宽」/「这儿压根没有缝」。 */
+    const ss = all.map((r) => Math.min(r.w, r.h));
+    if (ss.every((v) => v < minMM - 1e-6)) return { code: "narrow" };
+    if (ss.every((v) => v > maxMM + 1e-6)) return { code: "toobig" };
+    return { code: "notgap" };
   }
+  /* ★ 手指底下得真有一条过道。光「屋子别处有条缝」不算数——
+   *   她点在空地上，不该在远处的缝里凭空冒出一间过道。 */
+  const si = free.seed[0], sj = free.seed[1];
+  const sx = free.X[si], sy = free.Y[sj];
+  const sw = free.X[si + 1] - sx, sh = free.Y[sj + 1] - sy;
+  if (!rects.some((p) => sx >= p.x - 1e-6 && sx + sw <= p.x + p.w + 1e-6 &&
+                          sy >= p.y - 1e-6 && sy + sh <= p.y + p.h + 1e-6))
+    return { code: "notgap" };
   /* 邻居 = 充气后跟过道有重叠的房间。给 est 继承用：过道的尺寸完全由邻居推导，
    * 所以只要有一间邻居是未量的，整批新过道都是未量。 */
   const neighbours = (rooms || []).filter((r) => {
@@ -830,7 +894,8 @@ const Engine = { numOr, rectOf, spanOv, rectOvArea, distToRange, doorAxis, doorR
                  clampPos, thirdRoomOnDoor, doorView, sameWallDoorClash,
                  findWallGap, freeRangeOnWall, sanitizeDoors, nextSeq, exportDoors, parseRoomLines,
                  isEst, markMeasured, markEst, resizeByCorner, cornerHit, edgeCands, snapToEdges,
-                 infl, clamp, inside, rectDist, corridorFreeAt, corridorRects, corridorAt, corridorName };
+                 infl, clamp, inside, rectDist, corridorFreeAt, corridorRects, corridorSealed,
+                 corridorAt, corridorName };
 if (typeof module !== "undefined" && module.exports) module.exports = Engine;
 /*ENGINE-END*/
 
@@ -1710,7 +1775,11 @@ $("#zout").onclick = () => { const s = canvasCssSize(); zoomAt(1 / 1.25, s.w / 2
  * 返回 true = 补成了（抬手那条分支照常结算），false = 这儿不是缝，什么都没发生。
  *
  * ★ 失败必须**静默**：普通的「点空白 = 取消选中」也要走这条路，不该闪红字。
- *   正因为静默，误判的代价全压在走廊算法的拐角护栏上（示例户型扫 9690 点，误判 0 次）。 */
+ *   正因为静默，误判的代价全压在走廊算法的判据上，两条都得硬：
+ *   ① corridorSealed 逐块判（两头都撞房间才算缝）；
+ *   ② 种子格必须落在留下的块里（手指底下没缝，就不许在屋子别处凭空冒出一间）。
+ *   实测：已排满的示例户型 100/200/50mm 三档扫下来成功 0 次；把次卧拉开造出真缝，
+ *   成功的点全落在那条缝附近、形状唯一。见 sketch-test.js 的 6a-5 / 6a-6。 */
 function tryCorridorAt(px, py) {
   const r = corridorAt(state.rooms, px, py, gapMM(), MIN_ROOM_MM, CORRIDOR_MAX_MM);
   if (!r.ok) return false;
