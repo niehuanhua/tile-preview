@@ -239,7 +239,7 @@ textarea{min-height:112px; resize:vertical; line-height:1.65; white-space:pre; o
 </div>
 
 <script>
-const BUILD = "2026-09-30 06:56";  // 版本号：手机上看看对不对，就知道是不是旧页面了
+const BUILD = "2026-09-30 22:47";  // 版本号：手机上看看对不对，就知道是不是旧页面了
 
 const STORE_KEY = "houseTileV1";   // house.html 的存档（导出时往这里写）
 const SKETCH_KEY = "houseSketchV1"; // 草图自己的存档（和 house.html 分开，互不干扰）
@@ -890,12 +890,79 @@ const corridorName = (rooms, prefix) => {
   return max ? prefix + (max + 1) : prefix;
 };
 
+/* ---------- 过道与过道之间不画线 ----------
+ * 「缝就是墙」：两间房中间空出来的那条缝就是隔断；缝 = 0（严丝合缝贴在一起）
+ * 就是没有墙——「留多大缝」那个下拉里「贴死 · 间隙 0（两间房连通，中间没墙）」
+ * 那句话、以及 house.html 的 `isFlush = (wallT) => !(wallT > 1e-6)`，都是这个意思。
+ *
+ * 可画的时候是**一间一间各画各的整圈边框**（strokeRect）。一条 L 形的缝补出来是
+ * 「过道」+「过道2」两块，两块在那条共边上各画一道**完全重合**的线——
+ * 看着就是一道墙横在中间，把一条好好的 L 形过道劈成两半。
+ *
+ * ★ 只挖**过道与过道**之间的共边（欢欢的原话：「过道与过道之间是不需要墙的」）。
+ *   另外两种明明贴死、这里却**故意照画**：
+ *   - 过道 与 普通房间：那道共边是过道和房间之间**真正的墙**，她还要点它开门。
+ *   - 普通房间 与 普通房间（贴死模式下满屋子都是）：那是她亲手摆出来的分隔，
+ *     跟着一起挖掉的话整层糊成一坨，几间房都看不出来了。
+ *   所以判据是「两边都是过道」，**不是**「缝 = 0」——别顺手改成后者。
+ *
+ * 按**段**挖，不是按整条边：十字形过道里竖着那块，左边缘只有中间一小段跟横着
+ * 那块贴死，上下两段挨的还是真墙，得照画。
+ *
+ * 返回 { T:[[x0,x1]…], R:[[y0,y1]…], B:[…], L:[…] }（毫米，沿这条边的轴向）。
+ * 没被挖到的边 -> 一整段；整条边都被挖掉 -> 空数组。 */
+/* 是不是自动补出来的过道（「过道」「过道2」…都算）。**按名字认，是脆的**——
+ * 她要是把名字改成「走廊」，这儿就不认了，共边上那两道线会回来。
+ * 刻意不为它加持久化字段：为一个画线细节走一趟 loadSketch 不值得。
+ * 用 startsWith 不用 corridorName 那个正则：「过道口」也让它命中，反正无害。 */
+const isCorridor = (r) => !!(r && String(r.name || "").startsWith("过道"));
+
+const flushEdges = (r, rooms) => {
+  /* 从 [lo,hi] 里挖掉 holes 那几段。挖完可能有几段、也可能一段不剩。 */
+  const spans = (lo, hi, holes) => {
+    let keep = [[lo, hi]];
+    for (const h of holes) {
+      const next = [];
+      for (const [a, b] of keep) {
+        if (h[1] <= a + 1e-6 || h[0] >= b - 1e-6) { next.push([a, b]); continue; }
+        if (h[0] > a + 1e-6) next.push([a, Math.min(b, h[0])]);
+        if (h[1] < b - 1e-6) next.push([Math.max(a, h[1]), b]);
+      }
+      keep = next;
+    }
+    return keep.filter(([a, b]) => b - a > 1e-6);
+  };
+  const rx0 = r.x, rx1 = r.x + r.w, ry0 = r.y, ry1 = r.y + r.h;
+  /* 这间不是过道 -> 一条边都不挖，四边各一整段（draw() 于是走 strokeRect 的快路）。 */
+  if (!isCorridor(r)) return { T: [[rx0, rx1]], R: [[ry0, ry1]],
+                               B: [[rx0, rx1]], L: [[ry0, ry1]] };
+  const T = [], R = [], B = [], L = [];
+  for (const o of (rooms || [])) {
+    if (o === r || !isCorridor(o)) continue;
+    /* 左右共边：x 严丝合缝，而且 y 方向要有一段**正长度**的重叠——
+     * 只在一个角上碰一下（重叠长度 0）不算共边，那种角落照旧要画。 */
+    const oyA = Math.max(ry0, o.y), oyB = Math.min(ry1, o.y + o.h);
+    if (oyB - oyA > 1e-6) {
+      if (Math.abs(rx1 - o.x) < 1e-6) R.push([oyA, oyB]);
+      if (Math.abs(o.x + o.w - rx0) < 1e-6) L.push([oyA, oyB]);
+    }
+    /* 上下共边：y 严丝合缝，而且 x 方向要有一段正长度的重叠。 */
+    const oxA = Math.max(rx0, o.x), oxB = Math.min(rx1, o.x + o.w);
+    if (oxB - oxA > 1e-6) {
+      if (Math.abs(ry1 - o.y) < 1e-6) B.push([oxA, oxB]);
+      if (Math.abs(o.y + o.h - ry0) < 1e-6) T.push([oxA, oxB]);
+    }
+  }
+  return { T: spans(rx0, rx1, T), R: spans(ry0, ry1, R),
+           B: spans(rx0, rx1, B), L: spans(ry0, ry1, L) };
+};
+
 const Engine = { numOr, rectOf, spanOv, rectOvArea, distToRange, doorAxis, doorRectOf, doorRect,
                  clampPos, thirdRoomOnDoor, doorView, sameWallDoorClash,
                  findWallGap, freeRangeOnWall, sanitizeDoors, nextSeq, exportDoors, parseRoomLines,
                  isEst, markMeasured, markEst, resizeByCorner, cornerHit, edgeCands, snapToEdges,
                  infl, clamp, inside, rectDist, corridorFreeAt, corridorRects, corridorSealed,
-                 corridorAt, corridorName };
+                 corridorAt, corridorName, isCorridor, flushEdges };
 if (typeof module !== "undefined" && module.exports) module.exports = Engine;
 /*ENGINE-END*/
 
@@ -1467,7 +1534,48 @@ function draw() {
     /* ★ 虚线画完当场就关掉，别等下一帧：setLineDash 是**画布全局状态**，
      *   漏着不还原的话，后面每一笔（门、把手、下一间房的框）都会莫名其妙变虚线。 */
     if (est) ctx.setLineDash([7, 5]);
-    ctx.strokeRect(X, Y, W, H);
+    /* ★ 贴死的邻居之间那道共边不画（flushEdges 的注释里有完整理由）。
+     *   做法是**四段线拼一圈**、而不是 strokeRect：被盖住的那几段直接不画。
+     *   拼的时候只在「被跳过的边」处断开——相邻的两段照旧共用角上的端点，
+     *   拐角才是实心的（每段各起一笔的话，角上会缺一个小三角）。
+     *   四条边都没被盖住时走原来的 strokeRect：绝大多数房间走这条路，
+     *   像素跟改之前逐位相同，不为了一个边角情形把所有房间都换掉。 */
+    const cut = flushEdges(r, state.rooms);
+    const whole = (sp, lo, hi) =>
+      sp.length === 1 && sp[0][0] <= lo + 1e-6 && sp[0][1] >= hi - 1e-6;
+    if (whole(cut.T, r.x, r.x + r.w) && whole(cut.B, r.x, r.x + r.w) &&
+        whole(cut.L, r.y, r.y + r.h) && whole(cut.R, r.y, r.y + r.h)) {
+      ctx.strokeRect(X, Y, W, H);
+    } else {
+      /* 四段线拼一圈，顺时针：上（左→右）、右（上→下）、下（右→左）、左（下→上）。
+         每段按它在**这条边上的轴向位置**（毫米）取两端点，再交给 px/py 换算。 */
+      const sides = [
+        { axis: "x", fixed: r.y,       spans: cut.T },
+        { axis: "y", fixed: r.x + r.w, spans: cut.R },
+        { axis: "x", fixed: r.y + r.h, spans: cut.B },
+        { axis: "y", fixed: r.x,       spans: cut.L },
+      ];
+      const desc = [false, false, true, true];        // 下边和左边是反着走的
+      const P = (s, v) => (s.axis === "x" ? [px(v), py(s.fixed)] : [px(s.fixed), py(v)]);
+      ctx.beginPath();
+      let pen = null;                                  // 上一段的终点（毫米），用来决定连笔还是另起一笔
+      sides.forEach((s, k) => {
+        for (const [a, b] of s.spans) {
+          const [ma, mb] = desc[k] ? [b, a] : [a, b];
+          const pa = P(s, ma), pb = P(s, mb);
+          const mpt = s.axis === "x" ? [ma, s.fixed] : [s.fixed, ma];   // 起笔那点的毫米坐标
+          /* 起笔正好落在上一段的终点上 -> lineTo 连过去，拐角才是实心的 */
+          if (pen && Math.abs(pen[0] - mpt[0]) < 1e-6 && Math.abs(pen[1] - mpt[1]) < 1e-6) {
+            ctx.lineTo(pb[0], pb[1]);
+          } else {
+            ctx.moveTo(pa[0], pa[1]); ctx.lineTo(pb[0], pb[1]);
+          }
+          pen = s.axis === "x" ? [mb, s.fixed] : [s.fixed, mb];
+        }
+        if (!s.spans.length) pen = null;               // 这条边一段都没画 -> 断开
+      });
+      ctx.stroke();
+    }
     if (est) ctx.setLineDash([]);
 
     if (dragging) ctx.restore();
@@ -1935,10 +2043,9 @@ function renderRoomHint() {
     : isEst(r)
       ? "这间还没量尺寸，图上画的是虚线。先拖着四个角摆个大概；量好了把长和宽填进上面两格，就算量过了。"
       /* 过道是自动补出来的，它和邻居之间的那几道墙**没有门**（她的选择：不自动开）。
-       * ⚠️ 这里是**按名字认**的（startsWith 让「过道2」也命中）——脆的，她把名字
-       *    改成「走廊」就不认了。刻意不为一句提示语加持久化字段：那要走 loadSketch
-       *    那条搬运路，不值当。 */
-      : r.name.startsWith("过道")
+       * 认过道用的是引擎里的 isCorridor——**同一个判据**，跟画线那边（flushEdges
+       * 挖共边）绑在一起，改口径只改那一处。它按名字认、是脆的，理由写在它上面。 */
+      : isCorridor(r)
         ? "这间过道是自动补出来的，它和邻居之间没有门。点它和邻居中间那道墙，就能开一道门。"
         : "拖着房间的四个角就能改大小，对角那个角不动，长和宽跟着变。";
 }

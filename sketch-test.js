@@ -1062,6 +1062,147 @@ test("测试 6c：est 继承——邻居里有一间没量，补出来的过道�
   check("量完标回来 → 又变回已量", at(L, 2500, 2500).neighbours.every((n) => !S.isEst(n)));
 });
 
+/* ---------- 测试 6d：过道与过道之间的共边不画线（flushEdges） ----------
+ * 欢欢的原话：「自动生成的过道，过道与过道之间是不需要墙的」。
+ *
+ * 一条 L 形的缝补出来是「过道」+「过道2」两块（数据模型里一间房只能是一个矩形），
+ * 两块在拐角那条共边上各画一道**完全重合**的边框，看着就是一道假墙，把一条好好的
+ * L 形过道劈成两半。flushEdges 算的就是「这间房的每条边，哪几段该画」。
+ *
+ * ★ 判据是「**两边都是过道**」，不是「缝 = 0」。6d-3 整组都在锁这一条：
+ *   - 普通房间之间贴死（贴死模式下满屋子都是）**必须照画**——跟着一起挖掉的话
+ *     整层糊成一坨，几间房都看不出来；
+ *   - 过道和普通房间之间贴死是**真墙**，她还要点它开门，也得照画。 */
+const L4 = [
+  { id: "L1", name: "上",   x: 0,    y: 0,    w: 8000, h: 2000 },
+  { id: "L2", name: "左下", x: 0,    y: 2000, w: 2000, h: 4000 },
+  { id: "L3", name: "右下", x: 3000, y: 3000, w: 5000, h: 3000 },
+  { id: "LC", name: "封口", x: 7000, y: 2000, w: 1000, h: 1000 },
+];
+/* 照页面上的规矩把补出来的矩形变成房间：依次起名「过道」「过道2」…，再挂 id。 */
+function asCorridors(rooms, rects) {
+  const out = [];
+  for (const q of rects)
+    out.push(Object.assign({ id: "c" + out.length,
+                             name: S.corridorName(rooms.concat(out), "过道") }, q));
+  return out;
+}
+const fullSpan = (sp, lo, hi) =>
+  sp.length === 1 && sp[0][0] <= lo + 1e-6 && sp[0][1] >= hi - 1e-6;
+const allFull = (f, r) => fullSpan(f.T, r.x, r.x + r.w) && fullSpan(f.B, r.x, r.x + r.w) &&
+                          fullSpan(f.L, r.y, r.y + r.h) && fullSpan(f.R, r.y, r.y + r.h);
+
+test("测试 6d：flushEdges——L 形过道，拐角那条共边不画", () => {
+  const g = at(L4, 2500, 2500);
+  const built = asCorridors(L4, g.rects);
+  const rooms = L4.concat(built);
+  check("夹具前提：L 形补出来是连号的两块过道",
+        built.length === 2 && built.map((r) => r.name).join(",") === "过道,过道2",
+        built.map((r) => r.name).join(","));
+
+  const hor = built.find((r) => r.w > r.h);        // 横臂 2240,2240,4520×520
+  const ver = built.find((r) => r.h > r.w);        // 竖臂 2240,2760,520×3240
+  check("夹具前提：两块一横一竖", !!hor && !!ver,
+        built.map((r) => `${r.w}×${r.h}`).join(" / "));
+
+  const fh = S.flushEdges(hor, rooms), fv = S.flushEdges(ver, rooms);
+
+  /* 拐角那条共边：横臂的下边、竖臂的上边。竖臂的宽度 520 = 它顶面的全长，
+   * 所以竖臂的上边**整条**不画；横臂的下边只挖掉挨着竖臂的那 520mm。 */
+  check("竖臂的上边整条不画（整个顶面都顶着横臂）", fv.T.length === 0, JSON.stringify(fv.T));
+  check("横臂的下边只挖掉拐角那 520mm，右边那段照画 → [[2760,6760]]",
+        JSON.stringify(fh.B) === "[[2760,6760]]", JSON.stringify(fh.B));
+
+  /* 别的边一个都不许动：挨着的都是留了 240 墙的真邻居。 */
+  check("横臂的上/左/右照画（挨的是上、左下、封口，都留着墙）",
+        fullSpan(fh.T, hor.x, hor.x + hor.w) && fullSpan(fh.L, hor.y, hor.y + hor.h) &&
+        fullSpan(fh.R, hor.y, hor.y + hor.h),
+        `${JSON.stringify(fh.T)} ${JSON.stringify(fh.L)} ${JSON.stringify(fh.R)}`);
+  check("竖臂的右/下/左照画（挨的是右下、左下，都留着墙）",
+        fullSpan(fv.R, ver.y, ver.y + ver.h) && fullSpan(fv.B, ver.x, ver.x + ver.w) &&
+        fullSpan(fv.L, ver.y, ver.y + ver.h),
+        `${JSON.stringify(fv.R)} ${JSON.stringify(fv.B)} ${JSON.stringify(fv.L)}`);
+});
+
+test("测试 6d-2：★ 按「段」挖，不是按整条边——十字形过道只有中间那段被挖", () => {
+  /* 十字：四间房占住四个象限，中间空出一个十字（跟 6a-4 同一套夹具）。 */
+  const cross = [
+    { id: "q1", name: "左上", x: 0,    y: 0,    w: 3260, h: 3260 },
+    { id: "q2", name: "右上", x: 4740, y: 0,    w: 3260, h: 3260 },
+    { id: "q3", name: "左下", x: 0,    y: 4740, w: 3260, h: 3260 },
+    { id: "q4", name: "右下", x: 4740, y: 4740, w: 3260, h: 3260 },
+  ];
+  const g = at(cross, 4000, 4000);
+  const built = asCorridors(cross, g.rects);
+  const rooms = cross.concat(built);
+  check("夹具前提：十字形拆成连号的三块过道",
+        built.map((r) => r.name).join(",") === "过道,过道2,过道3",
+        built.map((r) => r.name).join(","));
+
+  const ver = built.find((r) => r.h > r.w);        // 竖臂 3500,0,1000×8000
+  const arms = built.filter((r) => r.w > r.h);     // 左右两条横臂
+  const fv = S.flushEdges(ver, rooms);
+
+  /* ★ 这一条就是「用一个布尔量记整条边」会挂掉的地方：
+   *   竖臂的左边缘总长 8000，只有中间 1000（y 3500..4500）顶着左边的横臂；
+   *   上下两段挨的是象限房、中间隔着 240 的真墙——**必须照画**。 */
+  check("竖臂左边挖中间、留两头 → [[0,3500],[4500,8000]]",
+        JSON.stringify(fv.L) === "[[0,3500],[4500,8000]]", JSON.stringify(fv.L));
+  check("竖臂右边同理 → [[0,3500],[4500,8000]]",
+        JSON.stringify(fv.R) === "[[0,3500],[4500,8000]]", JSON.stringify(fv.R));
+  check("竖臂的上/下不挨任何过道 → 整段照画",
+        fullSpan(fv.T, ver.x, ver.x + ver.w) && fullSpan(fv.B, ver.x, ver.x + ver.w),
+        `${JSON.stringify(fv.T)} ${JSON.stringify(fv.B)}`);
+  for (const a of arms) {
+    const f = S.flushEdges(a, rooms);
+    const inner = a.x > ver.x ? "L" : "R";         // 朝里那条边整条顶着竖臂
+    check(`横臂「${a.name}」朝里的那条边整条不画`, f[inner].length === 0, JSON.stringify(f[inner]));
+  }
+});
+
+test("测试 6d-3：★ 判据是「两边都是过道」，不是「缝 = 0」", () => {
+  /* 贴死模式下满屋子都是缝 0 的邻居。真按「缝 = 0 就挖」改，整层会糊成一坨、
+   * 几间房都看不出来——这条把它锁死。 */
+  const Z = [ { id: "z1", name: "客厅", x: 0,    y: 0, w: 3600, h: 4000 },
+              { id: "z2", name: "主卧", x: 3600, y: 0, w: 3400, h: 4000 } ];
+  check("普通房间贴死 → 四条边全照画（不挖）", allFull(S.flushEdges(Z[0], Z), Z[0]));
+  check("另一边也一样（判据对两边对称）", allFull(S.flushEdges(Z[1], Z), Z[1]));
+
+  /* 过道跟普通房间之间那道共边是**真墙**，她还要点它开门。 */
+  const M = [ { id: "m1", name: "过道",  x: 0,    y: 0, w: 1000, h: 4000 },
+              { id: "m2", name: "客厅",  x: 1000, y: 0, w: 3000, h: 4000 } ];
+  check("过道 与 普通房间贴死 → 那道共边照画（是真墙）", allFull(S.flushEdges(M[0], M), M[0]));
+  check("反过来也一样", allFull(S.flushEdges(M[1], M), M[1]));
+
+  /* 只在角上碰一下：重叠长度是 0，不算共边，那种角落照旧要画。 */
+  const C = [ { id: "c1", name: "过道",  x: 0,    y: 0,    w: 1000, h: 1000 },
+              { id: "c2", name: "过道2", x: 1000, y: 1000, w: 1000, h: 1000 } ];
+  check("两个过道只在角上碰一下 → 不挖（重叠长度 0）", allFull(S.flushEdges(C[0], C), C[0]));
+
+  /* 过道之间留着 240 墙：缝 ≠ 0，本来就不该挖。 */
+  const G2 = [ { id: "g1", name: "过道",  x: 0,    y: 0, w: 1000, h: 4000 },
+               { id: "g2", name: "过道2", x: 1240, y: 0, w: 1000, h: 4000 } ];
+  check("过道之间留着 240 墙（缝 ≠ 0）→ 照画", allFull(S.flushEdges(G2[0], G2), G2[0]));
+
+  check("传 null rooms 不炸", !!S.flushEdges(Z[0], null));
+});
+
+test("测试 6d-4：isCorridor——过道 / 过道2 / 过道口 都算，走廊不算", () => {
+  check("过道 → 是", S.isCorridor({ name: "过道" }) === true);
+  check("过道2 / 过道3 → 是",
+        S.isCorridor({ name: "过道2" }) && S.isCorridor({ name: "过道3" }));
+  check("过道口 → 是（startsWith，不是 corridorName 那个编号正则）",
+        S.isCorridor({ name: "过道口" }) === true);
+  /* ★ 脆的地方摆在这儿：她把名字改成「走廊」，拐角那两道线就会回来。
+   *   刻意不为它加持久化字段——为一个画线细节走一趟 loadSketch 不值当。 */
+  check("走廊 → 不是（改名就不认了，这是已知的脆点）",
+        S.isCorridor({ name: "走廊" }) === false);
+  check("客厅 → 不是", S.isCorridor({ name: "客厅" }) === false);
+  check("空名字 / 传 null / 没 name 字段 都不炸",
+        S.isCorridor({ name: "" }) === false && S.isCorridor(null) === false &&
+        S.isCorridor({}) === false);
+});
+
 /* ============ 汇总 ============ */
 console.log(`\n${_fail ? "❌" : "✅"} 通过 ${_pass} 条，失败 ${_fail} 条`);
 process.exit(_fail ? 1 : 0);
