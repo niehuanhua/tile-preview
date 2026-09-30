@@ -239,7 +239,7 @@ textarea{min-height:112px; resize:vertical; line-height:1.65; white-space:pre; o
 </div>
 
 <script>
-const BUILD = "2026-09-30 23:14";  // 版本号：手机上看看对不对，就知道是不是旧页面了
+const BUILD = "2026-10-01 07:02";  // 版本号：手机上看看对不对，就知道是不是旧页面了
 
 const STORE_KEY = "houseTileV1";   // house.html 的存档（导出时往这里写）
 const SKETCH_KEY = "houseSketchV1"; // 草图自己的存档（和 house.html 分开，互不干扰）
@@ -401,15 +401,31 @@ const sameWallDoorClash = (d, ax, pos, width, doors) => {
  * slopMM 按屏幕像素换算（WALL_SLOP_PX / 缩放），所以放大缩小手感一致。
  * dPerp = 手指离墙缝的远近；dOut = 手指离"两间房共用段"两端的远近。
  * 两个都要在 slop 之内才算命中；取最贴近的一道墙。
- * 缝里夹着第三间房、或者缝太窄（放不下 MIN 门宽）→ 不认，点下去自然落到"选中房间"。 */
-const findWallGap = (rooms, x, y, slopMM, minDoorMM, doors, doorW) => {
+ * 缝里夹着第三间房、或者缝太窄（放不下 MIN 门宽）→ 不认，点下去自然落到"选中房间"。
+ *
+ * ★ maxWallMM（可选，第 8 个参数）= **缝宽的上限**：超过它，这条缝就不是墙、是过道。
+ *   欢欢 2026-10-01 的原话就四个字：「需要加上限」。在那之前判定只有下限
+ *   （`span ≥ minDoorMM` 管的是共用段长，`doorAxis` 对 wallT 只判负、不判上限），
+ *   于是**在真正的空地上点一下也会开出一道门**——她看到的"点空白出来一块过门石"。
+ *   阈值由调用方给：页面上是 `wallMaxMM()` = MIN_ROOM_MM + 2×gapMM()，墙 240 时 **780**。
+ *   这个数跟「点缝补过道」**同源**（见 wallMaxMM 的注释）：缝宽到那边能长出一间过道，
+ *   这边就不许再把那条缝当墙。
+ *   不传 / 传了非数字 = **不上限**，老的调用方和已有的测试一字不改照旧。
+ *   已知代价（写进 更新说明 §四十）：缝 ≥ 阈值、却**补不出过道**时（那片空地连到
+ *   户型角上被拐角护栏挡掉，或缝宽超过 CORRIDOR_MAX_MM），点那儿既不补过道也不开门
+ *   ——那儿本来就不是墙，安心当它是空地。 */
+const findWallGap = (rooms, x, y, slopMM, minDoorMM, doors, doorW, maxWallMM) => {
   let best = null, bestScore = Infinity;
   const rs = rooms || [];
   const want = numOr(doorW, 0) > 0 ? numOr(doorW, 0) : Math.max(minDoorMM, 0);
+  const maxWall = (typeof maxWallMM === "number" && isFinite(maxWallMM)) ? maxWallMM : Infinity;
   for (let i = 0; i < rs.length; i++) for (let j = i + 1; j < rs.length; j++) {
     const A = rs[i], B = rs[j];
     const ax = doorAxis(A, B);
     if (!ax.ok) continue;
+    /* ★ 缝宽过了上限 → 这不是墙，是一道过道或一片空地，不给开门。
+     *   放在 doorAxis 之后、别的一切之前：span / w / probe 那几样就都白算了。 */
+    if (ax.wallT > maxWall + 1e-6) continue;
     const span = ax.hi - ax.lo;
     if (span < Math.max(minDoorMM, 0) - 1e-6) continue;   // 缝太窄，根本开不了门
     /* 探测宽度 = 真会开出来的那个宽度（放不下就退到这道墙能容纳的最大值，下限 MIN_DOOR_MM）。
@@ -1053,6 +1069,14 @@ function setSel(room, door) {
 }
 /* 当前该留多大缝：贴死模式就是 0 */
 const gapMM = () => (state.gapMode === "zero" ? 0 : Math.max(0, Number(state.wall) || 0));
+
+/* 缝宽到多少就**不再是一道墙、而是一条过道**——全程序只有这一个定义。
+ * findWallGap 的上限（点墙开门的判定）和界面上那句提示都从这儿取，改一处两边同时变。
+ *   过道净宽 = 缝宽 − 2×墙厚：缝本身就是墙，它的两边各被邻房占掉一个墙厚。
+ *   而 corridorAt 要求净宽 ≥ MIN_ROOM_MM，所以 缝宽 ≥ MIN_ROOM_MM + 2×gapMM()。
+ *   墙 240 → **780**；贴死模式 gapMM() 是 0 → 300。
+ * 语义：缝宽到了这个数，那儿就没有墙了，点上去不该再开出门（见 findWallGap 的注释）。 */
+const wallMaxMM = () => MIN_ROOM_MM + 2 * gapMM();
 
 /* ---------- 草图存档（刷新不丢）---------- */
 /* 落盘的那份数据。撤销快照存的就是这一串，两边共用同一个函数，
@@ -1782,10 +1806,27 @@ canvas.addEventListener("pointerdown", (e) => {
   const selRoom = (state.selected && state.rooms.includes(state.selected)) ? state.selected : null;
   const cHit = selRoom ? cornerHit(selRoom, x, y, CORNER_SLOP_PX / state.view.scale) : -1;
   const dHit = cHit >= 0 ? null : doorHitTest(x, y, slopMM);
+  /* ★ 这里是**两个不同的问题**，2026-10-01 加上限时把它们混成了一个，结果踩了坑：
+   *
+   *   wHit —— 「在这儿**能不能开一道门**」：缝宽还得在 wallMaxMM() 之内。
+   *           最后那个参数就是上限，缝宽到能当过道（≥780，墙 240 时）就不算墙、不开门。
+   *           没有它的话，在真正的空地上点一下也会开出一道门。
+   *   wGap —— 「这儿**是不是一道墙**」：不看上限。宽缝**也是墙**，
+   *           只是宽到能当过道而已，不是"空地"。
+   *
+   * ★ 分派"按住要干什么"必须用 wGap，不能用 wHit。用 wHit 的后果（实测踩到过）：
+   *   缝一宽，wHit 就成了 null，下面 rHit 的短路跟着失效 → 那个点落到 mode:"room"
+   *   → 手指按在缝里等于**抓住了旁边的房间**（拖动会挪房间），而且 endPointer 里
+   *   补过道那条支路只认 pan / wall，**根本走不到**，缝里再也补不出过道。
+   *   用 wGap 就落回 mode:"pan"：拖动照旧挪画布，抬手时先试补过道。
+   *   代价只是 wGap 那一次调用——只在 wHit 已经是 null 的时候才真跑。 */
   const wHit = (cHit >= 0 || dHit) ? null
     : findWallGap(state.rooms, x, y, WALL_SLOP_PX / state.view.scale,
-                  MIN_DOOR_MM, state.doors, state.doorW);
-  const rHit = (cHit >= 0 || dHit || wHit) ? null : hitTest(x, y, slopMM);
+                  MIN_DOOR_MM, state.doors, state.doorW, wallMaxMM());
+  const wGap = wHit || ((cHit >= 0 || dHit) ? null
+    : findWallGap(state.rooms, x, y, WALL_SLOP_PX / state.view.scale,
+                  MIN_DOOR_MM, state.doors, state.doorW));
+  const rHit = (cHit >= 0 || dHit || wGap) ? null : hitTest(x, y, slopMM);
 
   // 立刻高亮，给视觉反馈
   /* ★ 抓角把手时房间必须**保持选中**，不能走 setSel(null)：把手是"只有选中才画"的，
@@ -2037,10 +2078,15 @@ function endPointer(e) {
    *  ① 为什么必须在 commitStep() 之前：创建要发生在本步【之内】。放到函数开头去的话，
    *     那时过道还没建、快照跟当前状态一模一样，这一步会被当成空操作丢掉，补出来的过道撤销不了。
    *     跟下面 mode:"wall" 那条注释是同一个道理。
-   *  ② 为什么 mode:"wall" 也要走这条——最要命的一条：doorAxis 对 wallT 只判负、不判上限，
-   *     findWallGap 又只要求缝宽 ≥ MIN_DOOR_MM，所以【一条 1480 的缝在那两处眼里是一道合法的墙】。
-   *     只挂 mode:"pan" 的话，这个功能在缝里根本点不出来，抬手反而会开出一道穿过过道的门。
-   *     缝宽到能当过道时，那儿没有墙，就不该开门。 */
+   *  ② 为什么 mode:"wall" 也要走这条：**2026-10-01 给 findWallGap 加上限之前**，
+   *     这条是**唯一**挡住"缝被当成墙"的东西——doorAxis 对 wallT 只判负、不判上限，
+   *     findWallGap 当时也只要求缝宽 ≥ MIN_DOOR_MM，于是一条 1480 的缝在那两处眼里
+   *     是一道合法的墙：只挂 mode:"pan" 的话，这个功能在缝里根本点不出来，
+   *     抬手反而会开出一道穿过过道的门。
+   *     现在上限（wallMaxMM）已经把那种缝挡在 findWallGap 之外了，能当过道的地方
+   *     按下去已经是 mode:"pan"、走的是 ① 那半条。**这里留着是保险**：上限那个数是
+   *     调用方传进来的，万一以后被调松，补过道这一步仍然排在开门前面，
+   *     不会先开出一道穿过过道的门。判定顺序比单点设防稳。 */
   if (!p.moved && (p.mode === "pan" || p.mode === "wall")) {
     if (tryCorridorAt(p.sx, p.sy)) { commitStep(); return; }
   }
@@ -2389,18 +2435,21 @@ function syncWallUI() {
   $("#wallCustomBox").style.display = isPreset ? "none" : "";
   if (!isPreset) $("#wallCustom").value = state.wall;
   /* 过道的门槛是**跟着这个墙厚走的**，所以提示得长在这儿、数字得是活的。
-   * 门槛 = MIN_ROOM_MM + 2×gapMM()：过道净宽要够 MIN_ROOM_MM，而缝的两边各被
-   * 邻居占掉一个墙厚（缝就是墙本身，不归任何一间房）。墙 240 → 780。 */
+   * 门槛 = wallMaxMM() = MIN_ROOM_MM + 2×gapMM()，那一个函数管着三处：
+   * 补过道的下限、开门的上限、和这句话里的数字。墙 240 → 780。 */
   const t = $("#gapTip");
   if (t) t.textContent = state.gapMode === "zero"
     ? "点两间房中间空出来的那道缝，会自动补出一间「过道」；缝是 L 形的，就沿 L 补出"
       + `连号的两间过道。贴死模式下缝有多宽过道就有多宽，够 ${MIN_ROOM_MM}mm 就行。`
+      + `窄于 ${MIN_ROOM_MM}mm 是一道普通墙缝，点在它上面还是开门的那个动作；`
+      + `到了 ${MIN_ROOM_MM}mm 往上那儿就没有墙了，点上去既补过道、也不再开门。`
     : `点两间房中间空出来的那道缝，会自动补出一间「过道」；缝是 L 形的，就沿 L 补出`
       + `连号的两间过道（房间里会多一行，铺砖时它们算同一间）。缝要够宽才算过道——`
-      + `现在留 ${state.wall}mm 墙，缝得 ≥ ${MIN_ROOM_MM + 2 * gapMM()}mm；`
-      + `窄于这个数就是一道普通墙缝，点在它上面还是开门的那个动作。`
+      + `现在留 ${state.wall}mm 墙，缝得 ≥ ${wallMaxMM()}mm；`
+      + `窄于这个数就是一道普通墙缝，点在它上面还是开门的那个动作；`
+      + `反过来宽到这个数、那儿就没有墙了，点上去是补过道，不再开出门。`
       + `（手拖房间时吸附半径是 500mm，缝容易停在 240 或 740 往上，740~${
-          MIN_ROOM_MM + 2 * gapMM() - 1} 这一小段够不着，想要过道就把缝再拖宽一点。）`;
+          wallMaxMM() - 1} 这一小段够不着，想要过道就把缝再拖宽一点。）`;
 }
 $("#gapMode").addEventListener("change", (e) => {
   beginStep();
