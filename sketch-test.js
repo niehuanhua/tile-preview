@@ -1203,6 +1203,150 @@ test("测试 6d-4：isCorridor——过道 / 过道2 / 过道口 都算，走廊
         S.isCorridor({}) === false);
 });
 
+/* ────────────────────────────────────────────────────────────────────────
+ * 测试 6e：★ corridorMerge——「明明是一个完整的过道，中间却出现一堵墙」
+ *
+ * 欢欢报的 bug 的原样复现（纯函数层）。触发顺序是这件事的关键，
+ * 我第一次扫了 76 组静态布局一个都没中，就是因为漏了中间那一步：
+ *
+ *     先补出一条过道 → **之后**又加了一间房（旁边裂出一条新缝）→ 在新缝里再补一次
+ *
+ * 新过道的边落在「邻居充气后」的位置上（corridorFreeAt 里 `rs.map(r => infl(r, gap))`），
+ * 老过道那条边还在原地，两者正好差一个 gap → 一条 240 宽的带子被夹在两块过道中间。
+ * 它上不挨房、下不挨房，只是一条被两次生成切开的**同一条**过道。
+ *
+ * 她的原话就是判据：
+ *   「自动生成的过道，过道与过道之间是不需要墙的」
+ *   「两个房间共用一道墙，这个墙不能随便延伸」
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/* 两块过道之间有没有夹着一道墙：平行边有一段正长度重叠，而垂直距离落在 (0, gap]。
+ * 距离 = 0 是严丝合缝的拼块，正确，不算。 */
+function wallBetweenCorridors(rooms, gap) {
+  const cs = rooms.filter(S.isCorridor), out = [];
+  for (let i = 0; i < cs.length; i++) for (let j = i + 1; j < cs.length; j++) {
+    const a = cs[i], b = cs[j];
+    const pr = [
+      { d: b.y - (a.y + a.h), ov: ov1(a.x, a.x + a.w, b.x, b.x + b.w) },
+      { d: a.y - (b.y + b.h), ov: ov1(a.x, a.x + a.w, b.x, b.x + b.w) },
+      { d: b.x - (a.x + a.w), ov: ov1(a.y, a.y + a.h, b.y, b.y + b.h) },
+      { d: a.x - (b.x + b.w), ov: ov1(a.y, a.y + a.h, b.y, b.y + b.h) },
+    ];
+    for (const p of pr)
+      if (p.ov > 1e-6 && p.d > 1e-6 && p.d <= gap + 1e-6)
+        out.push(`${a.name}⊣${Math.round(p.d)}mm⊢${b.name}`);
+  }
+  return out;
+}
+const ov1 = (a0, a1, b0, b1) => Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
+/* 任意两间房有没有正面重叠（house.html 会直接判死整张图） */
+function anyOverlap(rooms) {
+  const out = [];
+  for (let i = 0; i < rooms.length; i++) for (let j = i + 1; j < rooms.length; j++) {
+    const a = rooms[i], b = rooms[j];
+    if (ov1(a.x, a.x + a.w, b.x, b.x + b.w) > 1e-6 &&
+        ov1(a.y, a.y + a.h, b.y, b.y + b.h) > 1e-6) out.push(`${a.name}×${b.name}`);
+  }
+  return out;
+}
+
+/* 照 tryCorridorAt 的落地顺序走一遍（补 → 顺 → 落地），只差没碰 DOM。 */
+let _seq = 0;
+function tapCorridor(rooms, px, py, gap = GAP) {
+  const r = S.corridorAt(rooms, px, py, gap, MIN_MM, MAX_MM);
+  if (!r.ok) return rooms;
+  const add = [];
+  for (const q of r.rects)                       // 名字要连着已生成的算，L 形才出「过道」「过道2」
+    add.push(Object.assign({ id: "n" + (++_seq),
+                             name: S.corridorName(rooms.concat(add), "过道") }, q));
+  const fix = S.corridorMerge(rooms, add, gap);
+  const fixed = fix.length
+    ? rooms.map((q) => { const u = fix.find((f) => f.id === q.id);
+                         return u ? Object.assign({}, q, { x: u.x, y: u.y, w: u.w, h: u.h }) : q; })
+    : rooms;
+  return fixed.concat(add);
+}
+
+test("测试 6e-1：★ 复现——补过道 → 加一间房 → 在新缝里再补，两块过道不许夹墙", () => {
+  /* 场景甲（probe6 原样）：两室夹一缝，补出竖过道；再加一间阳台，
+   * 下面裂出一条横缝；在横缝里再补一次。 */
+  const BASE = [ { id: "a", name: "客厅", x: 0,    y: 0, w: 3000, h: 6000 },
+                 { id: "b", name: "主卧", x: 4480, y: 0, w: 3000, h: 6000 } ];
+  const BALC = { id: "c", name: "阳台", x: 0, y: 7480, w: 7480, h: 2000 };
+
+  let rooms = tapCorridor(BASE, 3740, 3000);
+  check("第一次补：缝里长出 1 间过道，1000 宽",
+        rooms.length === 3 && rooms[2].name === "过道" &&
+        box(rooms[2]) === "3240,0,1000×6000");
+
+  rooms = rooms.concat([BALC]);
+  rooms = tapCorridor(rooms, 3740, 7240);
+  check("第二次补：横缝里又长出 1 间过道2", rooms.length === 5 &&
+        rooms.filter(S.isCorridor).length === 2);
+  check("★ 两块过道之间没有夹墙", wallBetweenCorridors(rooms, GAP).length === 0);
+  check("★ 也没有造出重叠的房间", anyOverlap(rooms).length === 0);
+  /* 老过道被顺到 y=6240，正好贴上新过道——不是靠猜，是几何上必须落到那儿。 */
+  check("老过道顺到 6240 高（贴上新的那块）", box(rooms[2]) === "3240,0,1000×6240");
+  /* 顺完之后共边严丝合缝，flushEdges 才挖得掉——这是「看着是一条连着的带子」的根。 */
+  const seam = S.flushEdges(rooms[2], rooms);
+  check("顺完的共边被 flushEdges 挖掉（那条 1000 的底边不画了）",
+        seam.B.length === 0);
+  /* 换一个落点、同样的顺序，结论必须一样（别是碰巧） */
+  let alt = tapCorridor(BASE, 3740, 3000).concat([BALC]);
+  alt = tapCorridor(alt, 500, 7240);
+  check("换个落点 (500,7240) 也修得好",
+        wallBetweenCorridors(alt, GAP).length === 0 && anyOverlap(alt).length === 0);
+});
+
+test("测试 6e-2：★ L 形补过一次、加了房之后再补，同样不许夹墙", () => {
+  const F = [ { id: "a", name: "上",   x: 0,    y: 0,    w: 8000, h: 2000 },
+              { id: "b", name: "左下", x: 0,    y: 2000, w: 2000, h: 4000 },
+              { id: "c", name: "右下", x: 3000, y: 3000, w: 5000, h: 3000 },
+              { id: "d", name: "封口", x: 7000, y: 2000, w: 1000, h: 1000 } ];
+  let rooms = tapCorridor(F, 2500, 2500);
+  check("L 形第一次补出两块连号的过道", rooms.length === 6 &&
+        rooms[4].name === "过道" && rooms[5].name === "过道2");
+  rooms = rooms.concat([{ id: "e", name: "客厅", x: 0, y: 7000, w: 8000, h: 3000 }]);
+  rooms = tapCorridor(rooms, 3740, 6240);
+  check("★ 三块过道两两之间都没有夹墙", wallBetweenCorridors(rooms, GAP).length === 0);
+  check("★ 也没有造出重叠的房间", anyOverlap(rooms).length === 0);
+  /* 竖臂被顺长，正好接上横臂——整条 L 现在是连着的 */
+  check("竖臂顺到 3480 高（接上第三块）", box(rooms[5]) === "2240,2760,520×3480");
+});
+
+test("测试 6e-3：corridorMerge 的门槛——不该顺的一律不许顺", () => {
+  const A = { id: "A", name: "过道", x: 0, y: 0, w: 1000, h: 1000 };
+  /* 只在角上碰一下（平行边重叠长度 0）：那是拐角，不是接缝。 */
+  const CORNER = { id: "B", name: "过道2", x: 1000, y: 1240, w: 1000, h: 1000 };
+  check("角上相碰（重叠 0）→ 不顺", S.corridorMerge([A, CORNER], [CORNER], GAP).length === 0);
+  /* 真相邻：该顺，且只长那一个方向。 */
+  const NEAR = { id: "B", name: "过道2", x: 500, y: 1240, w: 1000, h: 1000 };
+  const f1 = S.corridorMerge([A, NEAR], [NEAR], GAP);
+  check("真相邻（重叠 500、差 240）→ 顺成 1000×1240",
+        f1.length === 1 && f1[0].id === "A" && f1[0].h === 1240 && f1[0].w === 1000);
+  /* 中间真隔着一间房：那不是接缝，是两个地方。 */
+  const BLK = { id: "K", name: "挡路", x: 0, y: 1000, w: 1000, h: 240 };
+  check("中间夹着别的房间 → 不顺（宁可留着那道墙）",
+        S.corridorMerge([A, NEAR, BLK], [NEAR], GAP).length === 0);
+  /* 只动过道：普通房间绝不顺。 */
+  const LIV = { id: "L", name: "客厅", x: 0, y: 0, w: 1000, h: 1000 };
+  check("普通房间绝不动", S.corridorMerge([LIV, NEAR], [NEAR], GAP).length === 0);
+  /* 贴死模式 gap = 0：本来就该贴死，没有「夹着一道墙」这回事。 */
+  check("gap = 0（贴死模式）→ 不顺", S.corridorMerge([A, NEAR], [NEAR], 0).length === 0);
+  /* 距离超过一个墙厚：中间放得下房间，那是实打实的墙。 */
+  const FAR = { id: "B", name: "过道2", x: 500, y: 1500, w: 1000, h: 1000 };
+  check("差 500（> 一个墙厚）→ 不顺", S.corridorMerge([A, FAR], [FAR], GAP).length === 0);
+  /* 边界：差得正好等于一个墙厚 → 顺。 */
+  const EXACT = { id: "B", name: "过道2", x: 500, y: 1240, w: 1000, h: 1000 };
+  check("差正好 = 一个墙厚 → 顺（边界含等号）",
+        S.corridorMerge([A, EXACT], [EXACT], GAP).length === 1);
+  /* 兜底：乱七八糟的输入不许炸。 */
+  check("传 null / 空数组都不炸",
+        S.corridorMerge([], null, GAP).length === 0 &&
+        S.corridorMerge(null, [], GAP).length === 0 &&
+        S.corridorMerge([A], [NEAR], null).length === 0);
+});
+
 /* ============ 汇总 ============ */
 console.log(`\n${_fail ? "❌" : "✅"} 通过 ${_pass} 条，失败 ${_fail} 条`);
 process.exit(_fail ? 1 : 0);

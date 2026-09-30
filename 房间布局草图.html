@@ -239,7 +239,7 @@ textarea{min-height:112px; resize:vertical; line-height:1.65; white-space:pre; o
 </div>
 
 <script>
-const BUILD = "2026-09-30 22:47";  // 版本号：手机上看看对不对，就知道是不是旧页面了
+const BUILD = "2026-09-30 23:14";  // 版本号：手机上看看对不对，就知道是不是旧页面了
 
 const STORE_KEY = "houseTileV1";   // house.html 的存档（导出时往这里写）
 const SKETCH_KEY = "houseSketchV1"; // 草图自己的存档（和 house.html 分开，互不干扰）
@@ -957,12 +957,75 @@ const flushEdges = (r, rooms) => {
            B: spans(rx0, rx1, B), L: spans(ry0, ry1, L) };
 };
 
+/* ★ 「明明是一个完整的过道，中间却出现一堵墙」的**根**。
+ *
+ * 场景：先补出一条过道，之后又加了一间房，于是旁边裂出一条**新的**缝；在新缝里
+ * 再补一次 —— 新过道的边落在「邻居充气后」的位置上（corridorFreeAt 第 720 行），
+ * 而老过道的那条边还在原地，两者正好差一个 gap：一条 240 宽的带子被夹在两块
+ * 过道中间。它上不挨房、下不挨房，只是一条被两次生成切开的同一条过道。
+ *
+ * 欢欢的两句话就是判据：
+ *   「自动生成的过道，过道与过道之间是不需要墙的」
+ *   「两个房间共用一道墙，这个墙不能随便延伸」
+ *
+ * 做法：把**老的那间顺着那一个方向长过去**（只长到贴上新过道为止，一个方向、
+ * 一次到位），两块于是严丝合缝，画线上 flushEdges 再把共边挖掉——看着就是
+ * 一条连着的带子，在 house.html 里也是一个铺贴区。
+ *
+ * ★ 只认「垂直距离落在 (0, gap] 且平行边有正长度重叠」这一种情形：
+ *   gap 就是墙厚，距离小于一个墙厚＝中间夹不下任何房间（MIN_ROOM_MM = 300 > 240），
+ *   所以那条带子不可能是墙。距离 > gap 的两条过道中间隔着实打实的房间，不碰。
+ * ★ 长出来那一条**必须先过重叠检查**：压到任何别的房间或别的待建块就整块放弃，
+ *   宁可留着那道墙（退回改之前的样子），也绝不造出重叠的房间——house.html 会判死。
+ * ★ 纯函数：只读，返回 [{id,x,y,w,h}] 的**补丁**，由页面作用域去落地。
+ *   没有任何一间要动就返回 []（绝大多数情况就是 []）。 */
+const corridorMerge = (rooms, add, gap) => {
+  const g = Math.max(0, Number(gap) || 0);
+  const rs = rooms || [], ad = add || [];
+  const out = [];
+  const curOf = (id) => out.find((u) => u.id === id) || rs.find((r) => r.id === id);
+  /* 长出来那一条会不会压到别人（除自己以外的任何房间、以及任何待建块） */
+  const blocked = (cand, id) =>
+    rs.some((r) => r.id !== id && rectOvArea(cand, r) > 1e-6) ||
+    ad.some((n) => rectOvArea(cand, n) > 1e-6);
+
+  for (const r of rs) {
+    if (!isCorridor(r)) continue;                       // 只动过道，普通房间一个字节不碰
+    for (const n of ad) {
+      const c = curOf(r.id);
+      /* 平行边的重叠长度：竖直方向比 x，水平方向比 y —— 只在一个角上碰一下（长度 0）不算。 */
+      const ox = spanOv(c.x, c.x + c.w, n.x, n.x + n.w);
+      const oy = spanOv(c.y, c.y + c.h, n.y, n.y + n.h);
+      let cand = null;
+      if (ox > 1e-6) {                                  // 上下相邻 → 往竖向长
+        const d = n.y - (c.y + c.h);                    // 老过道在下、新过道在上
+        const d2 = c.y - (n.y + n.h);                   // 老过道在上、新过道在下
+        if (d > 1e-6 && d <= g + 1e-6) cand = { id: r.id, x: c.x, y: c.y, w: c.w, h: c.h + d };
+        else if (d2 > 1e-6 && d2 <= g + 1e-6)
+          cand = { id: r.id, x: c.x, y: n.y + n.h, w: c.w, h: c.h + d2 };
+      }
+      if (!cand && oy > 1e-6) {                         // 左右相邻 → 往横向长
+        const d = n.x - (c.x + c.w);
+        const d2 = c.x - (n.x + n.w);
+        if (d > 1e-6 && d <= g + 1e-6) cand = { id: r.id, x: c.x, y: c.y, w: c.w + d, h: c.h };
+        else if (d2 > 1e-6 && d2 <= g + 1e-6)
+          cand = { id: r.id, x: n.x + n.w, y: c.y, w: c.w + d2, h: c.h };
+      }
+      if (!cand || blocked(cand, r.id)) continue;
+      const o = out.find((u) => u.id === r.id);
+      if (o) { o.x = cand.x; o.y = cand.y; o.w = cand.w; o.h = cand.h; }
+      else out.push(cand);
+    }
+  }
+  return out;
+};
+
 const Engine = { numOr, rectOf, spanOv, rectOvArea, distToRange, doorAxis, doorRectOf, doorRect,
                  clampPos, thirdRoomOnDoor, doorView, sameWallDoorClash,
                  findWallGap, freeRangeOnWall, sanitizeDoors, nextSeq, exportDoors, parseRoomLines,
                  isEst, markMeasured, markEst, resizeByCorner, cornerHit, edgeCands, snapToEdges,
                  infl, clamp, inside, rectDist, corridorFreeAt, corridorRects, corridorSealed,
-                 corridorAt, corridorName, isCorridor, flushEdges };
+                 corridorAt, corridorName, isCorridor, flushEdges, corridorMerge };
 if (typeof module !== "undefined" && module.exports) module.exports = Engine;
 /*ENGINE-END*/
 
@@ -1904,14 +1967,27 @@ function tryCorridorAt(px, py) {
                x: q.x, y: q.y, w: q.w, h: q.h, est });
   }
 
-  /* ★ 否决：多出几间房有可能让一道**本来好好的门**失效（门两边被塞进第三间房之类）。
-   * 宁可整件事作废，也不让她的户型凭空多一道红门——同 openDoorOnWall 1730 那条原则。 */
-  const next = state.rooms.concat(add);
+  /* ★ 老过道顺过来。补第二块过道时如果跟已有的过道只差一个墙厚（gap），
+   * 那条带子不是墙、是同一条过道被两次生成切开了，把老的那间长过去贴上，
+   * 两块严丝合缝之后 flushEdges 再把共边挖掉。见 corridorMerge 上面那段注释。 */
+  const fix = corridorMerge(state.rooms, add, gapMM());
+  const fixed = fix.length
+    ? state.rooms.map((q) => {
+        const u = fix.find((f) => f.id === q.id);
+        return u ? Object.assign({}, q, { x: u.x, y: u.y, w: u.w, h: u.h }) : q;
+      })
+    : state.rooms;
+
+  /* ★ 否决：多出几间房（或把老过道长过去）有可能让一道**本来好好的门**失效
+   * （门两边被塞进第三间房之类）。宁可整件事作废，也不让她的户型凭空多一道红门
+   * ——同 openDoorOnWall 1730 那条原则。 */
+  const next = fixed.concat(add);
   for (const d of state.doors) {
     if (doorView(d, state.rooms, state.doors).ok && !doorView(d, next, state.doors).ok) return false;
   }
 
   state.seq += add.length;
+  if (fix.length) state.rooms = fixed;
   for (const q of add) state.rooms.push(q);
   saveSketch();
   renderEditor(); draw();
