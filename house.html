@@ -244,6 +244,13 @@ select{min-height:40px; padding:7px 8px; border:1px solid var(--line); border-ra
     <section class="card">
       <h2 class="card-title">全屋平面图</h2>
       <div class="plan-tools">
+        <!-- ★ 2026-10-01：这张图**默认一个字的字都没有**，为的是能安安静静看铺贴效果。
+             房间名原来是图上唯一一行"关不掉"的字（裁砖尺寸、门洞标签早就跟着
+             「标注尺寸」收起来了），所以给它单开一个开关，没有并进「标注尺寸」——
+             并进去的话，一开尺寸标注，八间房的名字会跟那些数字一起挤进 chipRow
+             的避让循环，数字会被推得七零八落，反而看不清量的是哪一段。
+             默认关：老存档里根本没有这个字段，读出来是 undefined，也是关——正好。 -->
+        <button class="chip" id="nameToggle" aria-pressed="false">房间名</button>
         <button class="chip" id="cutToggle" aria-pressed="false">标注尺寸</button>
         <!-- 靠墙缝：瓷砖不能顶着墙贴，靠墙那圈要裁窄几毫米（墙不直、砖不方、还要留伸缩量）。
              静默兜底是 5mm，清空输入框就是回到 5；想不留缝得**显式填 0**（parseMM 只吃 \d+）。
@@ -280,6 +287,7 @@ select{min-height:40px; padding:7px 8px; border:1px solid var(--line); border-ra
       <div class="plan-legend">浅色缝＝砖缝（同一个区内是连通的）ㆍ白框＝墙（房间之间的空档，<b>墙就是隔断</b>：要连通就在这道墙上开个门洞）ㆍ蓝虚线＝通铺门口（缝穿过去）ㆍ红实线＝过门石门口（这里断开，两边各排各的）<br>
         靠墙那一圈砖会自动裁窄 <b id="legendGap">5</b>mm（墙不一定直、砖不一定方，靠墙得留一道缝），在上面「靠墙缝」那个框里改；两间房贴死（中间没墙）的那条边不留。<br>
         开了「标注尺寸」：<b>红线搭在哪一段砖上，旁边的数字就是那一段的尺寸</b>——数字在上边或下边＝那块砖的宽，在左边或右边＝它的高；四个角各站一个，不会挤在一起。<br>
+        图上<b>默认一个字的字都没有</b>，就为了能安安静静看铺贴效果；要认哪间是哪间，点上面的<b>「房间名」</b>。<br>
         这张图只作看图用。<b>要挪房间，去下面「房间」卡片里改「离原点左 / 离原点上」的数字</b>，改完图上立刻跟着变。</div>
       <div class="statuses" id="statuses"></div>
     </section>
@@ -1408,7 +1416,7 @@ const defaultState = () => ({
   settings: { floorTile:{ preset:"800×800", w:800, h:800 },
               direction:"horizontal", grout:2, wallGap:5,
               baseRoom:null, baseMode:"center", startCorner:"tl",
-              nudgeX:0, nudgeY:0, showCuts:false, wall:240 },
+              nudgeX:0, nudgeY:0, showCuts:false, showNames:false, wall:240 },
   seq: 7,                                  // 本页是 seq++ 后自增，所以下一个新房间是 r7
   rooms: [
     { id:"r1", name:"客厅",   x:0,    y:0,    w:6900, h:4400 },
@@ -1883,10 +1891,14 @@ function drawPlan(plan){
     if (plan.settingsShowCuts)
       paintCuts(ctx, rm.ax, rm.ay, s, W, H, (x, y) => ({ x: TX + x, y: TY + y }), { sink: chips });
     ctx.restore();
-    // 房间名（放在房间左上角内侧）
-    chips.push({ ghost:false, txt:rm.name, color:cssVar("--accent"),
-                 ax:TX + Math.min(600, rm.rect.w / 2) * s,
-                 ay:TY + Math.min(450, rm.rect.h / 2) * s });
+    /* 房间名（放在房间左上角内侧）。★ 2026-10-01 起**默认不画**——
+     * 它原来压着砖，图上多一行字就少看一块砖的排法，而这是全屋平面图上
+     * 唯一一行关不掉的字。改由卡片上那个「房间名」按钮控制，默认关。
+     * 名字本身一个都没丢：下面「房间」卡片里每间都写着，要认哪间是哪间时点开就行。 */
+    if (plan.settingsShowNames)
+      chips.push({ ghost:false, txt:rm.name, color:cssVar("--accent"),
+                   ax:TX + Math.min(600, rm.rect.w / 2) * s,
+                   ay:TY + Math.min(450, rm.rect.h / 2) * s });
   });
 
   // 通铺门口那一段也要铺上砖（不然门口露白底，看着像断了）
@@ -2069,6 +2081,8 @@ let planCache = null;
 function recompute(){
   planCache = Engine.housePlan(state);
   planCache.settingsShowCuts = !!state.settings.showCuts;
+  // 老存档里没有 showNames 这个字段 → undefined → false → 不画，正是想要的默认
+  planCache.settingsShowNames = !!state.settings.showNames;
   return planCache;
 }
 function update(){
@@ -2185,6 +2199,31 @@ function setShowCuts(v){
   update();
 }
 
+/* 「房间名」的开关：全屋平面图上那几行房间名画不画。默认关——图打开就是一张
+ * 干净的铺贴图，一个字都没有。
+ *
+ * 为什么不并进上面那个「标注尺寸」：尺寸标注一开，chipRow 要把"裁砖尺寸 + 门洞标签"
+ * 摆开；再把房间名塞进去，八间房的名字会跟那些数字抢位置，避让循环一推，
+ * 数字就飘到离它量的那段砖很远的地方去了。两件事各管各的，谁也别挤谁。
+ *
+ * 只有一个控件（卡片上那个按钮），所以不像 showCuts 那样要刷两处；
+ * 仍然走这个函数、不让调用方自己写 state，是照抄上面那套规矩：
+ * 状态永远从一处改，将来真加了第二个控件，接进来就行。 */
+function syncNameUI(){
+  const on = !!state.settings.showNames;
+  const btn = $("#nameToggle");
+  if (btn) {
+    btn.classList.toggle("on", on);
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+}
+function setShowNames(v){
+  state.settings.showNames = !!v;
+  save();
+  syncNameUI();
+  update();
+}
+
 /* ---------------- 启动 ---------------- */
 (function init(){
   // 设置面板展开/收起（与卫生间工具同一套交互）
@@ -2282,7 +2321,7 @@ function setShowCuts(v){
   const afterStateSwap = () => {
     save();
     syncResetInputs(state);
-    renderSettings(); renderRooms(); renderDoors(); update(); syncCutUI();
+    renderSettings(); renderRooms(); renderDoors(); update(); syncCutUI(); syncNameUI();
     syncResetUndo();
   };
 
@@ -2319,6 +2358,7 @@ function setShowCuts(v){
   syncResetUndo();
 
   $("#cutToggle").onclick = () => setShowCuts(!state.settings.showCuts);
+  $("#nameToggle").onclick = () => setShowNames(!state.settings.showNames);
   // 添加按钮
   $("#addRoom").onclick = () => {
     state.rooms.push({ id:"r" + (state.seq++), name:"房间 " + state.rooms.length, x:null, y:null, w:null, h:null });
@@ -2333,6 +2373,7 @@ function setShowCuts(v){
 
   renderSettings(); renderRooms(); renderDoors(); update();
   syncCutUI();   // 上次是开着的话，把按钮的高亮补上（HTML 里默认是关的样子）
+  syncNameUI();  // 同上；默认是关（图上一个字都没有），老存档没这个字段也是关
 })();
 
 </script>
