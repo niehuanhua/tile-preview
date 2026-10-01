@@ -284,7 +284,7 @@ select{min-height:40px; padding:7px 8px; border:1px solid var(--line); border-ra
         <canvas id="housePlan"></canvas>
         <p class="plot-empty" id="planEmpty">先把地砖规格和房间尺寸填好</p>
       </div>
-      <div class="plan-legend">浅色缝＝砖缝（同一个区内是连通的）ㆍ白框＝墙（房间之间的空档，<b>墙就是隔断</b>：要连通就在这道墙上开个门洞）ㆍ蓝虚线＝通铺门口（缝穿过去）ㆍ红实线＝过门石门口（这里断开，两边各排各的）<br>
+      <div class="plan-legend">浅色缝＝砖缝（同一个区内是连通的）ㆍ白框＝墙（房间之间的空档，<b>墙就是隔断</b>：要连通就在这道墙上开个门洞）ㆍ红实线＝过门石门口（这里断开，两边各排各的）ㆍ<b>没有框</b>＝通铺门口（缝穿过去，地面连着走，所以不画框——红框＝过门石、没框＝通铺，一眼分得清）<br>
         靠墙那一圈砖会自动裁窄 <b id="legendGap">5</b>mm（墙不一定直、砖不一定方，靠墙得留一道缝），在上面「靠墙缝」那个框里改；两间房贴死（中间没墙）的那条边不留。<br>
         开了「标注尺寸」：<b>红线搭在哪一段砖上，旁边的数字就是那一段的尺寸</b>——数字在上边或下边＝那块砖的宽，在左边或右边＝它的高；四个角各站一个，不会挤在一起。<br>
         图上<b>默认一个字的字都没有</b>，就为了能安安静静看铺贴效果；要认哪间是哪间，点上面的<b>「房间名」</b>。<br>
@@ -1927,18 +1927,28 @@ function drawPlan(plan){
     ctx.restore();
   });
 
-  // 门洞：通铺＝蓝虚线；过门石＝红实线 + 标注
+  // 门洞：过门石＝红实线框（照画）；通铺＝蓝虚线框（跟着「标注尺寸」走，默认不画）
   plan.doors.forEach((d) => {
     const x = OX + d.rect.x * s, y = OY + d.rect.y * s, w = d.rect.w * s, h = d.rect.h * s;
-    ctx.save();
-    ctx.strokeStyle = d.threshold ? cssVar("--danger") : cssVar("--accent");
-    ctx.lineWidth = 1.6;
-    ctx.setLineDash(d.threshold ? [] : [5, 4]);
-    ctx.strokeRect(x, y, w, h);
-    ctx.restore();
-    // 「过门石 900」这行小字跟着「标注尺寸」按钮一起收起来——它和裁砖尺寸是
-    // 同一类东西：图上多出来的小字。红框 / 蓝虚线框照画不误，门口开在哪、
-    // 是哪种，一眼还是看得见；洞宽也不会丢，下面「门洞」卡片里每道门都写着。
+    /* ★ 2026-10-01：通铺门口原来无条件画一圈蓝虚线。可那一段砖是**铺过去的**
+     * （上面那个 forEach 已经把它画上了），框里框外是一模一样的地面，
+     * 这一圈线除了压在砖上什么也没说。欢欢要的是"安安静静看铺贴效果"，
+     * 所以默认不画；点「标注尺寸」，它才跟它那行「通铺 900」的小字一起回来
+     * ——框和小字本来就该成对（框是给小字当靶子的）。原来是小字收起来、
+     * 框还留着，那才是别扭的那一半，这次一并理顺。
+     * 过门石的红框照画：那是个真东西，砖就在那儿断开，框标的是它。
+     * 门口开在哪没丢——**红框＝过门石，没有红框＝通铺**，一眼分得清。 */
+    if (d.threshold || plan.settingsShowCuts) {
+      ctx.save();
+      ctx.strokeStyle = d.threshold ? cssVar("--danger") : cssVar("--accent");
+      ctx.lineWidth = 1.6;
+      ctx.setLineDash(d.threshold ? [] : [5, 4]);
+      ctx.strokeRect(x, y, w, h);
+      ctx.restore();
+    }
+    // 「通铺 900 / 过门石 900」这行小字跟着「标注尺寸」按钮一起收起来——它和裁砖
+    // 尺寸是同一类东西：图上多出来的小字。通铺那个蓝虚线框跟它同一个开关，
+    // 只有过门石的红框是常驻的（见上）。洞宽也不会丢，下面「门洞」卡片里都写着。
     if (plan.settingsShowCuts)
       chips.push({ ghost:false, txt:(d.threshold ? "过门石 " : "通铺 ") + `${Math.round(d.width)}`,
                    color:d.threshold ? cssVar("--danger") : cssVar("--accent"),
@@ -2175,8 +2185,10 @@ function syncCorner(){
   }
 }
 
-/* 「标注尺寸」的开关：裁砖尺寸线 + 过门石标签，一起显示、一起收。两个控件都走这里，
+/* 「标注尺寸」的开关：裁砖尺寸线 + 门洞标签（「通铺 900」/「过门石 900」）
+ * + 通铺门口那圈蓝虚线框，一起显示、一起收。两个控件都走这里，
  * 所以两边永远一致——在哪边点都一样。
+ * （过门石的红框不归它管，那个常驻：它标的是过门石本身，见 drawPlan 里的注释。）
  *
  * 为什么刷新两个控件的活儿要单独一个函数：renderSettings() 只重建设置面板里
  * 那些 chip / 分段按钮，**不重建**那个开关（开关是 init 里建一次的），
