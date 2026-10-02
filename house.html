@@ -1833,20 +1833,35 @@ function renderDoors(){
 /* 全屋平面图缩得很小，2mm 的砖缝只有零点几像素——直接铺砖的话看着就是一块实心色板，
  * 而"缝在门口连不连"恰恰是通铺最该让人一眼看到的东西。
  * 所以砖缝另外用**至少 1 像素**的线补画一遍（和三维图的 R3D_MIN_GROUT 同一个思路）。
- * 各房间的缝位来自全屋同一个相位 → 这些线天然跨房间连成一条。 */
-function drawJoints(ctx, ax, ay, s, W, H, groutPx){
+ * 各房间的缝位来自全屋同一个相位 → 这些线天然跨房间连成一条。
+ *
+ * ★ 最后那个 skipEdges：`latticeSegments` 是把砖**裁到铺砖区范围里**的，所以"第一段砖的
+ *   起点"和"最后一段砖的终点"这两条线，落的是铺砖区自己的**边界**，不是缝。房间无所谓
+ *   （边界外面就是墙，本来就是白的，看不见）；但**通铺门洞那一段**的边界正好落在门洞中间
+ *   （上下各是 250mm 的门口填充带，边界就压在填充带的两头），画出来就是**围着门槛一圈白框**，
+ *   跟砖缝长得一模一样——2026-10-02 欢欢报的就是这个。
+ *   传 true 就把压在边界上的那两条丢掉；**中间的缝一条不少**（它们才是跨门口该连起来的那几条）。 */
+function drawJoints(ctx, ax, ay, s, W, H, groutPx, skipEdges){
   const lw = Math.max(1, groutPx);
   ctx.save();
   ctx.strokeStyle = cssVar("--joint");
   ctx.lineWidth = lw;
+  /* 边界判定在"局部 mm"里做：v 是局部毫米，span 是这块铺砖区的宽/高（也是毫米）。
+   * 用**纯浮点容差**，不按线宽兜：门口那一段只有一堵墙那么厚，真正的缝常常就落在
+   * 离边界一两毫米的地方（实测竖门那道：边界 1400、真缝 1399），按线宽兜会把它一起吃掉，
+   * 门口那道缝就断了。边界线是算出来的（正好 0 和正好 span），1e-6 足够。 */
+  const onEdge = (v, span) => v <= 1e-6 || v >= span - 1e-6;
   const xs = ax.segments.map((q) => q.start);
   const lastX = ax.segments[ax.segments.length - 1];
   if (lastX) xs.push(lastX.start + lastX.width);
   const ys = ay.segments.map((q) => q.start);
   const lastY = ay.segments[ay.segments.length - 1];
   if (lastY) ys.push(lastY.start + lastY.width);
-  xs.forEach((v) => { ctx.beginPath(); ctx.moveTo(v * s, 0); ctx.lineTo(v * s, H); ctx.stroke(); });
-  ys.forEach((v) => { ctx.beginPath(); ctx.moveTo(0, v * s); ctx.lineTo(W, v * s); ctx.stroke(); });
+  const spanX = W / s, spanY = H / s;
+  xs.forEach((v) => { if (skipEdges && onEdge(v, spanX)) return;
+    ctx.beginPath(); ctx.moveTo(v * s, 0); ctx.lineTo(v * s, H); ctx.stroke(); });
+  ys.forEach((v) => { if (skipEdges && onEdge(v, spanY)) return;
+    ctx.beginPath(); ctx.moveTo(0, v * s); ctx.lineTo(W, v * s); ctx.stroke(); });
   ctx.restore();
 }
 
@@ -1923,7 +1938,10 @@ function drawPlan(plan){
     ctx.save();
     ctx.translate(OX + F.x * s, OY + F.y * s);
     paintTiles(ctx, Engine.toLocal(gx, F.x), Engine.toLocal(gy, F.y), s, F.w * s, F.h * s);
-    drawJoints(ctx, Engine.toLocal(gx, F.x), Engine.toLocal(gy, F.y), s, F.w * s, F.h * s, plan.tile.grout * s);
+    /* 最后那个 true = 别画压在门口填充带边界上的那两条线。这块铺砖区只有门洞那么高
+     * （一堵墙的厚度），上下两条边界线画出来就是把门洞圈起来的白框（跟砖缝同色同宽），
+     * 看着像门口被框起来了。中间真正的缝照画，砖缝该连还是连。 */
+    drawJoints(ctx, Engine.toLocal(gx, F.x), Engine.toLocal(gy, F.y), s, F.w * s, F.h * s, plan.tile.grout * s, true);
     ctx.restore();
   });
 
