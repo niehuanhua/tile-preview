@@ -80,6 +80,11 @@ button{cursor:pointer; touch-action:manipulation}
 .set-hint{margin:-2px 0 12px; font-size:12px; color:var(--ink-soft); line-height:1.45}
 /* 提示行里的小按钮：.chip 是 42px 高的大块头，塞进一行小字里会把行撑开 */
 .hint-btn{margin-left:6px; padding:3px 9px; min-height:0; font-size:12px; border:1px solid var(--line); background:var(--chip); border-radius:7px; color:var(--accent); font-weight:700}
+/* 「保留起铺角」开着的时候按钮要看得出来是开着的（跟 .seg button.on 一套配色） */
+.hint-btn.on{background:var(--accent-soft); border-color:var(--accent); color:var(--accent)}
+/* 起铺角小字是**逐区**几条，靠 \n 分行；pre-line 只认换行、不合并空格，
+   所以照旧会正常折行（用 pre-wrap 的话长串数字不会被折断，手机上会撑破） */
+#cornerHintText{white-space:pre-line}
 .chips{display:flex; flex-wrap:wrap; gap:8px}
 .chip{border:1px solid var(--line); background:var(--chip); border-radius:8px; padding:8px 12px; min-height:42px; font-size:15px; font-variant-numeric:tabular-nums;}
 .chip.on{background:var(--accent-soft); border-color:var(--accent); color:var(--accent); font-weight:700}
@@ -278,7 +283,12 @@ select{min-height:40px; padding:7px 8px; border:1px solid var(--line); border-ra
             <button data-v="tl">左上</button><button data-v="tr">右上</button><button data-v="bl">左下</button><button data-v="br">右下</button>
           </div>
         </div>
-        <p class="set-hint" id="cornerHint" hidden><span id="cornerHintText"></span><button class="hint-btn" id="cornerSwap" type="button">换一个</button></p>
+        <!-- cornerHintText 里现在是**逐区**几条说明，用 \n 分行，所以它得吃换行
+             （CSS 里给了 white-space:pre-line）。
+             换一个 = 回居中对称；仍然从这个角起铺 = 1/3 规矩挡下来时"我还是要这个角"。
+             后面这颗的**文字和显隐都归 syncCorner 管**（这里写的只是它第一次 update()
+             之前的初始样子，文案跟 syncCorner 里那句保持一致，免得闪一下变脸）。 -->
+        <p class="set-hint" id="cornerHint" hidden><span id="cornerHintText"></span><button class="hint-btn" id="cornerSwap" type="button">换一个</button><button class="hint-btn" id="cornerForce" type="button" hidden>仍然从这个角起铺</button></p>
       </div>
       <div class="plan-plot">
         <canvas id="housePlan"></canvas>
@@ -501,12 +511,16 @@ const Engine = (() => {
    * 同一个区里所有房间都由这**一个**原点推出来，通缝就是这么来的。
    *
    * opt（第 7 个参数，老调用不传 = 行为逐位不变）：
-   *   { corner:"tl"|"tr"|"bl"|"br", gap, sliver } —— mode==="corner" 时用。
-   *   角是**基准房**的四个角之一；gap 取靠墙缝，sliver 是"忽略不计"的窄条阈值。
+   *   { corner:"tl"|"tr"|"bl"|"br", gap, sliver, force } —— mode==="corner" 时用。
+   *   角是**基准房**的四个角之一；gap 取靠墙缝，sliver 是"忽略不计"的窄条阈值；
+   *   force=true 表示"1/3 规矩别拦了，我就从这个角起铺"（用户按过那个按钮）。
    *   nudge 是在相位定完之后才加的，所以填了 nudge 就等于放弃起铺角
    *   （师傅要整体挪，那就以师傅为准）。
    *   返回值 corner.x/.y 的 at 有三种：corner 成立 / center 自动退回居中 /
-   *   nudge 相位没动但整网被挪走了（此时 far/farCut 是**没挪之前**的数，别拿去说事）。 */
+   *   nudge 相位没动但整网被挪走了（此时 far/farCut 是**没挪之前**的数，别拿去说事）。
+   *   另有两个字段只在特定情况下出现：
+   *   canKeep=true —— 「被 1/3 规矩退回居中，但这个角本来排得下」，界面据此给按钮；
+   *   forced=true  —— 这一轴是 force 开着硬留下来的（对面那条窄边条用户自己要的）。 */
   const basePhase = (rooms, baseId, t, g, mode, nudge, opt) => {
     const list = (rooms || []).filter(r => { const rr = roomRect(r); return rr.w > 0 && rr.h > 0; });
     if (!list.length || !t || !(t.x > 0) || !(t.y > 0)) return { ok:false };
@@ -521,8 +535,9 @@ const Engine = (() => {
       const rects = list.map(r => ({ id:r.id, rect:roomRect(r) }));
       const pads = sideGaps(br, rects, base.id, gap);      // [左,右,上,下]
       const c = o.corner;
-      const rX = cornerAxis(br.w, t.x, g, pads[0], pads[1], c === "tr" || c === "br", sliver);
-      const rY = cornerAxis(br.h, t.y, g, pads[2], pads[3], c === "bl" || c === "br", sliver);
+      const force = !!o.force;
+      const rX = cornerAxis(br.w, t.x, g, pads[0], pads[1], c === "tr" || c === "br", sliver, force);
+      const rY = cornerAxis(br.h, t.y, g, pads[2], pads[3], c === "bl" || c === "br", sliver, force);
       ax = rX.ax; ay = rY.ax; cx = rX; cy = rY;
     } else {
       ax = layoutAxis(br.w, t.x, g, mode || "center");
@@ -578,9 +593,18 @@ const Engine = (() => {
    *
    * atMax=true 表示角在最大侧（右墙 / 下墙，本工具没有 y 翻转，下 = y 大）。
    * 注意格线原点是在**缩过的** [a,b] 上定的，而 layoutAxis 是按房间整长定的相位——
-   * 这不是笔误，正是"乙"读法换来整砖的原因；居中模式那条老路一个字节没动。 */
-  const cornerAxis = (L, t, g, padAt, padFar, atMax, sliver) => {
-    const center = (why) => ({ ax: layoutAxis(L, t, g, "center"), at:"center", far:null, farCut:false, why });
+   * 这不是笔误，正是"乙"读法换来整砖的原因；居中模式那条老路一个字节没动。
+   *
+   * force=true（用户按过"仍然从这个角起铺"）：1/3 那条**不再拦**，照起铺角排，
+   * 结果上带 forced:true 让界面能说清"这条窄边条是你自己要的"。 */
+  const cornerAxis = (L, t, g, padAt, padFar, atMax, sliver, force) => {
+    /* center() 默认交出去的 far=null / farCut=false：绝大多数退回是"这个角根本用不了"
+     * （尺寸无效、净宽不足、排不下、房间不够一块砖），那时候对面墙那块零头压根没算出来，
+     * 报个数就是编。只有 1/3 规矩那一条是"算出来了、我按规矩否了你"，它把 far/farCut
+     * 塞进 extra 一起交出去，并打上 canKeep —— 界面据此才敢给出"仍然从这个角起铺"的按钮。
+     * 没有 canKeep 的退回，按钮点下去什么也不会变，所以一律 false，不给假按钮。 */
+    const center = (why, extra) => Object.assign(
+      { ax: layoutAxis(L, t, g, "center"), at:"center", far:null, farCut:false, why, canKeep:false }, extra);
     if (!(L > 0) || !(t > 0)) return center("尺寸无效");
     const a = Math.max(0, numOr(padAt, 0)), b = L - Math.max(0, numOr(padFar, 0));
     if (!(b - a > 1e-9)) return center("净宽不足");
@@ -592,7 +616,16 @@ const Engine = (() => {
     // 房间比一块砖还窄：角上那块自己就是裁砖，"起铺角"名不副实，退居中走窄房分支
     if (cs.cut) return center("房间不够一块砖");
     const far = fs.width, farCut = !!fs.cut;
-    if (farCut && far >= sliver - 1e-9 && far < t / 3) return center(`对面墙只剩 ${Math.round(far)}mm`);
+    /* 1/3 规矩：对面墙那条零头落进 [sliver, t/3) 就是最难看的窄条，默认退回居中对称
+     * （规范有据："非整砖的宽度不宜小于原砖的1/3"，JGJ/T 304-2013 §9.2.3 等）。
+     * 但**退回不等于没发生过**：把 far/farCut 和 canKeep 一起交出去，
+     * 界面才说得出"我按规矩改了，你要坚持我可以改回来"——老写法直接 return center()
+     * 把数丢成 null，界面手里什么都没剩下，只能一声不吭。
+     * force=true 表示用户已经按过那个按钮了：这一条不再拦，照起铺角排。 */
+    if (farCut && far >= sliver - 1e-9 && far < t / 3) {
+      if (force) return { ax: layoutAxis(L, t, g, "center", origin), at:"corner", far, farCut, why:null, forced:true };
+      return center(`对面墙只剩 ${Math.round(far)}mm`, { far, farCut, canKeep:true });
+    }
     return { ax: layoutAxis(L, t, g, "center", origin), at:"corner", far, farCut, why:null };
   };
 
@@ -837,7 +870,8 @@ const Engine = (() => {
        * layoutAxis("corner") 那个分支——那不是居中、也不是起铺角，是"靠一边"，静默走错版。
        * 与其让存档的脏字段决定用哪一版，不如钉死在左上。 */
       const ab = basePhase(rs, pick.id, tz, g, s.baseMode, { x:s.nudgeX, y:s.nudgeY },
-                           { corner:s.startCorner || "tl", gap:wallGap, sliver:CUT_IGNORE_MM });
+                           { corner:s.startCorner || "tl", gap:wallGap, sliver:CUT_IGNORE_MM,
+                             force:!!s.cornerForce });
       if (!ab.ok) return out;
       out.areas.push({ id:out.areas.length, baseId:ab.baseId, baseName:ab.baseName,
                        GX:ab.GX, GY:ab.GY, rooms:list, corner:ab.corner,
@@ -1416,6 +1450,9 @@ const defaultState = () => ({
   settings: { floorTile:{ preset:"800×800", w:800, h:800 },
               direction:"horizontal", grout:2, wallGap:5,
               baseRoom:null, baseMode:"center", startCorner:"tl",
+              /* cornerForce：被 1/3 规矩退回居中之后，用户按了"仍然从这个角起铺"。
+               * 老存档里没这个字段 → undefined → falsy → 关着，所以不需要写迁移。 */
+              cornerForce:false,
               nudgeX:0, nudgeY:0, showCuts:false, showNames:false, wall:240 },
   seq: 7,                                  // 本页是 seq++ 后自增，所以下一个新房间是 r7
   rooms: [
@@ -1500,10 +1537,24 @@ function renderSettings(){
     const o = el("option", null, "（先把房间长宽填好）");
     o.value = ""; sel.appendChild(o);
   } else {
+    /* ★ 下拉框里显示的那间，必须是**引擎真正在用的那间**。
+     * 引擎是每个区各挑各的基准房（housePlan 里那段 pick）：设置里选中的那间只对
+     * "包含它的那个区"有效，其余区各用区内面积最大的那间；设置里还没选（默认 null）时，
+     * 参考区用的也是"区内最大"那一间。
+     * 老写法显示的是 usable[0]——**房间清单的第一间**。房间顺序一变（新建/删除/导入），
+     * 它就会理直气壮地显示一个引擎根本没在用的名字。用户照着这行字理解画面，
+     * 于是得到"我明明选的是客厅，动的却是两个厕所"。
+     * 挑法跟 syncCorner / out.grid 那两处**是同一个**（find(baseRoom) || areas[0]），
+     * 三处必须一致，否则又变成三份会跑偏的逻辑。
+     * recompute() 是函数声明（会提升），这里调得动；它只跑引擎、不碰界面，不会递归。 */
+    const p = recompute();
+    const home = (p && p.ok && p.areas && p.areas.length)
+      ? (p.areas.find((a) => a.baseId === s.baseRoom) || p.areas[0]) : null;
+    const shown = (home && home.baseId) || s.baseRoom || usable[0].id;
     usable.forEach((r) => {
       const o = el("option", null, r.name || r.id);
       o.value = r.id;
-      if ((s.baseRoom || usable[0].id) === r.id) o.selected = true;
+      if (shown === r.id) o.selected = true;
       sel.appendChild(o);
     });
   }
@@ -2128,79 +2179,124 @@ function update(){
 
 /* 「以哪间房为准起铺」下面那行小字：只有真的分了区才出现。
  * 一个区时它纯属噪音（"你选的这间管它自己那个区"——废话，全屋就一个区）。
- * 措辞是"墙和过门石"：加了"墙就是隔断"之后，分区的多半是没开门洞的墙，不全是过门石。 */
+ * 措辞是"墙和过门石"：加了"墙就是隔断"之后，分区的多半是没开门洞的墙，不全是过门石。
+ * ★ 分区数和"哪个区是哪些房"在这里一并报出来：下面那个下拉框只知道一个名字，
+ * 说得出"其余区各以区内最大的房间为准"，但说不出**其余区到底是哪几间、以谁为准**。
+ * 名字取 plan.rooms（引擎那份），别拿 state.rooms 里的旧名字。 */
 function syncAreaHint(plan){
   const h = $("#areaHint");
   if (!h) return;
   const many = plan.ok && plan.areas && plan.areas.length > 1;
   h.hidden = !many;
-  if (many) h.textContent =
-    `墙和过门石把全屋分成了 ${plan.areas.length} 个区：这里选的房管它自己那个区，其余区各以区内最大的房间为准。`;
+  if (many) {
+    const nm = (id) => { const r = (plan.rooms || []).find((x) => x.id === id); return r ? (r.name || r.id) : id; };
+    const zones = plan.areas.map((a, i) =>
+      `${i + 1}「${a.baseName}」${a.rooms.map(nm).join("、")}`).join("； ");
+    h.textContent = `墙和过门石把全屋分成了 ${plan.areas.length} 个区，各排各的网——` +
+      `${zones}。下拉框里选的这间只管它自己那个区，其余区各以区内最大的房间为准。`;
+  }
 }
 
 /* ---------------- 起铺角 ---------------- */
 
 const CORNER_LABEL = { tl:"左上", tr:"右上", bl:"左下", br:"右下" };
 
-/* 「起铺角」那一版的两行小字。引擎已经把结果和理由都算好了
- * （corner.x/.y = { at:"corner"|"center"|"nudge", far, farCut, why }），这里**只做翻译**：
- * 一条判断都不重算——重算就等于在界面上又养了一份会跟引擎跑偏的逻辑。
+/* 「起铺角」那一版的小字。引擎已经把结果和理由都算好了
+ * （corner.x/.y = { at:"corner"|"center"|"nudge", far, farCut, why, canKeep, forced }），
+ * 这里**只做翻译**：一条判断都不重算——重算就等于在界面上又养了一份会跟引擎跑偏的逻辑。
  * 三种状态各说各的话，别合并：corner = 成立，center = 引擎自动退回居中，
- * nudge = 相位是对的、但整网被人挪走了（师傅的手动偏移，不是引擎的决定）。 */
+ * nudge = 相位是对的、但整网被人挪走了（师傅的手动偏移，不是引擎的决定）。
+ *
+ * ★ 必须**逐区**说。换「起铺方式」是整户一起换版的，可每个区各挑各的基准房、
+ * 各判各的轴（过门石后面的小间自成一区，跟客厅根本不是同一份相位）。
+ * 老版只报"参考区"那一行，用户就会拿这一行去解释整张图——
+ * 「选起铺角时选择客厅，可实际跟着变换起铺位置的是两个厕所」就是这么来的：
+ * 客厅那一区左右 0mm 没动（她被 1/3 规矩退了），两个厕所却各挪了 +257mm，
+ * 而屏幕上只有一行字，讲的还是客厅。数字全都对，是**报错人了**。
+ * 现在按同一个顺序把每个区各报一行，谁动了、谁没动、为什么，一眼对得上图。 */
 function syncCorner(){
   const s = state.settings;
   const on = s.baseMode === "corner";
-  const row = $("#cornerRow"), hint = $("#cornerHint"), txt = $("#cornerHintText");
+  const row = $("#cornerRow"), hint = $("#cornerHint"), txt = $("#cornerHintText"), btn = $("#cornerForce");
   if (row) row.hidden = !on;
   if (hint) hint.hidden = !on;
-  if (!on || !txt) return;
+  if (!on || !txt) { if (btn) btn.hidden = true; return; }
   const plan = planCache;
   const areas = (plan && plan.ok && plan.areas) || [];
-  if (!areas.length) { txt.textContent = ""; return; }
+  if (!areas.length) { txt.textContent = ""; if (btn) btn.hidden = true; return; }
   // 引擎没给 baseId 匹配上时自己会退到第一间房，这里跟着退，别另立一套规则
   const home = areas.find((a) => a.baseId === s.baseRoom) || areas[0];
   const cb = $("#cornerBase");
   if (cb) cb.textContent = home.baseName || "基准房";
-  const c = home.corner;
-  if (!c) { txt.textContent = ""; return; }
   const corner = s.startCorner || "tl";
+  const label = CORNER_LABEL[corner] || "左上";
   // 本工具的 canvas 没有 y 翻转（y 大 = 下），所以"上"就是 y 小的一侧，跟图上一致
   const xMax = (corner === "tr" || corner === "br"), yMax = (corner === "bl" || corner === "br");
   const nearX = xMax ? "右墙" : "左墙", farX = xMax ? "左墙" : "右墙";
   const nearY = yMax ? "下墙" : "上墙", farY = yMax ? "上墙" : "下墙";
+  const many = areas.length > 1;
   const clause = (r, near, far) => `${near}贴的是整砖，对面${far}` +
-        (r.farCut ? `剩 ${Math.round(r.far)}mm 现场裁` : "也是整砖");
-  const head = `以「${home.baseName}」的${CORNER_LABEL[corner] || "左上"}角起铺：`;
+        (r.farCut ? `剩 ${Math.round(r.far)}mm 现场裁` : "也是整砖") +
+        (r.forced ? "（不足 1/3 砖，是你要的）" : "");
 
-  /* 整网偏移是在相位定完之后加的，会把起铺角那面墙的整砖一起带走。
-   * 这**不是**"退回居中"——相位还是起铺角那一份，是师傅手动把整张网挪了。
-   * 所以不能复用下面那句"改回居中对称"：那会把师傅的手动偏移说成引擎的自动决定，
-   * 而且照着"左墙贴的是整砖"讲，图上明明错开一截。 */
-  const nudged = [c.x, c.y].filter((r) => r.at === "nudge");
-  if (nudged.length) {
-    const which = (nudged.length === 2) ? "左右、上下两向"
-                : (c.x.at === "nudge" ? "左右这一向" : "上下这一向");
-    txt.textContent = head + `整网挪过之后，${which}的起铺角就不作数了` +
-      `（${nudged.map((r) => r.why).join("，")}）——画面上看到的格线是挪过的。` +
-      ((c.x.at === "corner" || c.y.at === "corner") ? "另一向还按起铺角贴着整砖。" : "") +
-      "想用起铺角，把「整网偏移」清成 0。";
-    return;
-  }
+  /* 一个区的一整句话。单区时它跟老版那句**一个字都不差**（只多一个 head 的拼法）。 */
+  const bodyOf = (a) => {
+    const c = a.corner;
+    if (!c) return "";
+    const head = many ? `「${a.baseName}」这一区，以它的${label}角起铺：`
+                      : `以「${a.baseName}」的${label}角起铺：`;
 
-  const parts = [];
-  if (c.x.at === "corner") parts.push(clause(c.x, nearX, farX));
-  if (c.y.at === "corner") parts.push(clause(c.y, nearY, farY));
-  if (parts.length === 2) {
-    txt.textContent = `${head}${parts[0]}，${parts[1]}。`;
-  } else if (parts.length === 1) {
-    const xOk = c.x.at === "corner";
-    txt.textContent = `${head}${parts[0]}。${xOk ? "上下" : "左右"}这一向改回居中对称` +
-                      `（${(xOk ? c.y : c.x).why}）。`;
-  } else {
+    /* 整网偏移是在相位定完之后加的，会把起铺角那面墙的整砖一起带走。
+     * 这**不是**"退回居中"——相位还是起铺角那一份，是师傅手动把整张网挪了。
+     * 所以不能复用下面那句"改回居中对称"：那会把师傅的手动偏移说成引擎的自动决定，
+     * 而且照着"左墙贴的是整砖"讲，图上明明错开一截。 */
+    const nudged = [c.x, c.y].filter((r) => r.at === "nudge");
+    if (nudged.length) {
+      const which = (nudged.length === 2) ? "左右、上下两向"
+                  : (c.x.at === "nudge" ? "左右这一向" : "上下这一向");
+      return head + `整网挪过之后，${which}的起铺角就不作数了` +
+        `（${nudged.map((r) => r.why).join("，")}）——画面上看到的格线是挪过的。` +
+        ((c.x.at === "corner" || c.y.at === "corner") ? "另一向还按起铺角贴着整砖。" : "") +
+        "想用起铺角，把「整网偏移」清成 0。";
+    }
+
+    const parts = [];
+    if (c.x.at === "corner") parts.push(clause(c.x, nearX, farX));
+    if (c.y.at === "corner") parts.push(clause(c.y, nearY, farY));
+    if (parts.length === 2) return `${head}${parts[0]}，${parts[1]}。`;
+    if (parts.length === 1) {
+      const xOk = c.x.at === "corner";
+      return `${head}${parts[0]}。${xOk ? "上下" : "左右"}这一向改回居中对称` +
+             `（${(xOk ? c.y : c.x).why}）。`;
+    }
     // 一个角都没用上——此时 head 里的"以某角起铺"是句假话，不能再说
-    txt.textContent = `这个角用不上——左右、上下两个方向的对面墙都只剩太窄的零头，` +
-                      `已自动改回居中对称。换个角试试。`;
+    return many
+      ? `「${a.baseName}」这一区：这个角用不上——左右、上下两个方向的对面墙都只剩太窄的零头，已改回居中对称。`
+      : `这个角用不上——左右、上下两个方向的对面墙都只剩太窄的零头，` +
+        `已自动改回居中对称。换个角试试。`;
+  };
+
+  const lines = many
+    ? [`全屋 ${areas.length} 个区，各排各的网（过门石，以及墙上没开门洞的地方，就断开）：`]
+    : [];
+  for (const a of areas) { const t2 = bodyOf(a); if (t2) lines.push(many ? "· " + t2 : t2); }
+
+  /* 被 1/3 规矩挡下来的那几轴，按钮就摆在旁边（在 #cornerHint 这一行里）。
+   * 两个显示条件：**现在正挡着**（canKeep），或者**开关本来就开着**——
+   * 后者必须显出来，否则她把角换成能排下的角之后按钮消失，就再没有地方把它关回去了。 */
+  const axisSome = (f) => areas.some((a) => a.corner &&
+    [a.corner.x, a.corner.y].some((r) => r && f(r)));
+  const canKeep = axisSome((r) => r.canKeep);   // 正被 1/3 规矩挡着（按钮点了才有效）
+  const active  = axisSome((r) => r.forced);    // 挡着了、也已经按过按钮（force 正起作用）
+  const onForce = !!s.cornerForce;
+  if (btn) {
+    btn.hidden = !(canKeep || onForce);
+    btn.classList.toggle("on", onForce);
+    btn.textContent = onForce ? "已保留 · 改回自动" : "仍然从这个角起铺";
   }
+  // 开关开着、眼下既没挡着也没在起作用：说一句，免得她以为它还在跟规矩较劲
+  if (onForce && !canKeep && !active) lines.push("（眼下没有哪一向被 1/3 规矩挡着，这个开关可以先关掉。）");
+  txt.textContent = lines.join("\n");
 }
 
 /* 「标注尺寸」的开关：裁砖尺寸线 + 门洞标签（「通铺 900」/「过门石 900」）
@@ -2280,12 +2376,28 @@ function setShowNames(v){
   $("#baseRoom").addEventListener("change", (e) => { state.settings.baseRoom = e.target.value; save(); update(); });
   $("#nudgeX").addEventListener("input", (e) => { state.settings.nudgeX = parseMM(e.target.value) || 0; save(); update(); });
   $("#nudgeY").addEventListener("input", (e) => { state.settings.nudgeY = parseMM(e.target.value) || 0; save(); update(); });
-  // 「换一个」= 回到居中对称那一版。欢欢的原话是"总计就2版"，所以按钮就是在这两版之间切，
-  // 不另开一个"忽略起铺角"的开关——那会变成第三版。
+  // 「换一个」= 回到居中对称那一版。欢欢的原话是"总计就2版"，所以按钮就是在这两版之间切。
   // 切回来走 update() 就够：baseModeSeg 上那颗 .on 由 renderSettings 重画，
   // 而角选择行/小字的显隐归 syncCorner 管（在 update 里），不用重建整个面板。
+  //
+  // ★ 这里原来还有一句"不另开一个『忽略起铺角』的开关——那会变成第三版"，**作废了**。
+  //   它不是"第三种排法"：起铺角该不该被 1/3 规矩否掉，是**同一版排法里的一次取舍**，
+  //   否掉之后用户就只剩"换一个角"可点，而她可能四个角都想要这一个（房间尺寸是量出来的，
+  //   不是她能改的）。所以新增 `#cornerForce` 只是把引擎已经算好、却被丢掉的
+  //   far/canKeep 交还给界面（引擎那边一个字节都没改）。规范要守，但选择权还给她——
+  //   这正是 cornerAxis 里那句 `if (force)` 存在的理由。
+  //   它改的是 settings.cornerForce，**不动 baseMode**：所以这两个按钮互不干扰，
+  //   按「换一个」回到居中对称时 cornerForce 原样留着（回到起铺角时按钮会显示"已保留"，
+  //   一眼看得见、一下点得回来，不做暗中复位那种事）。
   $("#cornerSwap").addEventListener("click", () => {
     state.settings.baseMode = "center"; save(); renderSettings(); update();
+  });
+  /* 「仍然从这个角起铺」= 1/3 规矩别拦了，就按起铺角排，对面那条窄边条她自己认。
+   * 只 save + update，**不 renderSettings()**：这个按钮不在设置面板的构建范围里
+   * （它是 #cornerHint 里的一颗 .hint-btn，由 syncCorner 每次 update 自己刷新），
+   * 重建面板既没必要、又会让刚点过的按钮被换掉。 */
+  $("#cornerForce").addEventListener("click", () => {
+    state.settings.cornerForce = !state.settings.cornerForce; save(); update();
   });
   $("#nudgeX").value = state.settings.nudgeX || ""; $("#nudgeY").value = state.settings.nudgeY || "";
   /* 靠墙缝：清空 → 删掉字段，引擎 numOr 兜回默认 5mm（不是「不留缝」——

@@ -1015,6 +1015,179 @@ test("起铺角 · 不碰老路径：没传 opt、或 mode 不是 corner 时结�
 });
 
 /* ==========================================================================
+ * 起铺角被 1/3 规矩挡下来时：把「为什么」和「能不能坚持」交还给界面（2026-10-03）
+ *
+ * 起因是欢欢的 bug 报告原话：
+ *   「关于起铺方式你在核对一下，选起铺角时选择客厅，可实际跟着变换起铺位置的是两个厕所」
+ *
+ * 查下来是三件事叠在一起，**界面在骗人，不是引擎排错了**。这是其中的第一件：
+ * cornerAxis 撞上 1/3 规矩时直接 return center()，把 far/farCut 一起丢成 null——
+ * 于是「我算出来了、我按规矩否了你」这件事在界面上一个字都剩不下，用户只能看到
+ * 「我按了起铺角，它一动不动」。四个角里她想要的那个角排不下时，她无路可走。
+ *
+ * 现在那两轴各多带一个字段：
+ *   canKeep:true —— 被 1/3 规矩退回居中，但这个角本来排得下（界面据此给按钮）；
+ *   forced:true  —— force 开着，这一轴是硬留下来的（那条窄边条用户自己要的）。
+ *
+ * 四条承重的线，缺一条这个改动就是错的：
+ *   ① 不传 force 与 force:false **逐位相同**（老存档、老调用一个字都不能动）；
+ *   ② force 只改「本来会被挡下」的那一轴，别的轴一格都不许挪；
+ *   ③ force 吃不掉 10mm 那条线——真·细碎零头（< 10mm）压根不进那一支，
+ *      这是刻意的（现场用一块砖的厚度就能糊过去），force 不许把它变成 3mm；
+ *   ④ canKeep 只在真被挡时出现，不许变成常驻字段。
+ * ==========================================================================*/
+
+/* 被 1/3 规矩当下挡下 ⟺ 「对面那条是裁砖、真宽 ≥ 10mm、又不足 1/3 砖」。
+ * 三个条件缺一不可，且 SLIVER 与 T3 都取自文件里那两个常量（不是这里另抄的数）。 */
+const blockedNow = (r) => r.farCut === true && r.far >= SLIVER - 1e-9 && r.far < T3 - 1e-9;
+
+test("起铺角退回居中 · 被挡下的那根轴，把「为什么」和「能不能坚持」一并交出来", () => {
+  const c = cornerRoom(4950, 2950, "tl").areas[0].corner.x;
+  check("4950 宽：x 轴被 1/3 规矩退回居中", c.at === "center", JSON.stringify(c));
+  check("但对面墙那块零头的数**留着**（老写法在这里丢成 null）",
+        c.farCut === true && near(c.far, 128), `far=${c.far} farCut=${c.farCut}`);
+  check("理由里带着那个数，界面能原样念出来", /128mm/.test(String(c.why)), String(c.why));
+  check("并且明确告诉界面「这个角本来就排得下」——按钮才敢出现",
+        c.canKeep === true, String(c.canKeep));
+});
+
+test("起铺角退回居中 · 按了「仍然从这个角起铺」之后，真的按起铺角排了", () => {
+  const p = cornerRoom(4950, 2950, "tl", { cornerForce:true });
+  const c = p.areas[0].corner.x, segs = p.rooms[0].gx.segments;
+  check("x 轴回到 corner，并打上 forced（界面据此说「是你要的」）",
+        c.at === "corner" && c.forced === true, JSON.stringify(c));
+  check("角上那块确实是整砖 800，没被居中那一版折中掉",
+        segs[0].width === TILE && !segs[0].cut,
+        segs.map((q) => Math.round(q.width) + (q.cut ? "*" : "")).join("+"));
+  /* 代价摆在明面上：这正是 1/3 规矩先前拦它的理由，force 之后它必须真的出现。 */
+  check("代价摆在明面上：对面墙那条 128mm 窄边条是真的",
+        near(segs[segs.length - 1].width, 128) && segs[segs.length - 1].cut,
+        segs.map((q) => Math.round(q.width) + (q.cut ? "*" : "")).join("+"));
+  /* force 是「我认了」，不是「别管了」——警告照报，人还得现场定夺。 */
+  check("1/3 警告照报——force 是「我认了」，不是「别管了」",
+        (p.rooms[0].warn || []).some((w) => /不足 1\/3/.test(w)),
+        JSON.stringify(p.rooms[0].warn));
+  const q = cornerRoom(4950, 2950, "tl").areas[0].corner.x;
+  check("没按按钮时依然退回居中（force 是 opt-in，不能自说自话）",
+        q.at === "center" && !q.forced, JSON.stringify(q));
+});
+
+test("起铺角退回居中 · force 只动被 1/3 挡下的那根轴，其余逐位不变", () => {
+  let bad = [], blocked = 0;
+  for (let L = 1500; L <= 6000; L++) {
+    const a = cornerRoom(L, L, "tl").areas[0].corner;
+    const b = cornerRoom(L, L, "tl", { cornerForce:true }).areas[0].corner;
+    for (const ax of ["x", "y"]) {
+      if (blockedNow(a[ax])) {
+        blocked++;
+        if (b[ax].at !== "corner" || b[ax].forced !== true)
+          bad.push(`净长 ${L} 的 ${ax} 轴被挡下了，force 却没把它放行：${JSON.stringify(b[ax])}`);
+      } else if (JSON.stringify(a[ax]) !== JSON.stringify(b[ax])) {
+        /* 反向的错更阴：本来没被挡的轴被 force 顺手改了，图上会凭空错一格 */
+        bad.push(`净长 ${L} 的 ${ax} 轴本来没被挡，force 却把它改了：` +
+                 `${JSON.stringify(a[ax])} → ${JSON.stringify(b[ax])}`);
+      }
+    }
+  }
+  check("1500–6000 逐毫米扫：force 只放行被挡的轴，其余一根都不动",
+        bad.length === 0, bad.slice(0, 4).join(" | "));
+  check("这一扫里真的出现过被挡的轴（不是空转，否则上面那条是假绿）",
+        blocked > 0, String(blocked));
+});
+
+test("起铺角退回居中 · force 吃不掉 10mm 那条线，也不放大细碎零头", () => {
+  /* 1619：对面墙真零头 5mm。它**根本不进** 1/3 那一支——引擎的判断是
+   * 「窄到这个程度的边条当没有」（CUT_IGNORE_MM 的注释：现场用一块砖的厚度就糊过去了），
+   * 所以是**留角**、不是退回。force 在这儿既没用、也不该有用。 */
+  const a = cornerRoom(1619, 1619, "tl").areas[0].corner.x;
+  const b = cornerRoom(1619, 1619, "tl", { cornerForce:true }).areas[0].corner.x;
+  check("1619：5mm 零头不进那一支，照旧留角", a.at === "corner" && near(a.far, 5), JSON.stringify(a));
+  check("它也没有 canKeep（按钮在它身上不该出现）", !a.canKeep, String(a.canKeep));
+  check("force 开着时结果逐位相同——force 不是「把窄边条变出来」的开关",
+        JSON.stringify(a) === JSON.stringify(b), JSON.stringify(b));
+  /* 边界另一侧：1624 的 10mm 正好到线，该退；force 之后真零头还是 10mm，一分没少。 */
+  const c = cornerRoom(1624, 1624, "tl").areas[0].corner.x;
+  const d = cornerRoom(1624, 1624, "tl", { cornerForce:true }).areas[0].corner.x;
+  check("1624：正好 10mm 到线，退回居中且 canKeep",
+        c.at === "center" && c.canKeep === true, JSON.stringify(c));
+  check("force 之后零头仍是 10mm，没被悄悄吃掉",
+        d.at === "corner" && near(d.far, 10) && d.forced === true, JSON.stringify(d));
+});
+
+test("起铺角退回居中 · canKeep 只在真被 1/3 挡下时出现", () => {
+  let bad = [], blocked = 0, seen = 0;
+  for (let L = 1500; L <= 6000; L += 7) {
+    for (const wh of [[L, L], [L, 2000], [2000, L]]) {
+      const c = cornerRoom(wh[0], wh[1], "tl").areas[0].corner;
+      for (const ax of ["x", "y"]) {
+        const r = c[ax]; seen++;
+        if (blockedNow(r)) blocked++;
+        if (!!r.canKeep !== blockedNow(r))
+          bad.push(`${wh[0]}×${wh[1]} 的 ${ax} 轴：canKeep=${r.canKeep}，实际被挡=${blockedNow(r)}`);
+        /* 退回居中只可能来自那一支；别的原因（尺寸无效、排不下）不该被说成「被 1/3 挡了」 */
+        if ((r.at === "center") !== blockedNow(r))
+          bad.push(`${wh[0]}×${wh[1]} 的 ${ax} 轴：at=${r.at}，实际被挡=${blockedNow(r)}`);
+      }
+    }
+  }
+  check("1500–6000（步长 7）× 三种长宽比：canKeep ⟺ 真被 1/3 挡下，一个反例都没有",
+        bad.length === 0, bad.slice(0, 4).join(" | "));
+  check("这一扫两种情形都真的出现过（防假绿）",
+        blocked > 0 && blocked < seen, `被挡 ${blocked} / 共 ${seen}`);
+});
+
+test("起铺角退回居中 · force 传进 center/edge 模式时不冒泡", () => {
+  let bad = [];
+  for (let L = 1500; L <= 6000; L += 137) {
+    const one = [{ id:"a", name:"基准", x:0, y:0, w:L, h:L }];
+    for (const mode of ["center", "edge"]) {
+      const a = E.basePhase(one, "a", { x:TILE, y:TILE }, GRT, mode, { x:0, y:0 },
+                            { corner:"tl", gap:GAPMM, sliver:SLIVER });
+      const b = E.basePhase(one, "a", { x:TILE, y:TILE }, GRT, mode, { x:0, y:0 },
+                            { corner:"tl", gap:GAPMM, sliver:SLIVER, force:true });
+      if (a.GX !== b.GX || a.GY !== b.GY || a.corner !== null || b.corner !== null)
+        bad.push(`${mode} ${L}: ${a.GX}/${a.GY} vs ${b.GX}/${b.GY}`);
+    }
+  }
+  check("center / edge 模式下，force 改不动任何东西、也不冒出一个角",
+        bad.length === 0, bad.slice(0, 4).join(" | "));
+});
+
+test("起铺角退回居中 · 不传 force 与 force:false 逐位同解（老存档一个字节没动）", () => {
+  let bad = [];
+  for (let L = 1500; L <= 6000; L += 7) {
+    for (const c of ["tl", "tr", "bl", "br"]) {
+      const a = cornerRoom(L, L + 317, c).areas[0].corner;
+      const b = cornerRoom(L, L + 317, c, { cornerForce:false }).areas[0].corner;
+      if (JSON.stringify(a) !== JSON.stringify(b)) bad.push(`${c} ${L}`);
+    }
+  }
+  check("1500–6000（步长 7）× 四个角：不传 force ≡ force:false",
+        bad.length === 0, bad.slice(0, 4).join(", "));
+  /* 老存档里没有 cornerForce 这个字段 → undefined → falsy → 关。这就是不用做数据迁移的理由。 */
+  const old = cornerRoom(4950, 2950, "tl");
+  check("老存档（没有 cornerForce 字段）走的就是「关」这一支",
+        old.areas[0].corner.x.at === "center" && old.areas[0].corner.x.canKeep === true,
+        JSON.stringify(old.areas[0].corner.x));
+});
+
+test("起铺角退回居中 · 端到端：settings.cornerForce 真的走到了每个区的引擎调用处", () => {
+  /* 纯函数层的测试证明不了接线——上面那几条都直接调 basePhase，
+   * 就算 housePlan 忘了把 force 传下去，它们照样全绿。这条走完整路径。 */
+  const a = cornerRoom(4950, 2950, "tl"), b = cornerRoom(4950, 2950, "tl", { cornerForce:true });
+  const sa = a.rooms[0].gx.segments, sb = b.rooms[0].gx.segments;
+  const draw = (segs) => segs.map((q) => Math.round(q.width) + (q.cut ? "*" : "")).join("+");
+  check("不按按钮：居中对称那一版，两头各一条 464mm 的裁砖",
+        draw(sa) === "464*+800+800+800+800+800+464*", draw(sa));
+  check("按了按钮：角上是整砖，代价全甩到对面那一头的一条 128mm",
+        draw(sb) === "800+800+800+800+800+800+128*", draw(sb));
+  /* 补的这条最要紧：housePlan 里那句 `force:!!s.cornerForce` 一旦写漏，
+   * 上面两条会双双退回同一个字符串，测试必须当场红。 */
+  check("两种设置真的排出了不同的结果（同一份夹具，差别只来自那个开关）",
+        draw(sa) !== draw(sb), `${draw(sa)}  vs  ${draw(sb)}`);
+});
+
+/* ==========================================================================
  * 每间房自己的地砖规格（2026-09-28）
  *
  * 需求原话：「卫生间的地砖尺寸与房间的地砖尺寸是不同的，需要一个选择尺寸的地方。
