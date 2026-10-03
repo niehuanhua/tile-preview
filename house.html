@@ -150,9 +150,11 @@ button{cursor:pointer; touch-action:manipulation}
 
 .app-foot{margin-top:18px; text-align:center; font-size:12px; color:var(--ink-soft)}
 /* ---- 本项目新增（复用不了的几处）---- */
-/* 图只看不摸：不加 touch-action:none，手指在图上来回划照样能滚页面 */
+/* 图上能点的只有房间（点一下只看那间的尺寸，点空白回全屋），但**仍然不加
+   touch-action:none**：手指在图上来回划照样能滚页面，"点"和"划"的区分交给 click 事件
+   （浏览器不给滑动合成 click）。这条是手机上的硬规矩——不能为了点一下把滚动弄没了。 */
 .plan-plot{margin-top:10px}
-.plan-plot canvas{display:block; width:100%; border:1px solid var(--line); border-radius:10px; background:var(--joint)}
+.plan-plot canvas{display:block; width:100%; border:1px solid var(--line); border-radius:10px; background:var(--joint); cursor:pointer}
 .room-row{display:flex; flex-direction:column; gap:8px; border:1px solid var(--line); border-radius:8px; padding:8px; margin-top:8px}
 .room-top{display:flex; align-items:center; gap:8px}
 .room-tag{flex:none; font-size:12px; color:var(--ink-soft); font-weight:700}
@@ -294,11 +296,15 @@ select{min-height:40px; padding:7px 8px; border:1px solid var(--line); border-ra
         <canvas id="housePlan"></canvas>
         <p class="plot-empty" id="planEmpty">先把地砖规格和房间尺寸填好</p>
       </div>
+      <!-- 只看一间房的提示行。**必须在画布下面**：它点一下出现、再点一下消失，
+           放上面的话一出现就把画布往下顶，"再点一下这间房"就点到别处去了。
+           文字和显隐都归 syncFocusUI 管，这里写的只是它第一次 update() 之前的初始样子。 -->
+      <p class="set-hint" id="planFocus" hidden><span id="planFocusText"></span><button class="hint-btn" id="planFocusAll" type="button">看全屋</button></p>
       <div class="plan-legend">浅色缝＝砖缝（同一个区内是连通的）ㆍ白框＝墙（房间之间的空档，<b>墙就是隔断</b>：要连通就在这道墙上开个门洞）ㆍ红实线＝过门石门口（这里断开，两边各排各的）ㆍ<b>没有框</b>＝通铺门口（缝穿过去，地面连着走，所以不画框——红框＝过门石、没框＝通铺，一眼分得清）<br>
         靠墙那一圈砖会自动裁窄 <b id="legendGap">5</b>mm（墙不一定直、砖不一定方，靠墙得留一道缝），在上面「靠墙缝」那个框里改；两间房贴死（中间没墙）的那条边不留。<br>
-        开了「标注尺寸」：<b>红线搭在哪一段砖上，旁边的数字就是那一段的尺寸</b>——数字在上边或下边＝那块砖的宽，在左边或右边＝它的高；四个角各站一个，不会挤在一起。<br>
+        开了「标注尺寸」：<b>红线搭在哪一段砖上，旁边的数字就是那一段的尺寸</b>——数字在上边或下边＝那块砖的宽，在左边或右边＝它的高；四个角各站一个，不会挤在一起。全屋一起标太密，<b>点图上一间房，就只看那间的尺寸</b>（被点中的那间会描一圈蓝边）；再点它一下、或点图上没房间的地方，回到全屋。靠墙那圈比 10mm 还窄的边条不标——那不是要下的料。<br>
         图上<b>默认一个字的字都没有</b>，就为了能安安静静看铺贴效果；要认哪间是哪间，点上面的<b>「房间名」</b>。<br>
-        这张图只作看图用。<b>要挪房间，去下面「房间」卡片里改「离原点左 / 离原点上」的数字</b>，改完图上立刻跟着变。</div>
+        <b>图上能点的只有房间</b>（点一下只看那间的尺寸，再点一下回到全屋）；<b>要挪房间，去下面「房间」卡片里改「离原点左 / 离原点上」的数字</b>，改完图上立刻跟着变。</div>
       <div class="statuses" id="statuses"></div>
     </section>
 
@@ -1162,7 +1168,7 @@ const Engine = (() => {
 
   return { numOr, mod, roomRect, roomName, roomsBBox, rectOverlapArea, basePhase,
            latticeSegments, toLocal, wallBetween, isFlush, areasOf, doorRect,
-           specOf, tileZones, housePlan };
+           specOf, tileZones, housePlan, CUT_IGNORE_MM };
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = Engine;
 /*ENGINE-END*/
@@ -1240,9 +1246,15 @@ function paintCuts(ctx, xe, ye, s, W, H, map, opts){
   //    这个条件**永远为假**：左右两条宽标全掉到下边，两个数字叠在同一个角，
   //    谁量的是左边那条、谁量的是右边那条，就彻底分不清了。
   //    改按段的下标判：第一段贴低边、最后一段贴高边（latticeSegments 按 start 升序）。
+  // 窄边条不标：靠墙那圈 5mm 缝（引擎 sideGaps）也是一段「裁砖」，但它从来不是
+  // 要下的料，标出来只是给每个房间多加两条没意义的数字。
+  // 状态栏早就是这么办的（用 CUT_IGNORE_MM 判要不要报警），画布这边一直没跟上，
+  // 于是同一条 5mm 缝「状态栏当它不存在、图上却给它标个 5」。
+  // 现在共用同一个阈值——一条线连标签一起不画（marks 是一行一标签的整体）。
+  const MINCUT = Engine.CUT_IGNORE_MM;
   const hSegs = xe.segments, hLast = hSegs.length - 1;
   hSegs.forEach((xs, i) => {
-    if (!xs.cut) return;
+    if (!xs.cut || xs.width < MINCUT) return;
     const x0 = xs.start * s, x1 = (xs.start + xs.width) * s;
     const top = i * 2 <= hLast;                        // 落在靠低边那一半 → 走上边
     const cy = top ? pad : H - pad;                    // 左缘→顶；右缘→底
@@ -1253,7 +1265,7 @@ function paintCuts(ctx, xe, ye, s, W, H, map, opts){
   if (!skipHeight){
     const vSegs = ye.segments, vLast = vSegs.length - 1;
     vSegs.forEach((ys, i) => {
-      if (!ys.cut) return;
+      if (!ys.cut || ys.width < MINCUT) return;
       const y0 = ys.start * s, y1 = (ys.start + ys.width) * s;
       const left = i * 2 <= vLast;                     // 落在靠上边那一半 → 走左边
       const cx = left ? pad : W - pad;
@@ -1920,6 +1932,7 @@ function drawJoints(ctx, ax, ay, s, W, H, groutPx, skipEdges){
 function drawPlan(plan){
   const cv = $("#housePlan"), empty = $("#planEmpty");
   if (!plan.ok || !plan.rooms.length) {
+    plan.geo = null;                     // 图没画出来，换算表也就没有
     cv.style.display = "none"; empty.style.display = "block";
     empty.textContent = plan.errors[0] || "先把地砖规格和房间尺寸填好";
     return;
@@ -1940,6 +1953,16 @@ function drawPlan(plan){
   ctx.fillRect(0, 0, cssW, cssH);
   const OX = (pad - bb.x) * s, OY = (pad - bb.y) * s;  // 全局 mm → 画布 px
 
+  /* 把这张换算表**发出去**，给"点图上那间房"用（见下面的 roomAt）。
+   * ★ 为什么不让人家自己按上面那几行再算一遍：bb/pad/maxW/maxH/s/cssW/cssH/OX/OY
+   *   全是这里的局部变量，画完就扔；在别处重算＝同一份几何摆两处，改一处漏一处
+   *   （这个文件里好几段注释骂的就是这种"两处漂"）。
+   *   发出去的只是**刚刚算出来的数**，不是"再算一遍"，所以以后这里怎么改都对。
+   *   （`setupCanvas` 看着像是存这些的地方，但它是死代码 —— 全文件没人调用它。）
+   * ★ 存进 plan 对象而不是另开一个全局变量：plan 就是这一帧的完整快照，
+   *   跟 settingsShowCuts / settingsShowNames 一个路子，重画到哪一帧就是哪一帧的数。 */
+  plan.geo = { s, ox: OX, oy: OY, cssW, cssH };
+
   const chips = [];
   // 每间房：按**同一张网**铺砖（这是"通铺"的关键，缝在门口自然连成一条线）
   plan.rooms.forEach((rm) => {
@@ -1951,10 +1974,19 @@ function drawPlan(plan){
     drawJoints(ctx, rm.ax, rm.ay, s, W, H, plan.tile.grout * s);
     ctx.strokeStyle = cssVar("--ink-soft"); ctx.lineWidth = 1;
     ctx.strokeRect(0.5, 0.5, Math.max(0, W - 1), Math.max(0, H - 1));
+    /* 被点中的那间描一圈强调色。★ 这一圈不是装饰，是**回执**：
+     * 选中的那间要是全整砖、一个裁砖数字都没有，光"字变少了"看着就像点了没反应。
+     * 画在 translate 之内、save/restore 之内，所以用的是房间内坐标，跟上面那圈同一个框，
+     * 往里收 1px 免得压住外圈灰线（半径各缩 1，宽高各缩 2）。 */
+    if (plan.focusRoom === rm.id) {
+      ctx.strokeStyle = cssVar("--accent"); ctx.lineWidth = 2;
+      ctx.strokeRect(1, 1, Math.max(0, W - 2), Math.max(0, H - 2));
+    }
     // 尺寸线就地画（此刻画布已平移到本房间左上角，坐标是"房间内"的，所以线是对的）；
     // 但数字要交给 chipRow 在**全局**画布上统一排开，得先把房间内坐标换算回画布坐标，
     // 否则每间房的数字都会少加一次自己的偏移，飘到左上角的别的房间上去。
-    if (plan.settingsShowCuts)
+    // 「点了一间房就只看那间」只作用在这里：别的房间这段本来就不画。
+    if (plan.settingsShowCuts && (!plan.focusRoom || plan.focusRoom === rm.id))
       paintCuts(ctx, rm.ax, rm.ay, s, W, H, (x, y) => ({ x: TX + x, y: TY + y }), { sink: chips });
     ctx.restore();
     /* 房间名（放在房间左上角内侧）。★ 2026-10-01 起**默认不画**——
@@ -2006,8 +2038,12 @@ function drawPlan(plan){
      * ——框和小字本来就该成对（框是给小字当靶子的）。原来是小字收起来、
      * 框还留着，那才是别扭的那一半，这次一并理顺。
      * 过门石的红框照画：那是个真东西，砖就在那儿断开，框标的是它。
-     * 门口开在哪没丢——**红框＝过门石，没有红框＝通铺**，一眼分得清。 */
-    if (d.threshold || plan.settingsShowCuts) {
+     * 门口开在哪没丢——**红框＝过门石，没有红框＝通铺**，一眼分得清。
+     * ★ 「只看一间」时通铺框跟着小字一起走（见下面那把门禁）：只滤字、留下一地图
+     *   蓝虚线框，等于换一种乱法，跟上面"框和小字成对"是同一条道理。
+     *   过门石的红框不受影响——它标的是砖断在哪儿，跟标注尺寸无关。 */
+    if (d.threshold ||
+        (plan.settingsShowCuts && (!plan.focusRoom || d.from === plan.focusRoom || d.to === plan.focusRoom))) {
       ctx.save();
       ctx.strokeStyle = d.threshold ? cssVar("--danger") : cssVar("--accent");
       ctx.lineWidth = 1.6;
@@ -2018,7 +2054,10 @@ function drawPlan(plan){
     // 「通铺 900 / 过门石 900」这行小字跟着「标注尺寸」按钮一起收起来——它和裁砖
     // 尺寸是同一类东西：图上多出来的小字。通铺那个蓝虚线框跟它同一个开关，
     // 只有过门石的红框是常驻的（见上）。洞宽也不会丢，下面「门洞」卡片里都写着。
-    if (plan.settingsShowCuts)
+    // ★ 「只看一间」时：门是**两间房共有**的，被点中的那间无论站在门的哪一头，
+    //   这道门的标签都该留着——不然卧室的门口会莫名其妙不标了。
+    if (plan.settingsShowCuts &&
+        (!plan.focusRoom || d.from === plan.focusRoom || d.to === plan.focusRoom))
       chips.push({ ghost:false, txt:(d.threshold ? "过门石 " : "通铺 ") + `${Math.round(d.width)}`,
                    color:d.threshold ? cssVar("--danger") : cssVar("--accent"),
                    ax:x + w / 2, ay:y + h / 2 });
@@ -2157,11 +2196,26 @@ function renderRoomDetails(plan){
 
 /* ---------------- 主流程 ---------------- */
 let planCache = null;
+/* 现在只看哪一间房的尺寸（null＝全屋）。**瞬态**：不进存档、不占 localStorage，
+ * 跟上面 openTileRoom 一个道理。
+ *
+ * 为什么故意不记住：它是个"看图的镜头"，引擎一个字段都不消费它。要是记住了，
+ * 下次打开页面看到的是一张"字少了"的图，原因还在屏幕外——最容易被理解成
+ * 「这工具把我的数字弄丢了」。重开＝安安静静看全屋，是安全、可解释的默认；
+ * 要过滤再点一下就是了。
+ * 存进存档的是「工具栏上的设置」（showCuts / showNames），这个是「图上的一个手势」。 */
+let focusRoom = null;
 function recompute(){
   planCache = Engine.housePlan(state);
   planCache.settingsShowCuts = !!state.settings.showCuts;
   // 老存档里没有 showNames 这个字段 → undefined → false → 不画，正是想要的默认
   planCache.settingsShowNames = !!state.settings.showNames;
+  /* 归一化：房间被删了、尺寸被清空了、整份 state 被换掉了，全都自愈回全屋。
+   * plan.rooms 就是引擎真正画出来的那张表（没有合法矩形的房间在引擎里已经滤掉），
+   * 所以"被选中的那间"按构造一定存在于图上——不用再去删房间那条路上补一句。
+   * 注意这是**唯一**需要防陈旧 id 的地方；别处（比如删除房间）不用管。 */
+  planCache.focusRoom = (focusRoom && planCache.rooms.some((r) => r.id === focusRoom))
+    ? focusRoom : null;
   return planCache;
 }
 function update(){
@@ -2172,6 +2226,7 @@ function update(){
   renderRoomDetails(plan);
   renderRoomTiles(plan);
   syncAreaHint(plan);
+  syncFocusUI(plan);
   // 起铺角那两行（角选择行 + 小字）跟着**引擎算出来的结果**走，不是跟着设置走：
   // "选了起铺角但自动退回了居中"这种状态，只有 plan 里才有。
   syncCorner();
@@ -2194,6 +2249,65 @@ function syncAreaHint(plan){
       `${i + 1}「${a.baseName}」${a.rooms.map(nm).join("、")}`).join("； ");
     h.textContent = `墙和过门石把全屋分成了 ${plan.areas.length} 个区，各排各的网——` +
       `${zones}。下拉框里选的这间只管它自己那个区，其余区各以区内最大的房间为准。`;
+  }
+}
+
+/* ---------------- 只看一间房的尺寸 ---------------- */
+
+/* 点在这个视口坐标上的是哪一间房（返回 plan.rooms 里那一条；没点中房间 = null）。
+ *
+ * 换算分三步，一步都不能省：
+ *   ① dpr **不出场**。drawPlan 里那句 ctx.setTransform(dpr,0,0,dpr,0,0) 把绘图坐标
+ *      定在 CSS px 上，backing store（cssW*dpr）是浏览器自己拉伸进内容盒的，
+ *      dpr 上下抵消。写进来手机上整体偏 2～3 倍——症状是"右半边、下半边点哪儿都不中"。
+ *   ② clientLeft / clientWidth 要参与。画布有 1px 边框，而这文件是 box-sizing:border-box，
+ *      所以 cv.style.width 定的是**边框盒**，真正画东西的内容盒只有 cssW-2 宽、右移 1px。
+ *      这一项只有 0.56%（约 2px ≈ 54mm），肉眼看不出来；留着是为了将来：
+ *      哪天有人去掉那行内联宽度、或给画布加个 transform，只有这个比值能救回命中率。
+ *   ③ ox / oy 必须减。忘了就等于把整张图挪 220mm，**不管点哪儿都选中同一间大房间**。
+ *
+ * 不加"手指外扩"：这个比例下 240mm 的墙缝只有约 9px 宽，一外扩就被吃掉，
+ * 而"点图上没房间的地方＝回全屋"正是靠点得中墙缝和四周留白才成立的。
+ * 两间房共边的那一像素归 plan.rooms 里靠前的那间（确定，不用猜）。 */
+function roomAt(plan, clientX, clientY){
+  const g = plan && plan.geo, cv = $("#housePlan");
+  if (!g || !cv) return null;
+  const r = cv.getBoundingClientRect();
+  const kx = g.cssW / Math.max(1, cv.clientWidth);
+  const ky = g.cssH / Math.max(1, cv.clientHeight);
+  const xmm = ((clientX - r.left - cv.clientLeft) * kx - g.ox) / g.s;
+  const ymm = ((clientY - r.top  - cv.clientTop ) * ky - g.oy) / g.s;
+  for (const rm of (plan.rooms || [])) {
+    const R = rm.rect;
+    if (xmm >= R.x && xmm <= R.x + R.w && ymm >= R.y && ymm <= R.y + R.h) return rm;
+  }
+  return null;
+}
+
+/* 唯一写入口——照 setShowCuts / setShowNames 的样子。
+ * 不进存档，所以这里没有 save()。 */
+function setFocusRoom(id){
+  const next = id || null;
+  if (next === focusRoom) return;   // 空白处乱点、同一间点两下，不白重画一遍
+  focusRoom = next;
+  update();
+}
+
+/* 图下面那行提示。**它必须在画布下面**：这行字点一下就出现、再点一下就消失，
+ * 放在画布上面的话，它一出现就把画布往下顶——她第二下"再点一下这间房"就点到别处去了。
+ * （验收里有一条专门钉死：提示行出现时画布的 getBoundingClientRect().top 一动不动。）
+ * 那颗「看全屋」按钮是不依赖手准的确定出口：手机上"再点一下同一间"有可能点偏。 */
+function syncFocusUI(plan){
+  const h = $("#planFocus");
+  if (!h) return;
+  const rm = (plan.focusRoom && plan.rooms)
+    ? plan.rooms.find((r) => r.id === plan.focusRoom) : null;
+  h.hidden = !rm;
+  if (!rm) return;
+  const t = $("#planFocusText");
+  if (t) {
+    t.textContent = `只看「${rm.name || rm.id}」的尺寸。` +
+      `再点一下这间房，或点图上没房间的地方，回到全屋。`;
   }
 }
 
@@ -2320,6 +2434,10 @@ function syncCutUI(){
 }
 function setShowCuts(v){
   state.settings.showCuts = !!v;
+  // 关掉标注尺寸时把过滤器一并清空：「标注尺寸」关着的时候过滤器没有任何看得见的
+  // 效果，**看不见的状态就是会被忘掉的状态**。顺带保住原来那句话——打开标注尺寸
+  // ＝全屋都标着。不然会出现"关一下再开，图上的字莫名其妙少了一半"。
+  if (!v) focusRoom = null;
   save();
   syncCutUI();
   update();
@@ -2461,6 +2579,10 @@ function setShowNames(v){
     $("#wallGap").value = isFinite(s.settings.wallGap) ? s.settings.wallGap : "";
   };
   const afterStateSwap = () => {
+    // ★ 这一条不是可选的：示例户型的 id 是 r1…r6，照着它建的每一份存档 id 都一样。
+    // 「重置为示例」/「撤回重置」之后，一个陈旧的 focusRoom 会撞上**另一间房**的 id，
+    // 变成"她没点过的那间被隐藏了"。
+    focusRoom = null;
     save();
     syncResetInputs(state);
     renderSettings(); renderRooms(); renderDoors(); update(); syncCutUI(); syncNameUI();
@@ -2501,6 +2623,22 @@ function setShowNames(v){
 
   $("#cutToggle").onclick = () => setShowCuts(!state.settings.showCuts);
   $("#nameToggle").onclick = () => setShowNames(!state.settings.showNames);
+
+  /* 图上的点选。**监听器只挂这一次**——挂进 drawPlan 里的话，每重画一次就叠一个。
+   *
+   * 用 click，不用 pointerdown/pointerup，也绝不加 touch-action:none：
+   * 手指在图上来回划想滚页面时，浏览器**不会**合成 click。要抢拖动就得 preventDefault
+   * （等于把页面滚动弄没）或者自己重写一套"多滑算滑"的判定；用 click 这两件事都不用做，
+   * "点"和"划"的区分由浏览器免费提供——正是那行 CSS 注释要的性质。
+   *
+   * 一次点击的完整语义：点同一间＝取消；点另一间＝换过去；点空白/墙缝/四周留白＝回全屋。 */
+  const planCv = $("#housePlan");
+  if (planCv) planCv.addEventListener("click", (ev) => {
+    const rm = roomAt(planCache, ev.clientX, ev.clientY);
+    setFocusRoom(rm && rm.id === focusRoom ? null : (rm ? rm.id : null));
+  });
+  const focusAllBtn = $("#planFocusAll");
+  if (focusAllBtn) focusAllBtn.onclick = () => setFocusRoom(null);
   // 添加按钮
   $("#addRoom").onclick = () => {
     state.rooms.push({ id:"r" + (state.seq++), name:"房间 " + state.rooms.length, x:null, y:null, w:null, h:null });
