@@ -257,6 +257,10 @@ select{min-height:40px; padding:7px 8px; border:1px solid var(--line); border-ra
              并进去的话，一开尺寸标注，八间房的名字会跟那些数字一起挤进 chipRow
              的避让循环，数字会被推得七零八落，反而看不清量的是哪一段。
              默认关：老存档里根本没有这个字段，读出来是 undefined，也是关——正好。 -->
+        <!-- 房间框：每间房外面那圈灰线。★ 这一颗**默认是亮的**（框就长在上面），
+             跟旁边两颗（默认灭）摆在一起，一眼看得出哪个是开着的。
+             她要的是"能把这圈去掉的按钮"，所以默认维持原样、点了才收起来。 -->
+        <button class="chip" id="borderToggle" aria-pressed="true">房间框</button>
         <button class="chip" id="nameToggle" aria-pressed="false">房间名</button>
         <button class="chip" id="cutToggle" aria-pressed="false">标注尺寸</button>
         <!-- 靠墙缝：瓷砖不能顶着墙贴，靠墙那圈要裁窄几毫米（墙不直、砖不方、还要留伸缩量）。
@@ -1465,6 +1469,12 @@ const defaultState = () => ({
               /* cornerForce：被 1/3 规矩退回居中之后，用户按了"仍然从这个角起铺"。
                * 老存档里没这个字段 → undefined → falsy → 关着，所以不需要写迁移。 */
               cornerForce:false,
+              /* showBorders：图上每间房那圈外框。★ 这是**唯一一个默认开着**的显示开关，
+               * 所以读它的地方写的是 `!== false` 而不是 `!!`——老存档里没这个字段，
+               * 读出来是 undefined；`!!undefined` 是 false，会把所有人的框悄悄关掉。
+               * 她要的是"一个能关掉它的按钮"，不是"一上来就是关的"，两者差着一个默认值。
+               * （showCuts / showNames 正好相反：它俩要的就是默认关，所以那里用 `!!`。） */
+              showBorders:true,
               nudgeX:0, nudgeY:0, showCuts:false, showNames:false, wall:240 },
   seq: 7,                                  // 本页是 seq++ 后自增，所以下一个新房间是 r7
   rooms: [
@@ -1972,8 +1982,15 @@ function drawPlan(plan){
     ctx.translate(TX, TY);
     paintTiles(ctx, rm.ax, rm.ay, s, W, H);
     drawJoints(ctx, rm.ax, rm.ay, s, W, H, plan.tile.grout * s);
-    ctx.strokeStyle = cssVar("--ink-soft"); ctx.lineWidth = 1;
-    ctx.strokeRect(0.5, 0.5, Math.max(0, W - 1), Math.max(0, H - 1));
+    /* 房间外框（每间房那圈灰线）。★ 2026-10-03 起由工具栏那颗「房间框」控制，**默认开着**。
+     * 这一圈是图上唯一一处"既不是砖、也不是尺寸"的线：想安安静静看铺贴效果时，
+     * 它把手边那圈砖切掉一点视觉分量，所以给她一个能关的开关（默认不动，照旧显示）。
+     * ▼ 只关这一圈。下面那圈强调色（focusRoom 的回执）**不跟着关**——
+     *   框关掉之后，点中的那间反而更需要那一圈，否则点了就像没反应。 */
+    if (plan.settingsShowBorders) {
+      ctx.strokeStyle = cssVar("--ink-soft"); ctx.lineWidth = 1;
+      ctx.strokeRect(0.5, 0.5, Math.max(0, W - 1), Math.max(0, H - 1));
+    }
     /* 被点中的那间描一圈强调色。★ 这一圈不是装饰，是**回执**：
      * 选中的那间要是全整砖、一个裁砖数字都没有，光"字变少了"看着就像点了没反应。
      * 画在 translate 之内、save/restore 之内，所以用的是房间内坐标，跟上面那圈同一个框，
@@ -2210,6 +2227,10 @@ function recompute(){
   planCache.settingsShowCuts = !!state.settings.showCuts;
   // 老存档里没有 showNames 这个字段 → undefined → false → 不画，正是想要的默认
   planCache.settingsShowNames = !!state.settings.showNames;
+  /* ★ 房间外框反过来：**默认开着**。所以这里必须写 `!== false` 而不是 `!!`——
+   * 老存档没有这个字段，`!!undefined` 是 false，那会一上来就把所有人的框关掉，
+   * 等于替她做了决定。`undefined !== false` 是 true，没有字段的老存档照旧显示。 */
+  planCache.settingsShowBorders = state.settings.showBorders !== false;
   /* 归一化：房间被删了、尺寸被清空了、整份 state 被换掉了，全都自愈回全屋。
    * plan.rooms 就是引擎真正画出来的那张表（没有合法矩形的房间在引擎里已经滤掉），
    * 所以"被选中的那间"按构造一定存在于图上——不用再去删房间那条路上补一句。
@@ -2468,6 +2489,25 @@ function setShowNames(v){
   update();
 }
 
+/* 房间框。★ 跟上面两颗唯一的区别是**默认开着**，所以判断"现在到底是开是关"
+ * 一律走 `=== false`（＝"被明确关掉过"），不能写 `!state.settings.showBorders`——
+ * 老存档里那个字段是 undefined，`!undefined` 是 true，第一次按下去会变成"开"，
+ * 而框本来就在，看着就是按了没反应；再按一下才关。这一颗按钮要一次就关得上。 */
+function syncBorderUI(){
+  const on = state.settings.showBorders !== false;
+  const btn = $("#borderToggle");
+  if (btn) {
+    btn.classList.toggle("on", on);
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+}
+function setShowBorders(v){
+  state.settings.showBorders = !!v;
+  save();
+  syncBorderUI();
+  update();
+}
+
 /* ---------------- 启动 ---------------- */
 (function init(){
   // 设置面板展开/收起（与卫生间工具同一套交互）
@@ -2585,7 +2625,7 @@ function setShowNames(v){
     focusRoom = null;
     save();
     syncResetInputs(state);
-    renderSettings(); renderRooms(); renderDoors(); update(); syncCutUI(); syncNameUI();
+    renderSettings(); renderRooms(); renderDoors(); update(); syncCutUI(); syncNameUI(); syncBorderUI();
     syncResetUndo();
   };
 
@@ -2623,6 +2663,9 @@ function setShowNames(v){
 
   $("#cutToggle").onclick = () => setShowCuts(!state.settings.showCuts);
   $("#nameToggle").onclick = () => setShowNames(!state.settings.showNames);
+  // 取反用的是 `=== false`（"被明确关过"）而不是 `!字段`：老存档没这个字段时
+  // 框是显示着的，`!undefined` 会让第一次点变成"打开"，看着像按钮坏了。
+  $("#borderToggle").onclick = () => setShowBorders(state.settings.showBorders === false);
 
   /* 图上的点选。**监听器只挂这一次**——挂进 drawPlan 里的话，每重画一次就叠一个。
    *
@@ -2652,8 +2695,9 @@ function setShowNames(v){
   };
 
   renderSettings(); renderRooms(); renderDoors(); update();
-  syncCutUI();   // 上次是开着的话，把按钮的高亮补上（HTML 里默认是关的样子）
-  syncNameUI();  // 同上；默认是关（图上一个字都没有），老存档没这个字段也是关
+  syncCutUI();     // 上次是开着的话，把按钮的高亮补上（HTML 里默认是关的样子）
+  syncNameUI();    // 同上；默认是关（图上一个字都没有），老存档没这个字段也是关
+  syncBorderUI();  // ★ 这一颗反过来：默认是亮的（框照旧画着），她关过才是灭的
 })();
 
 </script>
