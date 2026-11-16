@@ -93,9 +93,9 @@ table.list td:last-child,table.list th:last-child{text-align:right}
 <div class="wrap">
 
 <header>
-  <h1>楼梯踏步排版 <span class="v">v1</span></h1>
+  <h1>楼梯踏步排版 <span class="v">v2</span></h1>
   <p>填现场量到的尺寸 → 出踏板平面图、每列裁宽、每块裁砖尺寸和备料</p>
-  <p class="ver">更新：2026-11-16</p>
+  <p class="ver">更新：2026-11-16（v2：转角改 45° 斜切）</p>
 </header>
 
 <section class="card">
@@ -163,6 +163,7 @@ table.list td:last-child,table.list th:last-child{text-align:right}
     <span><i style="background:var(--tile-mid)"></i>中间砖</span>
     <span><i style="background:var(--joint)"></i>砖缝</span>
     <span>格子里是这一列的裁宽（mm）</span>
+    <span id="miterLegend" hidden>转角方块里的那道斜线 = 45° 斜切（两侧各一块三角件）</span>
   </div>
   <div class="chipsrow" id="stats"></div>
 </section>
@@ -599,6 +600,44 @@ function straightPlan(cfg, T, Trow) {
   };
 }
 
+/* ---------- 45° 转角斜切（纯几何） ---------- */
+
+/* 单条半平面裁剪：保留 a*x + b*y ≤ c 那一侧（Sutherland–Hodgman 走一遍）。
+   多边形顶点按逆时针给，裁完还是这块面，只是被直线切掉一角 */
+function clipPoly(poly, a, b, c) {
+  var out = [], i, P, Q, dp, dq, t;
+  for (i = 0; i < poly.length; i++) {
+    P = poly[i];
+    Q = poly[(i + 1) % poly.length];
+    dp = a * P[0] + b * P[1] - c;
+    dq = a * Q[0] + b * Q[1] - c;
+    if (dp <= 1e-9) out.push(P);
+    if ((dp > 1e-9 && dq < -1e-9) || (dp < -1e-9 && dq > 1e-9)) {
+      t = dp / (dp - dq);
+      out.push([P[0] + (Q[0] - P[0]) * t, P[1] + (Q[1] - P[1]) * t]);
+    }
+  }
+  return out;
+}
+/* 多边形面积（鞋带公式），顶点顺序顺逆时针都行 */
+function polyArea(poly) {
+  var s = 0, i, P, Q;
+  for (i = 0; i < poly.length; i++) {
+    P = poly[i]; Q = poly[(i + 1) % poly.length];
+    s += P[0] * Q[1] - Q[0] * P[1];
+  }
+  return Math.abs(s) / 2;
+}
+/* 矩形（宽 w、高 h，西南角为原点）按几刀半平面裁。
+   planes 里每项是 [a, b, c]，只保留 a*x + b*y ≤ c 那一侧。
+   返回 { poly, area, cut }：cut 为 false 表示一刀没切着，还是整块矩形 */
+function cutRect(w, h, planes) {
+  var poly = [[0, 0], [w, 0], [w, h], [0, h]];
+  planes.forEach(function (pl) { poly = clipPoly(poly, pl[0], pl[1], pl[2]); });
+  var area = poly.length >= 3 ? polyArea(poly) : 0;
+  return { poly: poly, area: area, cut: area < w * h - 1e-6 };
+}
+
 /* ---------- 三面台阶 ---------- */
 
 function wrapPlan(cfg, T, Trow) {
@@ -656,15 +695,43 @@ function wrapPlan(cfg, T, Trow) {
     riserCols: { front: rf.cols, side: rs.cols },
   };
 
+  var P = D + n;
   levels.forEach(function (lv) {
     var rh = lv.k === 1 ? h1 : h;
+    /* 正面跑两头最外一列各多伸 n，跟侧跑一起收 45°。多伸出来的那块
+       要沿对角线切掉一半，所以 cutW 是 col.w(+n)，另挂 poly 描述真实轮廓。
+       转角方块（P×P）的斜边穿过相邻那一列的一个角，也要跟着切——所以
+       每一列都过一遍切刀，切着了（cut）才挂 poly。 */
+    var xW = 0;
     lv.frontCols.forEach(function (col, ci) {
-      pieces.push({
+      var extW = ci === 0 ? n : 0;
+      var extE = ci === lv.frontCols.length - 1 ? n : 0;
+      var xc = xW - extW;            // 本列西边，相对本级正面跑西端
+      var w0 = col.w + extW + extE;
+      var pc = {
         part: "tread", face: "front", level: lv.k,
         col: ci, ncol: lv.frontCols.length, colW: col.w,
-        cutW: col.w, cutH: D + n, kind: col.kind,
+        cutW: w0, cutH: P, kind: col.kind,
         tile: col.kind === "mid" ? "mid" : "std", visible: D,
         label: "正面踏面 第" + lv.k + "级 第" + (ci + 1) + "列",
+      };
+      /* 西刀：保留 v − p ≤ u0（u0 = 本列西边到西南外角点的距离）
+         东刀：保留 p + v ≤ e0（e0 = 本列西边到东南外角点的距离） */
+      var u0 = xc + n;
+      var e0 = lv.frontW + n - xc;
+      var cr = cutRect(w0, P, [[-1, 1, u0], [1, 1, e0]]);
+      if (cr.cut) { pc.poly = cr.poly; pc.cutNote = "45°"; }
+      pieces.push(pc);
+      xW += col.w + g;
+    });
+    /* 转角件：90° 相交处的另一半三角，归侧跑 */
+    ["sw", "se"].forEach(function (cn) {
+      pieces.push({
+        part: "corner", face: cn === "sw" ? "left" : "right", corner: cn, level: lv.k,
+        col: 0, ncol: 1, colW: P, cutW: P, cutH: P, kind: "edge",
+        tile: "std", visible: D, cutNote: "45°",
+        poly: cn === "sw" ? [[0, 0], [P, P], [0, P]] : [[0, P], [P, P], [P, 0]],
+        label: (cn === "sw" ? "西南" : "东南") + "转角 第" + lv.k + "级",
       });
     });
     lv.frontRiserCols.forEach(function (col, ci) {
@@ -966,6 +1033,7 @@ const Engine = {
   layoutColumns: layoutColumns, clipTyped: clipTyped, splitRun: splitRun,
   platformRows: platformRows, midLayout: midLayout,
   straightPlan: straightPlan, wrapPlan: wrapPlan,
+  clipPoly: clipPoly, polyArea: polyArea, cutRect: cutRect,
   packPieces: packPieces, buildPlan: buildPlan, normalize: normalize, validate: validate,
 };
 if (typeof module !== "undefined" && module.exports) module.exports = Engine;
@@ -1112,8 +1180,9 @@ if (typeof module !== "undefined" && module.exports) module.exports = Engine;
     $("gDimWrap").hidden = state.form !== "wrap";
     $("midBox").hidden = !state.midOn;
     $("rowModeField").hidden = state.form !== "wrap";
+    $("miterLegend").hidden = state.form !== "wrap";
     $("formHint").textContent = state.form === "wrap"
-      ? "三面台阶：平台靠北墙，南、西、东三面各一跑，都上到同一个平台。侧跑一律不靠墙（左右留缝不参与）。"
+      ? "三面台阶：平台靠北墙，南、西、东三面各一跑，都上到同一个平台。转角 90° 相交处按 45° 斜切，每级每角一块三角件。侧跑一律不靠墙（左右留缝不参与）。"
       : "直跑：一条直跑到底，最上一级是平台（平台也要贴）。左右靠墙留缝会从总宽里扣。";
   }
 
@@ -1178,55 +1247,66 @@ if (typeof module !== "undefined" && module.exports) module.exports = Engine;
     };
   }
 
-  function paintBand(ctx, b, s, X, Y, hot, C, g) {
+  /* 分两遍画：第一遍（textOnly = false）只铺砖块和边框，第二遍（textOnly = true）
+     只写数字。转角那道 45° 斜线夹在中间——不然它会把端列的裁宽数字划成两半。 */
+  function paintBand(ctx, b, s, X, Y, hot, C, g, textOnly) {
     var rx = X(b.x0), rw = (b.x1 - b.x0) * s;
     var ry = Y(b.y1), rh = (b.y1 - b.y0) * s;
     if (rw <= 0 || rh <= 0) return;
-    ctx.fillStyle = C.joint;
-    ctx.fillRect(rx, ry, rw, rh);
 
+    // 平台分了几行时，列宽只在最靠南那一行写一次。两遍都要用，所以先算好
     var labelRow = null;
     if (b.rows) {
-      var y = b.y0;
-      var rws = b.rows.slice().reverse();
-      rws.forEach(function (row, ri) {
-        var y1 = y + row.depth;
-        var x = b.x0;
+      var lastRow = b.rows[b.rows.length - 1];
+      labelRow = { y0: b.y0, y1: b.y0 + lastRow.depth, depth: lastRow.depth };
+    }
+
+    if (!textOnly) {
+      ctx.fillStyle = C.joint;
+      ctx.fillRect(rx, ry, rw, rh);
+
+      if (b.rows) {
+        var y = b.y0;
+        b.rows.slice().reverse().forEach(function (row) {
+          var y1 = y + row.depth;
+          var x = b.x0;
+          b.cols.forEach(function (c) {
+            ctx.fillStyle = c.kind === "mid" ? C.mid : C.tile;
+            ctx.fillRect(X(x), Y(y1), c.w * s, row.depth * s);
+            x += c.w + g;
+          });
+          y = y1 + g;
+        });
+      } else if (b.along === "x") {
+        var p = b.x0;
         b.cols.forEach(function (c) {
           ctx.fillStyle = c.kind === "mid" ? C.mid : C.tile;
-          ctx.fillRect(X(x), Y(y1), c.w * s, row.depth * s);
-          x += c.w + g;
+          ctx.fillRect(X(p), ry, c.w * s, rh);
+          p += c.w + g;
         });
-        if (ri === 0) labelRow = { y0: y, y1: y1, depth: row.depth };
-        y = y1 + g;
-      });
-    } else if (b.along === "x") {
-      var p = b.x0;
-      b.cols.forEach(function (c) {
-        ctx.fillStyle = c.kind === "mid" ? C.mid : C.tile;
-        ctx.fillRect(X(p), ry, c.w * s, rh);
-        p += c.w + g;
-      });
-    } else {
-      var q = b.y0;
-      b.cols.forEach(function (c) {
-        ctx.fillStyle = c.kind === "mid" ? C.mid : C.tile;
-        ctx.fillRect(rx, Y(q + c.w), rw, c.w * s);
-        q += c.w + g;
-      });
+      } else {
+        var q = b.y0;
+        b.cols.forEach(function (c) {
+          ctx.fillStyle = c.kind === "mid" ? C.mid : C.tile;
+          ctx.fillRect(rx, Y(q + c.w), rw, c.w * s);
+          q += c.w + g;
+        });
+      }
+
+      ctx.strokeStyle = hot ? C.accent : C.ink;
+      ctx.lineWidth = hot ? 2 : 0.7;
+      ctx.strokeRect(rx + 0.5, ry + 0.5, Math.max(0, rw - 1), Math.max(0, rh - 1));
+
+      if (hot) {
+        ctx.save();
+        ctx.strokeStyle = C.accent;
+        ctx.lineWidth = 3;
+        ctx.strokeRect(rx - 2, ry - 2, rw + 4, rh + 4);
+        ctx.restore();
+      }
     }
 
-    ctx.strokeStyle = hot ? C.accent : C.ink;
-    ctx.lineWidth = hot ? 2 : 0.7;
-    ctx.strokeRect(rx + 0.5, ry + 0.5, Math.max(0, rw - 1), Math.max(0, rh - 1));
-
-    if (hot) {
-      ctx.save();
-      ctx.strokeStyle = C.accent;
-      ctx.lineWidth = 3;
-      ctx.strokeRect(rx - 2, ry - 2, rw + 4, rh + 4);
-      ctx.restore();
-    }
+    if (!textOnly) return; // 第一遍到此为止，数字留给第二遍
 
     // 列宽文字
     ctx.fillStyle = C.soft;
@@ -1298,6 +1378,59 @@ if (typeof module !== "undefined" && module.exports) module.exports = Engine;
     ctx.textBaseline = "alphabetic";
   }
 
+  /* ---------- 45° 转角斜切：平面图补角 ----------
+     三面台阶每级的西南 / 东南两个转角方块，正面带只铺到 x = −o 和 W+o，
+     方块还差西 / 东各一条宽 n 的口袋没铺到（梯形）。这里把口袋补上，
+     再沿对角线（从外角到里角）画一道砖缝——那道线就是斜切的位置。
+     只补口袋、只画线：正面带里已经有列宽数字，整块重画会把它盖掉。 */
+  function miterSquares() {
+    var out = [];
+    if (!plan || !plan.ok || plan.cfg.form !== "wrap") return out;
+    var W = plan.cfg.W, n = plan.cfg.n, P = plan.cfg.D + n;
+    (plan.levels || []).forEach(function (lv) {
+      var o = lv.o, y0 = -o - n, y1 = -o + P - n; // 方块南沿 / 北沿（北沿 = −o + D）
+      out.push({
+        k: lv.k, corner: "sw",
+        poly: [[y0, y0], [y0 + n, y0 + n], [y0 + n, y1], [y0, y1]],
+        diag: [[y0, y0], [y0 + P, y0 + P]],
+      });
+      out.push({
+        k: lv.k, corner: "se",
+        poly: [[W + o, y0 + n], [W + o, y1], [W + o + n, y1], [W + o + n, y0]],
+        diag: [[W + o + n, y0], [W + o + n - P, y1]],
+      });
+    });
+    return out;
+  }
+
+  function paintMiters(ctx, s, X, Y, C, g) {
+    var list = miterSquares();
+    if (!list.length) return;
+    var lw = Math.max(1, g * s);
+    ctx.save();
+    list.forEach(function (m) {
+      ctx.beginPath();
+      m.poly.forEach(function (pt, i) {
+        if (i) ctx.lineTo(X(pt[0]), Y(pt[1]));
+        else ctx.moveTo(X(pt[0]), Y(pt[1]));
+      });
+      ctx.closePath();
+      ctx.fillStyle = C.tile;
+      ctx.fill();
+      ctx.strokeStyle = C.ink;
+      ctx.lineWidth = 0.7;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(X(m.diag[0][0]), Y(m.diag[0][1]));
+      ctx.lineTo(X(m.diag[1][0]), Y(m.diag[1][1]));
+      ctx.strokeStyle = C.joint;
+      ctx.lineWidth = lw;
+      ctx.stroke();
+    });
+    ctx.restore();
+  }
+
   /* 列宽数字：横着放得下就横着写；列太窄、行够高就转 90° 竖着写；
      都塞不下就不写——宁可空着，也不让数字压到砖缝线或跟邻居打架 */
   function colText(ctx, val, cx, cy, boxW, boxH, maxFont) {
@@ -1358,8 +1491,13 @@ if (typeof module !== "undefined" && module.exports) module.exports = Engine;
     meta.X = X; meta.Y = Y; meta.s = s;
     planBands = meta;
 
+    // 第一遍只铺砖；45° 斜线画在砖上、数字下；第二遍再写数字
     meta.bands.forEach(function (b) {
-      paintBand(ctx, b, s, X, Y, selected === b.key, C, plan.cfg.g);
+      paintBand(ctx, b, s, X, Y, selected === b.key, C, plan.cfg.g, false);
+    });
+    paintMiters(ctx, s, X, Y, C, plan.cfg.g);
+    meta.bands.forEach(function (b) {
+      paintBand(ctx, b, s, X, Y, selected === b.key, C, plan.cfg.g, true);
     });
 
     // 总尺寸
@@ -1493,6 +1631,9 @@ if (typeof module !== "undefined" && module.exports) module.exports = Engine;
       kv.push("行深（从南往北）" + b.rows.slice().reverse().map(function (r) { return E.fmt(r.depth); }).join(" · ") +
               "，共 " + b.rows.length + " 行");
     }
+    if (plan.cfg.form === "wrap" && b.cutDepth) {
+      kv.push("两端转角的 <b>45° 三角件</b>不算在这一跑的列里，单独列在料单「左侧 / 右侧 · 转角」");
+    }
     $("zoomKv").innerHTML = kv.join("<br>");
   }
 
@@ -1616,16 +1757,56 @@ if (typeof module !== "undefined" && module.exports) module.exports = Engine;
         sh.items.forEach(function (item) {
           var ix = x + item.x * sc, iy = y + item.y * sc;
           var iw = item.w * sc, ih = item.h * sc;
+          var pc = plan.pieces[item.id];
+          var poly = pc && pc.poly ? pc.poly : null;
+          /* 件内坐标 p 从西边往东、v 从南沿（外沿）往上；图里把件摆正
+             （南沿在下），所以 v 要翻过来：iy + (ih − v·sc)。装箱时转过
+             90° 的件（item.rot）先顺时针转回去，不能镜像——镜像的三角件
+             翻个面做不出来。 */
+          function toXY(pt) {
+            var a = pt[0], c2 = pt[1];
+            if (item.rot) { var t2 = a; a = c2; c2 = pc.cutW - t2; }
+            return [ix + a * sc, iy + ih - c2 * sc];
+          }
           ctx.fillStyle = it.kind === "mid" ? C.mid : C.tile;
-          ctx.fillRect(ix, iy, iw, ih);
-          ctx.strokeStyle = C.joint;
-          ctx.strokeRect(ix, iy, iw, ih);
+          if (poly) {
+            ctx.save();
+            ctx.beginPath();
+            poly.forEach(function (pt, i2) {
+              var q = toXY(pt);
+              if (i2) ctx.lineTo(q[0], q[1]); else ctx.moveTo(q[0], q[1]);
+            });
+            ctx.closePath();
+            ctx.fill();
+            ctx.strokeStyle = C.joint;
+            ctx.lineWidth = 1;
+            ctx.stroke();
+            // 虚线框 = 切之前那张整块料，切掉的那半就是废料
+            ctx.setLineDash([3, 2]);
+            ctx.strokeStyle = C.soft;
+            ctx.strokeRect(ix, iy, iw, ih);
+            ctx.restore();
+          } else {
+            ctx.fillRect(ix, iy, iw, ih);
+            ctx.strokeStyle = C.joint;
+            ctx.strokeRect(ix, iy, iw, ih);
+          }
           if (iw >= 30 && ih >= 12) {
+            var tx = ix + iw / 2, ty = iy + ih / 2;
+            if (poly) {
+              tx = 0; ty = 0;
+              poly.forEach(function (pt) { var q = toXY(pt); tx += q[0]; ty += q[1]; });
+              tx /= poly.length; ty /= poly.length;
+            }
             ctx.fillStyle = C.soft;
             ctx.font = "600 8px -apple-system,'PingFang SC',sans-serif";
             ctx.textAlign = "center";
             ctx.textBaseline = "middle";
-            ctx.fillText(E.fmt(item.w) + "×" + E.fmt(item.h), ix + iw / 2, iy + ih / 2);
+            ctx.fillText(E.fmt(pc ? pc.cutW : item.w) + "×" + E.fmt(pc ? pc.cutH : item.h), tx, poly && ih >= 26 ? ty - 5 : ty);
+            if (poly && ih >= 26) {
+              ctx.font = "600 8px -apple-system,'PingFang SC',sans-serif";
+              ctx.fillText("45° 斜切", tx, ty + 5);
+            }
           }
         });
       });
@@ -1645,11 +1826,12 @@ if (typeof module !== "undefined" && module.exports) module.exports = Engine;
     var map = {}, order = [];
     plan.pieces.forEach(function (p) {
       var faceName = { front: "正面", left: "左侧", right: "右侧", platform: "平台" }[p.face] || p.face;
-      var part = p.part === "tread" ? "踏面" : "立板";
+      var part = p.part === "tread" ? "踏面" : (p.part === "corner" ? "转角" : "立板");
       var tile = p.tile === "mid" ? "中间砖" : "通用砖";
-      var key = tile + "|" + faceName + "|" + part + "|" + p.cutW + "|" + p.cutH;
+      var cut = p.cutNote ? (p.part === "corner" ? "45° 三角" : "45° 斜切") : "整块";
+      var key = tile + "|" + faceName + "|" + part + "|" + p.cutW + "|" + p.cutH + "|" + (p.cutNote || "");
       if (!map[key]) {
-        map[key] = { tile: tile, face: faceName, part: part, w: p.cutW, h: p.cutH, n: 0 };
+        map[key] = { tile: tile, face: faceName, part: part, w: p.cutW, h: p.cutH, cut: cut, n: 0 };
         order.push(key);
       }
       map[key].n++;
@@ -1657,9 +1839,9 @@ if (typeof module !== "undefined" && module.exports) module.exports = Engine;
     var rowsHtml = order.map(function (k) {
       var r = map[k];
       return "<tr><td>" + r.tile + "</td><td>" + r.face + "·" + r.part + "</td><td>" +
-        E.fmt(r.w) + "×" + E.fmt(r.h) + "</td><td>" + r.n + "</td></tr>";
+        E.fmt(r.w) + "×" + E.fmt(r.h) + "</td><td>" + r.cut + "</td><td>" + r.n + "</td></tr>";
     }).join("");
-    tb.innerHTML = "<thead><tr><th>砖</th><th>位置</th><th>裁切尺寸</th><th>件数</th></tr></thead><tbody>" +
+    tb.innerHTML = "<thead><tr><th>砖</th><th>位置</th><th>裁切尺寸</th><th>切法</th><th>件数</th></tr></thead><tbody>" +
       rowsHtml + "</tbody>";
   }
 
@@ -1701,6 +1883,14 @@ if (typeof module !== "undefined" && module.exports) module.exports = Engine;
         E.fmt(real) + "，其余 " + E.fmt(plan.cfg.tau + plan.cfg.a) + " 压在立板上。</div>");
       if (plan.stats.unplaced === 0) {
         out.push('<div class="msg ok">所有裁砖都放得进原砖（切割缝 ' + E.fmt(plan.cfg.kerf) + "）。</div>");
+      }
+      if (g.form === "wrap") {
+        var P2 = g.D + g.n;
+        out.push('<div class="msg ok">转角 <b>45° 斜切</b>：西南、东南每一级各一块 <b>' + E.fmt(P2) + "×" + E.fmt(P2) +
+          "</b> 见方的三角件，共 <b>" + (2 * (g.N - 1)) + "</b> 块。一块方料沿对角线切成两半，正好是西南、东南一对（转 90° 用）。</div>");
+        out.push('<div class="msg ok">正面跑最外一列两端各多留出边 <b>' + E.fmt(g.n) +
+          "</b>，斜切掉多余那半才是直角边；料单里这几件写「45° 斜切」。</div>");
+        out.push('<div class="msg ok">斜切件按外包方块算用料，实际只用到一半，<b>废料估算偏保守</b>（多估不吃亏）。</div>');
       }
     }
     box.innerHTML = out.join("");

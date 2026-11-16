@@ -307,7 +307,7 @@ test("12. 平台行列", () => {
   check("平台件一律用通用砖（即使开了中间砖）", noMid.every(x => x.tile === "std"));
 });
 
-test("13. 三面台阶件数 = 71", () => {
+test("13. 三面台阶件数 = 77（含 6 块 45° 转角）", () => {
   const p = E.buildPlan(inp({ form: "wrap" }));
   const cnt = (f) => p.pieces.filter(f).length;
 
@@ -323,7 +323,9 @@ test("13. 三面台阶件数 = 71", () => {
         cnt(x => x.part === "tread" && x.face === "platform"));
   check("平台立板 7", cnt(x => x.part === "riser" && x.face === "platform") === 7,
         cnt(x => x.part === "riser" && x.face === "platform"));
-  check("总计 71", p.pieces.length === 71, p.pieces.length);
+  check("转角件（45° 三角）6 = 每级 2", cnt(x => x.part === "corner") === 6,
+        cnt(x => x.part === "corner"));
+  check("总计 77", p.pieces.length === 77, p.pieces.length);
 
   p.levels.forEach(l => {
     const ft = cnt(x => x.part === "tread" && x.face === "front" && x.level === l.k);
@@ -513,7 +515,7 @@ test("20. 装箱不变量（三面台阶 + 中间砖）", () => {
   const p = E.buildPlan(inp({ form: "wrap", midOn: true, midW: 800, midH: 800, midOrient: "h" }));
   check("有 std 组", !!p.pack.std);
   check("有 mid 组", !!p.pack.mid);
-  check("开中间砖后总数 77（正面踏面 11→17）", p.pieces.length === 77, p.pieces.length);
+  check("开中间砖后总数 83（正面踏面 11→17，另加 6 块转角）", p.pieces.length === 83, p.pieces.length);
   check("std + mid 装箱件数 = 全部件数",
         p.pack.std.bins.reduce((s, b) => s + b.shelves.reduce((t, sh) => t + sh.items.length, 0), 0) +
         p.pack.mid.bins.reduce((s, b) => s + b.shelves.reduce((t, sh) => t + sh.items.length, 0), 0) ===
@@ -643,6 +645,163 @@ test("26. 负对照：把缝当成 0，测试必须能抓到", () => {
   check("带缝 1194", withG === 1194, withG);
   check("不带缝 1190", noG === 1190, noG);
   check("两者不等（漏缝一定被抓）", withG !== noG);
+});
+
+/* ============ 45° 转角斜切（v2） ============ */
+
+/* 射线法：点在多边形里？（顶点顺序无所谓；点正好落在边上的情况测试里用偏移避开了） */
+function inPoly(pt, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1];
+    if (((yi > pt[1]) !== (yj > pt[1])) &&
+        pt[0] < ((xj - xi) * (pt[1] - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+/* 件的真实面积：斜切件按多边形算，整块按外包矩形算 */
+const areaOf = (x) => (x.poly ? E.polyArea(x.poly) : x.cutW * x.cutH);
+
+test("27. 45° 转角斜切：尺寸、面积、拼满不留缝", () => {
+  const P = 310, G = 2, D = 280, W1 = 1200;
+  const p = E.buildPlan(inp({ form: "wrap" }));
+  const fronts = {};
+  p.levels.forEach(l => {
+    fronts[l.k] = p.pieces.filter(x => x.part === "tread" && x.face === "front" && x.level === l.k);
+  });
+  const corners = p.pieces.filter(x => x.part === "corner");
+
+  /* --- 1. 转角件本体 --- */
+  check("转角件 6 块（每级 2）", corners.length === 6, corners.length);
+  check("每块外包 310 × 310（下料按这个方料）",
+        corners.every(c => c.cutW === P && c.cutH === P),
+        corners.map(c => c.cutW + "×" + c.cutH).join(" "));
+  check("每块标 45°", corners.every(c => c.cutNote === "45°"));
+  check("每块是三角形（3 个顶点）", corners.every(c => c.poly && c.poly.length === 3));
+  check("每块面积 = 310²/2 = 48050", corners.every(c => near(E.polyArea(c.poly), 48050)),
+        corners.map(c => Math.round(E.polyArea(c.poly))).join(" "));
+  check("一级各一块西南、东南",
+        p.levels.every(l => corners.filter(c => c.level === l.k && c.corner === "sw").length === 1 &&
+                            corners.filter(c => c.level === l.k && c.corner === "se").length === 1));
+  const sw = corners.filter(c => c.corner === "sw");
+  const se = corners.filter(c => c.corner === "se");
+  check("西南转角是 NW 半块（[[0,0],[310,310],[0,310]]）",
+        sw.every(c => JSON.stringify(c.poly) === JSON.stringify([[0, 0], [P, P], [0, P]])),
+        JSON.stringify(sw[0].poly));
+  check("东南转角是 NE 半块（[[0,310],[310,310],[310,0]]）",
+        se.every(c => JSON.stringify(c.poly) === JSON.stringify([[0, P], [P, P], [P, 0]])),
+        JSON.stringify(se[0].poly));
+
+  /* --- 2. 正面踏面：端列加出边后按对角线裁 --- */
+  const wantW = {
+    1: [266, 800, 800, 800, 266],
+    2: [788, 800, 788],
+    3: [508, 800, 508],
+  };
+  const wantArea = {
+    1: [35378, 247118, 248000, 247118, 35378],
+    2: [196230, 248000, 196230],
+    3: [109430, 248000, 109430],
+  };
+  [1, 2, 3].forEach(k => {
+    const f = fronts[k];
+    check(`第 ${k} 级正面列下料宽 = 列宽 + 转角出边 n`,
+          JSON.stringify(f.map(x => x.cutW)) === JSON.stringify(wantW[k]),
+          f.map(x => x.cutW).join("/"));
+    check(`第 ${k} 级正面每块真实面积（斜切件按多边形）`,
+          f.every((x, i) => near(areaOf(x), wantArea[k][i])),
+          f.map(x => Math.round(areaOf(x))).join("/"));
+    check(`第 ${k} 级只有被斜线切到的列才挂 poly`,
+          JSON.stringify(f.map(x => !!x.poly)) ===
+          JSON.stringify(wantArea[k].map(v => v !== 248000)),
+          f.map(x => (x.poly ? "切" : "整")).join("/"));
+  });
+  check("最下一级端面宽度仍守住总宽 266+800+800+800+266 + 4×2 缝 = 2940 = W + 2o + 2n",
+        fronts[1].reduce((s, x) => s + x.cutW, 0) + 4 * G === 1200 + 2 * 840 + 2 * 30,
+        fronts[1].reduce((s, x) => s + x.cutW, 0) + 4 * G);
+  check("每级左端、右端完全镜像（宽与面积都相等）",
+        [1, 2, 3].every(k => {
+          const f = fronts[k];
+          return f[0].cutW === f[f.length - 1].cutW && near(areaOf(f[0]), areaOf(f[f.length - 1]));
+        }));
+
+  /* --- 3. 侧跑、平台一个字节都不该被斜切碰到 --- */
+  const others = p.pieces.filter(x => x.part !== "corner" &&
+    !(x.part === "tread" && x.face === "front"));
+  check("侧跑踏面 / 立板 / 平台都不挂 poly、不标 45°",
+        others.every(x => !x.poly && !x.cutNote),
+        others.filter(x => x.poly || x.cutNote).length + " 块被误改");
+
+  /* --- 4. 拼满：每个转角方块内逐点检查，恰好被一块盖住 --- */
+  function frontWorld(pc, lv) {
+    let xW = 0;
+    for (let j = 0; j < pc.col; j++) xW += lv.frontCols[j].w + G;
+    const extW = pc.col === 0 ? P - D : 0;
+    const ox = -lv.o + xW - extW, oy = -lv.o - (P - D);
+    if (pc.poly) return pc.poly.map(([a, b]) => [ox + a, oy + b]);
+    return [[ox, oy], [ox + pc.cutW, oy], [ox + pc.cutW, oy + P], [ox, oy + P]];
+  }
+  function cornerWorld(pc, lv) {
+    const ox = pc.corner === "sw" ? -lv.o - (P - D) : W1 + lv.o - D;
+    const oy = -lv.o - (P - D);
+    return pc.poly.map(([a, b]) => [ox + a, oy + b]);
+  }
+  p.levels.forEach(lv => {
+    ["sw", "se"].forEach(cn => {
+      const cp = corners.find(c => c.level === lv.k && c.corner === cn);
+      const parts = fronts[lv.k].map(pc => frontWorld(pc, lv)).concat([cornerWorld(cp, lv)]);
+      const ox = cn === "sw" ? -lv.o - (P - D) : W1 + lv.o - D;
+      const oy = -lv.o - (P - D);
+      let miss = 0, duo = 0, total = 0;
+      for (let i = 0; i < 20; i++) {
+        for (let j = 0; j < 20; j++) {
+          const pt = [ox + 0.4 + 15.5 * i, oy + 0.7 + 15.5 * j];
+          const c = parts.reduce((s, poly) => s + (inPoly(pt, poly) ? 1 : 0), 0);
+          total++;
+          if (c === 0) miss++;
+          if (c > 1) duo++;
+        }
+      }
+      check(`第 ${lv.k} 级 ${cn.toUpperCase()} 转角方块内每点恰好被一块盖住（不漏不重）`,
+            miss === 0 && duo === 0, `漏 ${miss} / 重 ${duo} / 共 ${total}`);
+    });
+  });
+
+  /* --- 5. 方向上不能反：斜线两侧各归各的 --- */
+  const lv1 = p.levels.find(l => l.k === 1);
+  const csw = cornerWorld(corners.find(c => c.level === 1 && c.corner === "sw"), lv1);
+  const f0 = frontWorld(fronts[1][0], lv1);
+  check("西南：靠西边那半点只归转角件（-820,-800）",
+        inPoly([-820, -800], csw) && !inPoly([-820, -800], f0));
+  check("西南：靠南边那半点只归正面首列（-820,-850）",
+        inPoly([-820, -850], f0) && !inPoly([-820, -850], csw));
+  const cse = cornerWorld(corners.find(c => c.level === 1 && c.corner === "se"), lv1);
+  const fLast = frontWorld(fronts[1][fronts[1].length - 1], lv1);
+  check("东南：靠东边那半点只归转角件（2050,-700）",
+        inPoly([2050, -700], cse) && !inPoly([2050, -700], fLast));
+  check("东南：靠南边那半点只归正面末列（2040,-850）",
+        inPoly([2040, -850], fLast) && !inPoly([2040, -850], cse));
+});
+
+test("28. 负对照：45° 的断言必须能抓到写错的几何", () => {
+  const P = 310;
+  // 端列忘掉「另一头多伸 n」：266 宽的三角会变成 236 宽
+  const right = E.cutRect(266, P, [[-1, 1, 0]]).area;
+  const wrong = E.cutRect(236, P, [[-1, 1, 0]]).area;
+  check("正解 266 端列 = 35378", near(right, 35378), right);
+  check("漏 n 时只剩 27848", near(wrong, 236 * 236 / 2), wrong);
+  check("两者不等（漏 n 一定被抓）", !near(right, wrong));
+
+  // 切刀切反：保留的是另一半
+  const a = E.cutRect(788, P, [[1, 1, 788]]).area;
+  const b = E.cutRect(788, P, [[-1, -1, -788]]).area;
+  check("L2 端列正解 196230", near(a, 196230), a);
+  check("切反只剩 48050", near(b, 48050), b);
+  check("两者不等（切反一定被抓）", !near(a, b));
+
+  // 转角件当整块下料 vs 三角
+  check("三角 48050 ≠ 整块 96100（料单/Packing 不会拿错）",
+        !near(P * P / 2, P * P));
 });
 
 /* ============ 汇总 ============ */
