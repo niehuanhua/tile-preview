@@ -28,7 +28,7 @@ header p.ver{margin-top:5px; font-size:12px; color:var(--accent); font-weight:70
 a.card{display:block; text-decoration:none; color:inherit; background:var(--card);
   border:1px solid var(--line); border-radius:12px; padding:14px; margin-top:12px}
 a.card h2{display:flex; align-items:baseline; gap:8px; margin:0 0 4px; font-size:17px; color:var(--accent)}
-/* 版本号徽章。三个工具各走各的 ?v=，所以版本号挂在卡片上、不写在页头的
+/* 版本号徽章。四个工具各走各的 ?v=，所以版本号挂在卡片上、不写在页头的
    更新时间后面——页头只有一个数字的话，说不清它是哪个工具的。
    ⚠️ 改完某个工具，卡片上的 vN 和链接里的 ?v=N 必须一起 +1，否则手机上
    看到的号跟实际加载的文件对不上，等于白标。 */
@@ -46,8 +46,8 @@ a.card:active{background:var(--accent-soft)}
   <header>
     <h1>瓷砖排版小工具</h1>
     <p>点一个进去用 · 手机上存个书签，以后点开就是它</p>
-    <p>三个都<b>自带一套示例</b>（同一套 89㎡ 两室一厅），打开就有图，不用先填数</p>
-    <p class="ver">更新：2026-10-03 19:40 · 每个工具的版本号在它自己卡片上</p>
+    <p>前三个<b>自带同一套 89㎡ 两室一厅的示例</b>，楼梯那个自带一跑 4 级台阶——打开就有图，不用先填数</p>
+    <p class="ver">更新：2026-11-16 20:11 · 每个工具的版本号在它自己卡片上</p>
   </header>
 
   <a class="card" href="index.html?v=9">
@@ -63,6 +63,11 @@ a.card:active{background:var(--accent-soft)}
   <a class="card" href="%E6%88%BF%E9%97%B4%E5%B8%83%E5%B1%80%E8%8D%89%E5%9B%BE.html?v=20">
     <h2>房间布局草图<span class="v">v20</span></h2>
     <p>量完房把尺寸一行一间贴进去，拖着摆好（可留墙厚，也可贴死），再一键导给「全屋通铺」。<b>没量尺寸也能先画个大概</b>——新房间是虚线的「未量」状态，拖四个角就能改大小。<b>房间中间空出来的那道缝，点一下就自动补出一间「过道」</b>（L 形的缝补出连号的两间）。打开就是摆好的示例户型</p>
+  </a>
+
+  <a class="card" href="%E6%A5%BC%E6%A2%AF%E8%B8%8F%E6%AD%A5.html?v=1">
+    <h2>楼梯踏步<span class="v">v1</span></h2>
+    <p>大门口楼梯贴砖：<b>直跑</b>，或者<b>三面台阶</b>（南、西、东三面各一跑，上到同一个平台）。填现场量的尺寸，出<b>踏板平面图</b>——每级每列裁多宽、砖缝在哪、点一块放大看；再给踏面 / 立板 / 平台的逐块裁切尺寸、切砖图和备货张数。通用砖长宽各设各的，中间还能换一种砖，出边压立板。打开就是 4 级直跑的示例</p>
   </a>
 
   <div class="tip">

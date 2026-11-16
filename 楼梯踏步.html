@@ -1,0 +1,1876 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#F2F1ED">
+<title>楼梯踏步排版</title>
+<style>
+:root{
+  --paper:#F2F1ED; --card:#FFFFFF; --ink:#26292E; --ink-soft:#6A6F76;
+  --line:#DFDCD4; --accent:#2B5E9B; --accent-soft:#E3EBF5;
+  --tile:#F7F5F0; --tile-mid:#DFE9F6; --joint:#C9C3B6; --conc:#E4E0D6;
+  --ok:#2E7D46; --danger:#C0362C; --danger-soft:#F8E4E2;
+  --warn:#8A6100; --warn-soft:#FBF0D2;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#17181B; --card:#202226; --ink:#ECEDEF; --ink-soft:#9CA2AA;
+    --line:#34373D; --accent:#7FA9DC; --accent-soft:#243246;
+    --tile:#2A2D33; --tile-mid:#2C4058; --joint:#4A4F58; --conc:#33363C;
+    --ok:#6FBF86; --danger:#F2918A; --danger-soft:#3A2321;
+    --warn:#E2BE72; --warn-soft:#3A3120;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0; background:var(--paper); color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  font-size:15px; line-height:1.5; -webkit-text-size-adjust:100%;}
+.wrap{max-width:640px; margin:0 auto; padding:0 14px calc(40px + env(safe-area-inset-bottom));}
+header{padding:20px 2px 8px}
+header h1{margin:0; font-size:21px; font-weight:800; display:flex; align-items:baseline; gap:8px}
+header h1 .v{font-size:12px; font-weight:700; color:var(--accent); background:var(--accent-soft);
+  border-radius:6px; padding:2px 7px; font-variant-numeric:tabular-nums}
+header p{margin:6px 0 0; color:var(--ink-soft); font-size:13px}
+header p.ver{margin-top:4px; font-size:12px; color:var(--accent); font-weight:700}
+.card{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:13px; margin-top:12px}
+.card>h2{margin:0 0 10px; font-size:15px; font-weight:800; display:flex; align-items:baseline; gap:8px}
+.card>h2 small{font-size:12px; font-weight:600; color:var(--ink-soft)}
+.seg{display:flex; gap:6px; background:var(--paper); border:1px solid var(--line); border-radius:9px; padding:3px}
+.seg button{flex:1; border:0; background:transparent; color:var(--ink-soft); font:inherit; font-size:14px;
+  font-weight:700; padding:8px 4px; border-radius:7px; cursor:pointer}
+.seg button.on{background:var(--card); color:var(--accent); box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.seg button[disabled]{opacity:.4}
+.hint{margin:8px 0 0; font-size:12px; color:var(--ink-soft)}
+/* .grid / .card 自己带 display，会盖掉浏览器默认的 [hidden]{display:none}，
+   所以这里必须 !important——否则切换「直跑 / 三面台阶」时两套尺寸框会一起露出来。 */
+[hidden]{display:none!important}
+.grid{display:grid; grid-template-columns:1fr 1fr; gap:8px 10px; margin-top:10px}
+.field{display:block; min-width:0}
+.field>span{display:block; font-size:12px; color:var(--ink-soft); margin-bottom:3px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.ib{display:flex; align-items:center; border:1px solid var(--line); border-radius:8px; background:var(--paper);
+  padding:0 8px; height:38px}
+.ib input{flex:1; min-width:0; width:100%; border:0; background:transparent; color:var(--ink);
+  font:inherit; font-size:15px; font-variant-numeric:tabular-nums; outline:none; padding:0}
+.ib i{font-style:normal; font-size:11px; color:var(--ink-soft); margin-left:4px; flex:none}
+.chips{display:flex; flex-wrap:wrap; gap:6px; margin-top:8px}
+.chip{border:1px solid var(--line); background:var(--paper); color:var(--ink); font:inherit; font-size:12px;
+  padding:5px 9px; border-radius:999px; cursor:pointer}
+.chip:active{background:var(--accent-soft)}
+label.chk{display:flex; align-items:center; gap:8px; margin-top:10px; font-size:14px; cursor:pointer}
+label.chk input{width:18px; height:18px; accent-color:var(--accent)}
+details{margin-top:10px}
+details>summary{cursor:pointer; font-size:13px; color:var(--accent); font-weight:700; padding:4px 0}
+button.ghost{width:100%; margin-top:12px; border:1px solid var(--line); background:var(--paper);
+  color:var(--ink); font:inherit; font-size:14px; font-weight:700; padding:10px; border-radius:9px; cursor:pointer}
+button.ghost.armed{border-color:var(--danger); color:var(--danger); background:var(--danger-soft)}
+.cv{display:block; width:100%; border-radius:8px; touch-action:manipulation}
+.legend{display:flex; flex-wrap:wrap; gap:10px; margin-top:8px; font-size:12px; color:var(--ink-soft)}
+.legend i{display:inline-block; width:11px; height:11px; border-radius:2px; margin-right:4px;
+  vertical-align:-1px; border:1px solid var(--line)}
+.chipsrow{display:flex; flex-wrap:wrap; gap:6px; margin-top:10px}
+.stat{font-size:12px; background:var(--paper); border:1px solid var(--line); border-radius:7px;
+  padding:4px 8px; color:var(--ink)}
+.stat b{color:var(--ink); font-variant-numeric:tabular-nums}
+table.list{width:100%; border-collapse:collapse; margin-top:8px; font-size:12px}
+table.list th,table.list td{border-bottom:1px solid var(--line); padding:5px 4px; text-align:left;
+  font-variant-numeric:tabular-nums}
+table.list th{color:var(--ink-soft); font-weight:600}
+table.list td:last-child,table.list th:last-child{text-align:right}
+.msg{border-radius:8px; padding:8px 10px; font-size:13px; margin-top:8px}
+.msg.red{background:var(--danger-soft); color:var(--danger)}
+.msg.yel{background:var(--warn-soft); color:var(--warn)}
+.msg.ok{background:var(--accent-soft); color:var(--accent)}
+.msg b{font-weight:800}
+.empty{font-size:13px; color:var(--ink-soft); margin-top:6px}
+.zoomtitle{font-size:14px; font-weight:800; margin-bottom:6px}
+.kv{font-size:12px; color:var(--ink-soft); margin-top:6px; line-height:1.7}
+.kv b{color:var(--ink)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>楼梯踏步排版 <span class="v">v1</span></h1>
+  <p>填现场量到的尺寸 → 出踏板平面图、每列裁宽、每块裁砖尺寸和备料</p>
+  <p class="ver">更新：2026-11-16</p>
+</header>
+
+<section class="card">
+  <h2>1 · 楼梯是什么样</h2>
+  <div class="seg" id="formSeg">
+    <button type="button" data-v="straight" class="on">直跑</button>
+    <button type="button" data-v="wrap">三面台阶</button>
+  </div>
+  <p class="hint" id="formHint"></p>
+
+  <div id="gDimStraight" class="grid"></div>
+  <div id="gDimWrap" class="grid"></div>
+
+  <h2 style="margin-top:16px">2 · 砖</h2>
+  <div id="gTile" class="grid"></div>
+  <div class="chips" id="tilePresets">
+    <button type="button" class="chip" data-tile="800,800">800×800</button>
+    <button type="button" class="chip" data-tile="600,600">600×600</button>
+    <button type="button" class="chip" data-tile="750,1500">750×1500</button>
+  </div>
+  <p class="hint">砖的长、宽各填一个数；量出来多少填多少。</p>
+
+  <label class="chk"><input type="checkbox" id="midOn"> 中间用另一种砖（每一跑的中间列）</label>
+  <div id="midBox" hidden>
+    <div id="gMid" class="grid"></div>
+    <div class="seg" id="midSeg" style="margin-top:8px; max-width:260px">
+      <button type="button" data-v="h" class="on">横放（用长边做列宽）</button>
+      <button type="button" data-v="v">竖放</button>
+    </div>
+    <p class="hint">中间砖只用在踏面；立板一律用通用砖。平台也用通用砖。</p>
+  </div>
+
+  <h2 style="margin-top:16px">3 · 排布</h2>
+  <div class="seg" id="modeSeg" style="max-width:320px">
+    <button type="button" data-v="center" class="on">居中对称</button>
+    <button type="button" data-v="edge">整砖起头</button>
+  </div>
+
+  <details>
+    <summary>更多参数（不改也能用）</summary>
+    <div id="gMore" class="grid"></div>
+    <div id="gMore2" class="grid"></div>
+    <label class="chk"><input type="checkbox" id="allowRotate" checked> 允许单件转 90°（素色砖）</label>
+    <div class="grid" style="margin-top:8px">
+      <label class="field" id="rowModeField">
+        <span>平台分块方式</span>
+        <div class="ib" style="padding:0 6px">
+          <select id="platformRowMode" style="flex:1;border:0;background:transparent;color:var(--ink);font:inherit;font-size:14px;outline:none">
+            <option value="auto">自动（里侧居中）</option>
+            <option value="whole">整砖在前</option>
+          </select>
+        </div>
+      </label>
+    </div>
+  </details>
+
+  <button type="button" class="ghost" id="resetBtn">恢复示例数字</button>
+</section>
+
+<section class="card">
+  <h2>踏板平面图 <small>点一块放大</small></h2>
+  <canvas id="plan" class="cv"></canvas>
+  <div class="legend">
+    <span><i style="background:var(--tile)"></i>通用砖</span>
+    <span><i style="background:var(--tile-mid)"></i>中间砖</span>
+    <span><i style="background:var(--joint)"></i>砖缝</span>
+    <span>格子里是这一列的裁宽（mm）</span>
+  </div>
+  <div class="chipsrow" id="stats"></div>
+</section>
+
+<section class="card" id="zoomCard" hidden>
+  <h2>单块放大 <small>再点平面图取消</small></h2>
+  <div class="zoomtitle" id="zoomTitle"></div>
+  <canvas id="zoom" class="cv"></canvas>
+  <div class="kv" id="zoomKv"></div>
+</section>
+
+<section class="card">
+  <h2>提示</h2>
+  <div id="msgs"></div>
+</section>
+
+<section class="card">
+  <details open>
+    <summary style="font-size:15px; font-weight:800; color:var(--ink)">纵向剖面</summary>
+    <canvas id="sec" class="cv" style="margin-top:8px"></canvas>
+    <p class="hint">立板顶塞在上一级踏面砖底面：只减砖厚 τ，不减粘结层 a。</p>
+  </details>
+</section>
+
+<section class="card">
+  <h2>下料图 <small>一块原砖一格</small></h2>
+  <canvas id="cut" class="cv"></canvas>
+  <h2 style="margin-top:16px">下料单</h2>
+  <table class="list" id="list"></table>
+</section>
+
+</div>
+
+<script>
+/*ENGINE-START*/
+"use strict";
+var EPS = 1e-7;
+
+function numOr(v, d) {
+  var n = typeof v === "number" ? v : parseFloat(v);
+  return typeof n === "number" && isFinite(n) ? n : d;
+}
+function isIntNear(v) { return isFinite(v) && Math.abs(v - Math.round(v)) < 1e-6; }
+function round1(v) { return Math.round(numOr(v, 0) * 10) / 10; }
+function fmt(v) {
+  var x = numOr(v, 0);
+  if (Math.abs(x - Math.round(x)) < 1e-6) return String(Math.round(x));
+  return String(Math.round(x * 10) / 10);
+}
+
+/* ---------- 列宽 ---------- */
+
+function centerCols(A, T, g, minEdge) {
+  A = numOr(A, 0); T = numOr(T, 0);
+  g = Math.max(0, numOr(g, 0)); minEdge = Math.max(0, numOr(minEdge, 0));
+  if (!(A > EPS)) return { ok: false, cols: [], mode: "none", error: "可用宽度 ≤ 0" };
+  if (!(T > EPS)) return { ok: false, cols: [], mode: "none", error: "砖的边长 ≤ 0" };
+  var fMax = Math.floor((A + g) / (T + g) + 1e-9);
+  var f, c, i, cols = [];
+  for (f = fMax; f >= 1; f--) {
+    if (Math.abs(f * T + (f - 1) * g - A) <= 0.5) {
+      cols = [];
+      for (i = 0; i < f; i++) cols.push({ w: T, kind: "full" });
+      return { ok: true, cols: cols, mode: "full", error: null };
+    }
+  }
+  for (f = Math.min(fMax, 400); f >= 1; f--) {
+    c = (A - f * T - (f + 1) * g) / 2;
+    if (c >= minEdge - 1e-9 && c <= T + 1e-9) {
+      cols = [{ w: c, kind: "edge" }];
+      for (i = 0; i < f; i++) cols.push({ w: T, kind: "full" });
+      cols.push({ w: c, kind: "edge" });
+      return { ok: true, cols: cols, mode: "center", error: null };
+    }
+  }
+  if (A <= T + 1e-9) return { ok: true, cols: [{ w: A, kind: "single" }], mode: "single", error: null };
+  for (var nn = 2; nn <= 60; nn++) {
+    c = (A - (nn - 1) * g) / nn;
+    if (c >= minEdge - 1e-9 && c <= T + 1e-9) {
+      cols = [];
+      for (i = 0; i < nn; i++) cols.push({ w: c, kind: "cut" });
+      return { ok: true, cols: cols, mode: "even", error: null };
+    }
+  }
+  return { ok: false, cols: [], mode: "none",
+    error: "宽 " + fmt(A) + " 排不出列宽（砖边长 " + fmt(T) + "，窄条下限 " + fmt(minEdge) + "）" };
+}
+
+function edgeCols(A, T, g, minEdge) {
+  A = numOr(A, 0); T = numOr(T, 0);
+  g = Math.max(0, numOr(g, 0)); minEdge = Math.max(0, numOr(minEdge, 0));
+  if (!(A > EPS) || !(T > EPS)) return null;
+  var cols = [], pos = 0;
+  while (A - pos > T + g + 1e-7) {
+    cols.push({ w: T, kind: "full" });
+    pos += T + g;
+  }
+  var last = A - pos;
+  if (last > T + 1e-9) return null;
+  if (last > 1e-9) cols.push({ w: last, kind: last >= T - 1e-9 ? "full" : "edge" });
+  if (!cols.length) return null;
+  for (var i = 0; i < cols.length; i++) if (cols[i].w > T + 1e-9) return null;
+  if (cols.length > 1 && cols[cols.length - 1].w < minEdge - 1e-9) return null;
+  return cols;
+}
+
+function intColsTyped(cols, total) {
+  var out = (cols || []).map(function (c) {
+    return { w: numOr(c && c.w, 0), kind: (c && c.kind) || "edge" };
+  });
+  total = numOr(total, 0);
+  var free = [], fixedSum = 0;
+  out.forEach(function (c, i) {
+    if (c.kind === "mid") fixedSum += c.w; else free.push(i);
+  });
+  if (!free.length) return out;
+  var avail = total - fixedSum;
+  var fs = free.map(function (i) {
+    var fl = Math.floor(out[i].w + 1e-7);
+    return { i: i, base: fl, frac: out[i].w - fl };
+  });
+  var sum = fs.reduce(function (s, x) { return s + x.base; }, 0);
+  var need = Math.round(avail - sum);
+  var len = fs.length;
+  var order = fs.map(function (x, k) { return k; }).sort(function (a, b) {
+    return (fs[b].frac - fs[a].frac) || (a - b);
+  });
+  var k;
+  if (need > 0) {
+    var each = Math.floor(need / len), rest = need - each * len;
+    for (k = 0; k < len; k++) fs[k].base += each;
+    for (k = 0; k < rest; k++) fs[order[k]].base += 1;
+  } else if (need < 0) {
+    var d = -need, each2 = Math.floor(d / len), rest2 = d - each2 * len;
+    for (k = 0; k < len; k++) fs[k].base -= each2;
+    for (k = 0; k < rest2; k++) fs[order[len - 1 - k]].base -= 1;
+  }
+  fs.forEach(function (x) { out[x.i].w = x.base; });
+  return out;
+}
+
+function layoutColumns(opt) {
+  opt = opt || {};
+  var width = numOr(opt.width, 0);
+  var T = numOr(opt.tileEdge, 800);
+  var g = Math.max(0, numOr(opt.g, 0));
+  var eL = Math.max(0, numOr(opt.eL, 0));
+  var eR = Math.max(0, numOr(opt.eR, 0));
+  var minEdge = Math.max(0, numOr(opt.minEdge, 0));
+  var mode = opt.mode === "edge" ? "edge" : "center";
+  var A = width - eL - eR;
+  var midW = opt.mid && numOr(opt.mid.w, 0) > EPS ? numOr(opt.mid.w, 0) : 0;
+
+  function plainCols(fellBack) {
+    var cols = null, m = mode;
+    if (mode === "edge") {
+      var e = edgeCols(A, T, g, minEdge);
+      if (e) { cols = e; m = "edge"; }
+    }
+    if (!cols) {
+      var c = centerCols(A, T, g, minEdge);
+      if (!c.ok) return { ok: false, cols: [], mode: "none", error: c.error, A: A, fellBack: !!fellBack };
+      cols = c.cols; m = c.mode;
+    }
+    return {
+      ok: true, cols: intColsTyped(cols, A - (cols.length - 1) * g),
+      mode: m, error: null, A: A,
+      fellBack: !!fellBack || (mode === "edge" && m !== "edge"),
+    };
+  }
+
+  if (midW > 0) {
+    var side = (A - midW - 2 * g) / 2;
+    var tooWide = function () {
+      return { ok: false, cols: [], mode: "none", A: A, fellBack: false,
+        error: "中间砖 " + fmt(midW) + " 太宽：两边各只剩 " + fmt(Math.max(0, side)) +
+               "，不足 " + fmt(minEdge) };
+    };
+    if (side < minEdge - 1e-9) {
+      if (opt.softMid) return plainCols(true);
+      return tooWide();
+    }
+    var cl = centerCols(side, T, g, minEdge);
+    var cr = centerCols(side, T, g, minEdge);
+    if (!cl.ok || !cr.ok) {
+      if (opt.softMid) return plainCols(true);
+      return tooWide();
+    }
+    var right = cr.cols.slice().reverse().map(function (c) { return { w: c.w, kind: c.kind }; });
+    var typed = cl.cols.concat([{ w: midW, kind: "mid" }], right);
+    return {
+      ok: true, cols: intColsTyped(typed, A - (typed.length - 1) * g),
+      mode: "mid", error: null, A: A, fellBack: false,
+    };
+  }
+  return plainCols(false);
+}
+
+function clipTyped(baseCols, baseWidth, targetWidth, g, T) {
+  var B = numOr(baseWidth, 0), t = numOr(targetWidth, 0);
+  g = Math.max(0, numOr(g, 0)); T = numOr(T, 800);
+  var tc = (baseCols || []).map(function (c) {
+    return { w: numOr(c && c.w, 0), kind: (c && c.kind) || "edge" };
+  });
+  if (!tc.length) return [{ w: t, kind: "single" }];
+  var total = t - (tc.length - 1) * g;
+  if (t >= B - EPS) return intColsTyped(tc, total);
+  var lo = (B - t) / 2, hi = B - lo;
+  var out = [], p = 0;
+  tc.forEach(function (c) {
+    var a = Math.max(p, lo), b = Math.min(p + c.w, hi);
+    var w = b - a;
+    if (w >= 1 - EPS) out.push({ w: w, kind: c.kind });
+    p += c.w + g;
+  });
+  if (!out.length) return [{ w: t, kind: "single" }];
+  var res = intColsTyped(out, t - (out.length - 1) * g);
+  var bad = res.some(function (c) { return !(c.w > EPS); });
+  if (bad) return [{ w: t, kind: "single" }];
+  return res;
+}
+
+function splitRun(len, T, g, minEdge, mode) {
+  len = numOr(len, 0); T = numOr(T, 800);
+  g = Math.max(0, numOr(g, 0)); minEdge = Math.max(0, numOr(minEdge, 0));
+  if (!(len > EPS)) return [];
+  if (len <= T + 1e-9) return intColsTyped([{ w: len, kind: "single" }], len);
+  if (mode === "whole") {
+    var out = [], pos = 0;
+    while (len - pos > T + 1e-7) {
+      out.push({ w: T, kind: "full" });
+      pos += T + g;
+    }
+    var last = len - pos;
+    if (last > EPS) out.push({ w: Math.min(last, T), kind: last >= T - 1e-9 ? "full" : "edge" });
+    var okWhole = out.length > 0 && out[out.length - 1].w >= minEdge - 1e-9;
+    for (var i = 0; i < out.length; i++) if (out[i].w > T + 1e-9) okWhole = false;
+    if (okWhole) return intColsTyped(out, len - (out.length - 1) * g);
+  }
+  var c = centerCols(len, T, g, minEdge);
+  if (c.ok) return intColsTyped(c.cols, len - (c.cols.length - 1) * g);
+  for (var n = 2; n <= 40; n++) {
+    var w = (len - (n - 1) * g) / n;
+    if (w < minEdge - 1e-9) continue;
+    var arr = [];
+    for (var k = 0; k < n; k++) arr.push({ w: w, kind: "cut" });
+    return intColsTyped(arr, len - (n - 1) * g);
+  }
+  return [{ w: Math.round(len), kind: "single" }];
+}
+
+function platformRows(L, D, n, g, tileH, minEdge, mode) {
+  L = numOr(L, 0); D = numOr(D, 0); n = numOr(n, 0);
+  g = Math.max(0, numOr(g, 0)); tileH = numOr(tileH, 800);
+  minEdge = Math.max(0, numOr(minEdge, 0));
+  var total = L + n;
+  var south = D + n;
+  var inner = L - D - g;
+  if (!(inner > minEdge - 1e-9)) {
+    return [{ depth: total, visible: total, kind: "single" }];
+  }
+  var rows = splitRun(inner, tileH, g, minEdge, mode).map(function (r) {
+    return { depth: r.w, visible: r.w, kind: r.kind };
+  });
+  rows.push({ depth: south, visible: south, kind: "south" });
+  return rows;
+}
+
+/* ---------- 输入 ---------- */
+
+function normalize(raw) {
+  var r = raw || {};
+  return {
+    form: r.form === "wrap" ? "wrap" : "straight",
+    D: numOr(r.D, 280), R: numOr(r.R, 150), B: numOr(r.B, 1200),
+    N: Math.round(numOr(r.N, 4)), D_top: numOr(r.D_top, 280),
+    W: numOr(r.W, 1200), L: numOr(r.L, 1000),
+    n: numOr(r.n, 30), g: Math.max(0, numOr(r.g, 2)),
+    tau: numOr(r.tau, 10), a: numOr(r.a, 5), tg: numOr(r.tg, 0),
+    eL: Math.max(0, numOr(r.eL, 3)), eR: Math.max(0, numOr(r.eR, 3)),
+    kerf: Math.max(0, numOr(r.kerf, 3)), waste: Math.max(0, numOr(r.waste, 5)),
+    minEdge: Math.max(0, numOr(r.minEdge, 100)),
+    tileW: numOr(r.tileW, 800), tileH: numOr(r.tileH, 800),
+    midOn: !!r.midOn, midW: numOr(r.midW, 800), midH: numOr(r.midH, 800),
+    midOrient: r.midOrient === "v" ? "v" : "h",
+    layoutMode: r.layoutMode === "edge" ? "edge" : "center",
+    allowRotate: r.allowRotate !== false,
+    platformRowMode: r.platformRowMode === "whole" ? "whole" : "auto",
+  };
+}
+
+function midLayout(cfg) {
+  if (!cfg || !cfg.midOn) return { on: false, ok: true, m: 0, other: 0 };
+  var m = cfg.midOrient === "h" ? cfg.midW : cfg.midH;
+  var other = cfg.midOrient === "h" ? cfg.midH : cfg.midW;
+  return { on: true, ok: m > EPS && other > EPS, m: m, other: other };
+}
+
+function validate(cfg) {
+  var errors = [], warnings = [];
+  var bad = function (t) { errors.push({ text: t, fatal: true }); };
+  var soft = function (t) { errors.push({ text: t, fatal: false }); };
+  var warn = function (t) { warnings.push({ text: t }); };
+
+  if (!(cfg.D > 0)) bad("踏步进深 D 必须大于 0");
+  if (!(cfg.R > 0)) bad("踏步高 R 必须大于 0");
+  if (!isIntNear(cfg.N) || cfg.N < 1) bad("级数 N 必须是 ≥ 1 的整数");
+  if (cfg.N > 20) bad("级数 N = " + cfg.N + " 太大（> 20），请核对");
+  if (!(cfg.tau >= 0)) bad("砖厚 τ 不能是负数");
+  if (!(cfg.a >= 0)) bad("粘结层 a 不能是负数");
+  if (!(cfg.tileW > EPS) || !(cfg.tileH > EPS)) bad("通用砖的长宽必须大于 0");
+  if (cfg.form === "wrap") {
+    if (!(cfg.W > EPS)) bad("平台宽 W 必须大于 0");
+    if (!(cfg.L > EPS)) bad("平台深 L 必须大于 0");
+    if (cfg.N < 2 && isIntNear(cfg.N)) bad("三面台阶至少要 2 级");
+    if (cfg.L - cfg.D - cfg.g <= 0) {
+      bad("平台深 L = " + fmt(cfg.L) + " 太小：侧跑长 L + o − D 会 ≤ 0（L 至少要比 D + 缝 大）");
+    }
+  } else {
+    if (!(cfg.B > EPS)) bad("楼梯宽 B 必须大于 0");
+    if (!(cfg.D_top > EPS)) bad("顶部平台深 D_top 必须大于 0");
+    if (cfg.B - cfg.eL - cfg.eR <= 0) bad("楼梯宽减掉左右留缝后 ≤ 0");
+  }
+  var h1 = cfg.R + cfg.a - cfg.tg - cfg.g;
+  var h = cfg.R - cfg.tau - cfg.g;
+  if (!(h1 > 0)) bad("首级立板高 = R + a − t_g − 缝 = " + fmt(h1) + "，必须大于 0");
+  if (!(h > 0)) bad("立板高 = R − τ − 缝 = " + fmt(h) + "，必须大于 0");
+
+  var p = cfg.tau + cfg.a;
+  if (cfg.n < p - 1e-9) {
+    soft("出边 n = " + fmt(cfg.n) + " 小于完成厚度 " + fmt(p) +
+         "：踏面砖前沿会缩进立板，压不住（至少要 " + fmt(p) + "）");
+  }
+  if (cfg.n > 100) {
+    warn("出边 n = " + fmt(cfg.n) + " 偏大（一般 20–40）；真正悬空 n − " + fmt(p) + " = " + fmt(cfg.n - p));
+  }
+  if (cfg.midOn) {
+    var ml = midLayout(cfg);
+    if (!(ml.m > EPS)) bad("中间砖的列宽必须是正数");
+    else {
+      if (ml.m > (cfg.midOrient === "h" ? cfg.midW : cfg.midH) + EPS) bad("中间砖列宽超过它自己那条边");
+      if (!(ml.other >= cfg.D + cfg.n - 1e-9)) {
+        bad("中间砖的短边 " + fmt(ml.other) + " 不够踏面下料深 " + fmt(cfg.D + cfg.n) + "：换砖或改横竖放");
+      }
+    }
+  }
+  return { errors: errors, warnings: warnings };
+}
+
+/* ---------- 直跑 ---------- */
+
+function straightPlan(cfg, T, Trow) {
+  var g = cfg.g, n = cfg.n, N = cfg.N, D = cfg.D;
+  var P = D + n, Ptop = cfg.D_top + n;
+  var h1 = cfg.R + cfg.a - cfg.tg - g;
+  var h = cfg.R - cfg.tau - g;
+  var ml = midLayout(cfg);
+  var mid = ml.on ? { w: ml.m } : null;
+
+  var lay = layoutColumns({
+    width: cfg.B, tileEdge: T, g: g, eL: cfg.eL, eR: cfg.eR,
+    minEdge: cfg.minEdge, mode: cfg.layoutMode, mid: mid,
+  });
+  if (!lay.ok) return { ok: false, error: lay.error };
+  var rlay = ml.on
+    ? layoutColumns({ width: cfg.B, tileEdge: T, g: g, eL: cfg.eL, eR: cfg.eR, minEdge: cfg.minEdge, mode: cfg.layoutMode })
+    : lay;
+  if (!rlay.ok) return { ok: false, error: rlay.error };
+
+  var platRows = platformRows(cfg.D_top, D, n, g, Trow, cfg.minEdge, cfg.platformRowMode);
+
+  var rows = [], pieces = [], k;
+  for (k = 1; k <= N; k++) {
+    rows.push({
+      level: k,
+      depth: k === N ? Ptop : P,
+      visible: k === N ? Ptop : D,
+      kind: k === N ? "top" : "step",
+      rows: k === N ? platRows : null,
+    });
+  }
+
+  rows.forEach(function (row) {
+    if (row.kind === "top") {
+      platRows.forEach(function (pr, ri) {
+        lay.cols.forEach(function (col, ci) {
+          pieces.push({
+            part: "tread", face: "front", level: row.level, row: ri, nrow: platRows.length,
+            col: ci, ncol: lay.cols.length, colW: col.w,
+            cutW: col.w, cutH: pr.depth, kind: col.kind,
+            tile: col.kind === "mid" ? "mid" : "std",
+            visible: pr.visible,
+            label: "平台踏面 第" + (ri + 1) + "行 第" + (ci + 1) + "列",
+          });
+        });
+      });
+    } else {
+      lay.cols.forEach(function (col, ci) {
+        pieces.push({
+          part: "tread", face: "front", level: row.level,
+          col: ci, ncol: lay.cols.length, colW: col.w,
+          cutW: col.w, cutH: row.depth, kind: col.kind,
+          tile: col.kind === "mid" ? "mid" : "std",
+          visible: row.visible,
+          label: "正面踏面 第" + row.level + "级 第" + (ci + 1) + "列",
+        });
+      });
+    }
+    var rh = row.level === 1 ? h1 : h;
+    rlay.cols.forEach(function (col, ci) {
+      pieces.push({
+        part: "riser", face: "front", level: row.level,
+        col: ci, ncol: rlay.cols.length, colW: col.w,
+        cutW: col.w, cutH: rh, kind: col.kind,
+        tile: "std", visible: rh,
+        label: (row.kind === "top" ? "平台立板" : "正面立板") + " 第" + row.level + "级 第" + (ci + 1) + "列",
+      });
+    });
+  });
+
+  var geo = {
+    form: "straight",
+    h1: h1, h: h, t: cfg.tau + cfg.a,
+    firstStep: cfg.R + cfg.tau + cfg.a,
+    platformH: N * cfg.R,
+    width: cfg.B,
+    length: (N - 1) * D + cfg.D_top + n,
+    concreteLength: (N - 1) * D + cfg.D_top,
+    P: P, Ptop: Ptop, steps: N,
+  };
+  return {
+    ok: true, rows: rows, cols: lay.cols, riserCols: rlay.cols,
+    platRows: platRows, pieces: pieces, geo: geo,
+  };
+}
+
+/* ---------- 三面台阶 ---------- */
+
+function wrapPlan(cfg, T, Trow) {
+  var g = cfg.g, n = cfg.n, N = cfg.N, D = cfg.D, W = cfg.W, L = cfg.L;
+  var oMax = (N - 1) * D;
+  var frontW1 = W + 2 * oMax;
+  var h1 = cfg.R + cfg.a - cfg.tg - g;
+  var h = cfg.R - cfg.tau - g;
+  var ml = midLayout(cfg);
+  var mid = ml.on ? { w: ml.m } : null;
+
+  var base = layoutColumns({
+    width: frontW1, tileEdge: T, g: g, eL: 0, eR: 0,
+    minEdge: cfg.minEdge, mode: cfg.layoutMode, mid: mid,
+  });
+  if (!base.ok) return { ok: false, error: base.error };
+  var stdBase = ml.on
+    ? layoutColumns({ width: frontW1, tileEdge: T, g: g, eL: 0, eR: 0, minEdge: cfg.minEdge, mode: cfg.layoutMode })
+    : { ok: true, cols: base.cols };
+  if (!stdBase.ok) return { ok: false, error: stdBase.error };
+
+  var levels = [], pieces = [], k;
+  for (k = 1; k <= N - 1; k++) {
+    var o = (N - k) * D;
+    var frontW = W + 2 * o;
+    var sideLen = L + o - D;
+    var riserLen = L + o;
+    var frontCols = k === 1 ? base.cols : clipTyped(base.cols, frontW1, frontW, g, T);
+    var frontRiserCols = k === 1 ? stdBase.cols : clipTyped(stdBase.cols, frontW1, frontW, g, T);
+    var sideLay = layoutColumns({
+      width: sideLen, tileEdge: T, g: g, eL: 0, eR: 0,
+      minEdge: cfg.minEdge, mode: cfg.layoutMode, mid: mid, softMid: true,
+    });
+    if (!sideLay.ok) return { ok: false, error: sideLay.error };
+    var riserLay = layoutColumns({
+      width: riserLen, tileEdge: T, g: g, eL: 0, eR: 0,
+      minEdge: cfg.minEdge, mode: cfg.layoutMode,
+    });
+    if (!riserLay.ok) return { ok: false, error: riserLay.error };
+    levels.push({
+      k: k, o: o, frontW: frontW, sideLen: sideLen, riserLen: riserLen,
+      frontCols: frontCols, frontRiserCols: frontRiserCols,
+      sideCols: sideLay.cols, riserCols: riserLay.cols,
+    });
+  }
+
+  var platCols = clipTyped(stdBase.cols, frontW1, W, g, T);
+  var pRows = platformRows(L, D, n, g, Trow, cfg.minEdge, cfg.platformRowMode);
+  var rf = layoutColumns({ width: W, tileEdge: T, g: g, eL: 0, eR: 0, minEdge: cfg.minEdge, mode: cfg.layoutMode });
+  var rs = layoutColumns({ width: L, tileEdge: T, g: g, eL: 0, eR: 0, minEdge: cfg.minEdge, mode: cfg.layoutMode });
+  if (!rf.ok) return { ok: false, error: rf.error };
+  if (!rs.ok) return { ok: false, error: rs.error };
+  var platform = {
+    cols: platCols, rows: pRows,
+    riserCols: { front: rf.cols, side: rs.cols },
+  };
+
+  levels.forEach(function (lv) {
+    var rh = lv.k === 1 ? h1 : h;
+    lv.frontCols.forEach(function (col, ci) {
+      pieces.push({
+        part: "tread", face: "front", level: lv.k,
+        col: ci, ncol: lv.frontCols.length, colW: col.w,
+        cutW: col.w, cutH: D + n, kind: col.kind,
+        tile: col.kind === "mid" ? "mid" : "std", visible: D,
+        label: "正面踏面 第" + lv.k + "级 第" + (ci + 1) + "列",
+      });
+    });
+    lv.frontRiserCols.forEach(function (col, ci) {
+      pieces.push({
+        part: "riser", face: "front", level: lv.k,
+        col: ci, ncol: lv.frontRiserCols.length, colW: col.w,
+        cutW: col.w, cutH: rh, kind: col.kind,
+        tile: "std", visible: rh,
+        label: "正面立板 第" + lv.k + "级 第" + (ci + 1) + "列",
+      });
+    });
+    ["left", "right"].forEach(function (face) {
+      var fn = face === "left" ? "左侧" : "右侧";
+      lv.sideCols.forEach(function (col, ci) {
+        pieces.push({
+          part: "tread", face: face, level: lv.k,
+          col: ci, ncol: lv.sideCols.length, colW: col.w,
+          cutW: col.w, cutH: D + n, kind: col.kind,
+          tile: col.kind === "mid" ? "mid" : "std", visible: D,
+          label: fn + "踏面 第" + lv.k + "级 第" + (ci + 1) + "列",
+        });
+      });
+      lv.riserCols.forEach(function (col, ci) {
+        pieces.push({
+          part: "riser", face: face, level: lv.k,
+          col: ci, ncol: lv.riserCols.length, colW: col.w,
+          cutW: col.w, cutH: rh, kind: col.kind,
+          tile: "std", visible: rh,
+          label: fn + "立板 第" + lv.k + "级 第" + (ci + 1) + "列",
+        });
+      });
+    });
+  });
+
+  pRows.forEach(function (row, ri) {
+    platCols.forEach(function (col, ci) {
+      pieces.push({
+        part: "tread", face: "platform", level: N, row: ri, nrow: pRows.length,
+        col: ci, ncol: platCols.length, colW: col.w,
+        cutW: col.w, cutH: row.depth, kind: col.kind,
+        tile: "std", visible: row.visible,
+        label: "平台踏面 第" + (ri + 1) + "行 第" + (ci + 1) + "列",
+      });
+    });
+  });
+  var prh = N === 1 ? h1 : h;
+  rf.cols.forEach(function (col, ci) {
+    pieces.push({
+      part: "riser", face: "platform", seg: "front", level: N,
+      col: ci, ncol: rf.cols.length, colW: col.w,
+      cutW: col.w, cutH: prh, kind: col.kind, tile: "std", visible: prh,
+      label: "平台立板·正面 第" + (ci + 1) + "列",
+    });
+  });
+  ["left", "right"].forEach(function (face) {
+    var fn = face === "left" ? "左侧" : "右侧";
+    rs.cols.forEach(function (col, ci) {
+      pieces.push({
+        part: "riser", face: "platform", seg: face, level: N,
+        col: ci, ncol: rs.cols.length, colW: col.w,
+        cutW: col.w, cutH: prh, kind: col.kind, tile: "std", visible: prh,
+        label: "平台立板·" + fn + " 第" + (ci + 1) + "列",
+      });
+    });
+  });
+
+  var geo = {
+    form: "wrap",
+    h1: h1, h: h, t: cfg.tau + cfg.a,
+    firstStep: cfg.R + cfg.tau + cfg.a,
+    platformH: N * cfg.R,
+    width: frontW1,
+    length: L + oMax,
+    concreteWidth: frontW1,
+    concreteLength: L + oMax,
+    oMax: oMax, P: D + n, steps: N,
+  };
+  return {
+    ok: true, levels: levels, platform: platform,
+    pieces: pieces, geo: geo,
+  };
+}
+
+/* ---------- 装箱 ---------- */
+
+function shelfPack(list, binW, binH, kerf, allowRotate) {
+  var bins = [], unplaced = [];
+  list.forEach(function (p) {
+    var dims = [{ w: p.w, h: p.h, rot: false }];
+    if (allowRotate && Math.abs(p.w - p.h) > EPS) dims.push({ w: p.h, h: p.w, rot: true });
+    var done = false, bi, si, di, d;
+
+    for (bi = 0; bi < bins.length && !done; bi++) {
+      var b = bins[bi];
+      for (si = 0; si < b.shelves.length && !done; si++) {
+        var s = b.shelves[si];
+        for (di = 0; di < dims.length && !done; di++) {
+          d = dims[di];
+          if (d.h > s.h + 1e-9) continue;
+          if (d.w > binW + 1e-9) continue;
+          var last = s.items.length ? s.items[s.items.length - 1] : null;
+          var x = last ? last.x + last.w + kerf : 0;
+          if (x + d.w <= binW + 1e-9) {
+            s.items.push({ id: p.id, x: x, y: s.y, w: d.w, h: d.h, rot: d.rot });
+            done = true;
+          }
+        }
+      }
+    }
+    if (done) return;
+
+    for (bi = 0; bi < bins.length && !done; bi++) {
+      var b2 = bins[bi];
+      var l2 = b2.shelves.length ? b2.shelves[b2.shelves.length - 1] : null;
+      var y2 = l2 ? l2.y + l2.h + kerf : 0;
+      for (di = 0; di < dims.length && !done; di++) {
+        d = dims[di];
+        if (d.w > binW + 1e-9) continue;
+        if (y2 + d.h > binH + 1e-9) continue;
+        b2.shelves.push({ y: y2, h: d.h, items: [{ id: p.id, x: 0, y: y2, w: d.w, h: d.h, rot: d.rot }] });
+        done = true;
+      }
+    }
+    if (done) return;
+
+    for (di = 0; di < dims.length && !done; di++) {
+      d = dims[di];
+      if (d.w > binW + 1e-9 || d.h > binH + 1e-9) continue;
+      bins.push({
+        w: binW, h: binH,
+        shelves: [{ y: 0, h: d.h, items: [{ id: p.id, x: 0, y: 0, w: d.w, h: d.h, rot: d.rot }] }],
+      });
+      done = true;
+    }
+    if (!done) unplaced.push(p.id);
+  });
+
+  var used = 0, cuts = 0;
+  bins.forEach(function (b) {
+    cuts += Math.max(0, b.shelves.length - 1);
+    b.shelves.forEach(function (s) {
+      cuts += Math.max(0, s.items.length - 1);
+      s.items.forEach(function (it) { used += it.w * it.h; });
+    });
+  });
+  var waste = binW * binH * bins.length - used;
+  return { bins: bins, unplaced: unplaced, binW: binW, binH: binH, waste: Math.max(0, waste), cuts: cuts };
+}
+
+function cmpScore(a, b) {
+  for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] - b[i];
+  return 0;
+}
+
+function packPieces(pieces, opt) {
+  opt = opt || {};
+  var binW = Math.max(EPS, numOr(opt.binW, 800));
+  var binH = Math.max(EPS, numOr(opt.binH, 800));
+  var kerf = Math.max(0, numOr(opt.kerf, 0));
+  var allowRotate = opt.allowRotate !== false;
+  var list = (pieces || []).map(function (p, i) {
+    return { id: p.id != null ? p.id : i, w: numOr(p.cutW != null ? p.cutW : p.w, 0), h: numOr(p.cutH != null ? p.cutH : p.h, 0), oi: i };
+  });
+  var keys = [
+    function (a, b) { return (b.h - a.h) || (b.w - a.w); },
+    function (a, b) { return (b.w * b.h - a.w * a.h) || (b.h - a.h); },
+    function (a, b) { return (Math.max(b.w, b.h) - Math.max(a.w, a.h)) || (b.h - a.h); },
+  ];
+  var best = null;
+  for (var ki = 0; ki < keys.length; ki++) {
+    var cmp = keys[ki];
+    var sorted = list.slice().sort(function (a, b) { return cmp(a, b) || (a.oi - b.oi); });
+    var r = shelfPack(sorted, binW, binH, kerf, allowRotate);
+    var score = [r.unplaced.length, r.bins.length, r.waste, r.cuts, ki];
+    if (!best || cmpScore(score, best.score) < 0) {
+      best = { bins: r.bins, unplaced: r.unplaced, binW: r.binW, binH: r.binH, waste: r.waste, cuts: r.cuts, score: score };
+    }
+  }
+  return best;
+}
+
+/* ---------- 组装 ---------- */
+
+function edgeCandidates(cfg) {
+  if (Math.abs(cfg.tileW - cfg.tileH) < 1e-6) return [cfg.tileW];
+  var out = [];
+  if (cfg.tileW > EPS) out.push(cfg.tileW);
+  if (cfg.tileH > EPS && Math.abs(cfg.tileH - cfg.tileW) > 1e-6) out.push(cfg.tileH);
+  return out;
+}
+function otherEdge(cfg, T) {
+  if (Math.abs(cfg.tileW - cfg.tileH) < 1e-6) return cfg.tileW;
+  return Math.abs(T - cfg.tileW) < 1e-6 ? cfg.tileH : cfg.tileW;
+}
+
+function buildWithEdge(cfg, T) {
+  var Trow = otherEdge(cfg, T);
+  var form = cfg.form === "wrap" ? wrapPlan(cfg, T, Trow) : straightPlan(cfg, T, Trow);
+  if (!form.ok) return { ok: false, error: form.error, T: T };
+  var pieces = form.pieces;
+  pieces.forEach(function (p, i) { p.id = i; });
+  var ml = midLayout(cfg);
+  var std = pieces.filter(function (p) { return p.tile === "std"; });
+  var mid = pieces.filter(function (p) { return p.tile === "mid"; });
+  var packStd = packPieces(std, { binW: T, binH: Trow, kerf: cfg.kerf, allowRotate: cfg.allowRotate });
+  var packMid = null;
+  if (mid.length) {
+    var mp = ml;
+    packMid = packPieces(mid, {
+      binW: mp.on ? mp.m : cfg.midW,
+      binH: mp.on ? mp.other : cfg.midH,
+      kerf: cfg.kerf, allowRotate: cfg.allowRotate,
+    });
+  }
+  var sheets = packStd.bins.length + (packMid ? packMid.bins.length : 0);
+  var waste = packStd.waste + (packMid ? packMid.waste : 0);
+  return {
+    ok: true, T: T, Trow: Trow, pieces: pieces, form: form,
+    packStd: packStd, packMid: packMid, sheets: sheets, waste: waste,
+  };
+}
+
+function buildPlan(raw) {
+  var cfg = normalize(raw);
+  var v = validate(cfg);
+  var errors = v.errors.slice(), warnings = v.warnings.slice();
+  var failed = function () {
+    return { ok: false, errors: errors, warnings: warnings, cfg: cfg,
+      geo: null, pieces: [], pack: null, stats: null };
+  };
+  if (errors.some(function (e) { return e.fatal; })) return failed();
+
+  var cands = edgeCandidates(cfg);
+  var results = [], firstErr = null;
+  cands.forEach(function (T) {
+    var r = buildWithEdge(cfg, T);
+    if (r.ok) results.push(r);
+    else if (!firstErr) firstErr = r.error;
+  });
+  if (!results.length) {
+    errors.push({ text: firstErr || "排不出列宽", fatal: true });
+    return failed();
+  }
+  results.sort(function (a, b) {
+    return (a.sheets - b.sheets) || (a.waste - b.waste) || (a.T - b.T);
+  });
+  var best = results[0];
+  var pieces = best.pieces;
+  var form = best.form;
+
+  var areaPieces = 0;
+  pieces.forEach(function (p) { areaPieces += p.cutW * p.cutH; });
+  var unplaced = best.packStd.unplaced.length + (best.packMid ? best.packMid.unplaced.length : 0);
+  if (unplaced) {
+    errors.push({
+      text: "有 " + unplaced + " 件裁砖放不进原砖（尺寸超过砖面）：核对砖的尺寸，或把出边/进深改小",
+      fatal: false,
+    });
+  }
+
+  var stats = {
+    totalPieces: pieces.length,
+    stdPieces: pieces.filter(function (p) { return p.tile === "std"; }).length,
+    midPieces: pieces.filter(function (p) { return p.tile === "mid"; }).length,
+    sheetsStd: best.packStd.bins.length,
+    sheetsMid: best.packMid ? best.packMid.bins.length : 0,
+    sheets: best.sheets,
+    orderStd: Math.ceil(best.packStd.bins.length * (1 + cfg.waste / 100)),
+    orderMid: best.packMid ? Math.ceil(best.packMid.bins.length * (1 + cfg.waste / 100)) : 0,
+    areaPieces: areaPieces,
+    tileEdgeUsed: best.T,
+    tileEdgeOther: best.Trow,
+    cutsStd: best.packStd.cuts,
+    cutsMid: best.packMid ? best.packMid.cuts : 0,
+    wasteStd: best.packStd.waste,
+    wasteMid: best.packMid ? best.packMid.waste : 0,
+    wasteTotal: best.sheets ? (best.waste / (best.sheets * best.T * best.Trow)) * 100 : 0,
+    unplaced: unplaced,
+  };
+
+  var out = {
+    ok: true, errors: errors, warnings: warnings, cfg: cfg,
+    geo: form.geo, pieces: pieces,
+    pack: { std: best.packStd, mid: best.packMid },
+    stats: stats,
+  };
+  if (cfg.form === "wrap") {
+    out.levels = form.levels;
+    out.platform = form.platform;
+  } else {
+    out.straight = { rows: form.rows, cols: form.cols, riserCols: form.riserCols, platRows: form.platRows };
+  }
+  return out;
+}
+
+const Engine = {
+  EPS: EPS, numOr: numOr, isIntNear: isIntNear, round1: round1, fmt: fmt,
+  centerCols: centerCols, edgeCols: edgeCols, intColsTyped: intColsTyped,
+  layoutColumns: layoutColumns, clipTyped: clipTyped, splitRun: splitRun,
+  platformRows: platformRows, midLayout: midLayout,
+  straightPlan: straightPlan, wrapPlan: wrapPlan,
+  packPieces: packPieces, buildPlan: buildPlan, normalize: normalize, validate: validate,
+};
+if (typeof module !== "undefined" && module.exports) module.exports = Engine;
+/*ENGINE-END*/
+
+/* ================= 界面 ================= */
+(function () {
+  var E = Engine;
+  var KEY = "stairTileV1";
+  var DEFAULTS = {
+    form: "straight",
+    D: 280, R: 150, B: 1200, N: 4, D_top: 280,
+    W: 1200, L: 1000,
+    tileW: 800, tileH: 800,
+    midOn: false, midW: 800, midH: 800, midOrient: "h",
+    layoutMode: "center",
+    n: 30, g: 2, tau: 10, a: 5, tg: 0, eL: 3, eR: 3, kerf: 3, waste: 5, minEdge: 100,
+    allowRotate: true, platformRowMode: "auto",
+  };
+  var state = null;
+  var plan = null;
+  var planBands = null;
+  var selected = null;
+
+  function $(id) { return document.getElementById(id); }
+  function cv2(name, fb) {
+    var v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return v || fb;
+  }
+  function COL() {
+    return {
+      paper: cv2("--paper", "#F2F1ED"), card: cv2("--card", "#fff"),
+      ink: cv2("--ink", "#26292E"), soft: cv2("--ink-soft", "#6A6F76"),
+      line: cv2("--line", "#DFDCD4"), accent: cv2("--accent", "#2B5E9B"),
+      tile: cv2("--tile", "#F7F5F0"), mid: cv2("--tile-mid", "#DFE9F6"),
+      joint: cv2("--joint", "#C9C3B6"), conc: cv2("--conc", "#E4E0D6"),
+    };
+  }
+
+  /* ---------- 输入框 ---------- */
+  function fieldEl(k, name, unit, only, wide) {
+    var l = document.createElement("label");
+    l.className = "field" + (wide ? " wide" : "");
+    if (only) l.dataset.only = only;
+    var span = document.createElement("span");
+    span.textContent = name;
+    var ib = document.createElement("div");
+    ib.className = "ib";
+    var inp = document.createElement("input");
+    inp.type = "number";
+    inp.step = "any";
+    inp.inputMode = "decimal";
+    inp.dataset.k = k;
+    ib.appendChild(inp);
+    if (unit) {
+      var i = document.createElement("i");
+      i.textContent = unit;
+      ib.appendChild(i);
+    }
+    l.appendChild(span);
+    l.appendChild(ib);
+    return l;
+  }
+
+  var DEFS = {
+    gDimStraight: [
+      ["D", "踏步进深 D", "mm"], ["R", "踏步高 R", "mm"],
+      ["B", "楼梯宽 B", "mm"], ["N", "级数 N", "级"], ["D_top", "顶部平台深 D_top", "mm"],
+    ],
+    gDimWrap: [
+      ["W", "平台宽 W（东西）", "mm"], ["L", "平台深 L（南北）", "mm"],
+      ["N", "级数 N（三面相同）", "级"], ["D", "踏步进深 D", "mm"], ["R", "踏步高 R", "mm"],
+    ],
+    gTile: [["tileW", "砖长", "mm"], ["tileH", "砖宽", "mm"]],
+    gMid: [["midW", "中间砖长", "mm"], ["midH", "中间砖宽", "mm"]],
+    gMore: [
+      ["n", "出边 n（前沿伸出）", "mm"], ["g", "留缝 g", "mm"],
+      ["tau", "砖厚 τ", "mm"], ["a", "粘结层 a", "mm"],
+      ["tg", "首级地面厚 t_g", "mm"], ["minEdge", "窄条下限", "mm"],
+    ],
+    gMore2: [
+      ["eL", "左靠墙留缝", "mm", "straight"], ["eR", "右靠墙留缝", "mm", "straight"],
+      ["kerf", "切割缝", "mm"], ["waste", "损耗率", "%"],
+    ],
+  };
+
+  function buildFields() {
+    Object.keys(DEFS).forEach(function (gid) {
+      var box = $(gid);
+      if (!box) return;
+      DEFS[gid].forEach(function (d) {
+        box.appendChild(fieldEl(d[0], d[1], d[2], d[3] || null));
+      });
+    });
+  }
+
+  function loadState() {
+    var s = {};
+    Object.keys(DEFAULTS).forEach(function (k) { s[k] = DEFAULTS[k]; });
+    try {
+      var raw = localStorage.getItem(KEY);
+      if (raw) {
+        var o = JSON.parse(raw);
+        Object.keys(DEFAULTS).forEach(function (k) {
+          if (o && o[k] !== undefined && o[k] !== null) s[k] = o[k];
+        });
+      }
+    } catch (e) { /* 离线 / 隐私模式：用默认值 */ }
+    return s;
+  }
+
+  var saveTimer = null;
+  function saveSoon() {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(function () {
+      try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {}
+    }, 400);
+  }
+
+  function syncInputs() {
+    document.querySelectorAll("[data-k]").forEach(function (el) {
+      if (el.tagName !== "INPUT") return;
+      var v = state[el.dataset.k];
+      el.value = (v === null || v === undefined) ? "" : v;
+    });
+    $("midOn").checked = !!state.midOn;
+    $("allowRotate").checked = !!state.allowRotate;
+    $("platformRowMode").value = state.platformRowMode;
+  }
+
+  function setSeg(segId, val) {
+    var seg = $(segId);
+    if (!seg) return;
+    seg.querySelectorAll("button").forEach(function (b) {
+      b.classList.toggle("on", b.dataset.v === val);
+    });
+  }
+
+  function applyVisibility() {
+    document.querySelectorAll("[data-only]").forEach(function (el) {
+      el.hidden = el.dataset.only !== state.form;
+    });
+    $("gDimStraight").hidden = state.form !== "straight";
+    $("gDimWrap").hidden = state.form !== "wrap";
+    $("midBox").hidden = !state.midOn;
+    $("rowModeField").hidden = state.form !== "wrap";
+    $("formHint").textContent = state.form === "wrap"
+      ? "三面台阶：平台靠北墙，南、西、东三面各一跑，都上到同一个平台。侧跑一律不靠墙（左右留缝不参与）。"
+      : "直跑：一条直跑到底，最上一级是平台（平台也要贴）。左右靠墙留缝会从总宽里扣。";
+  }
+
+  /* ---------- 平面图 ---------- */
+  function buildBands() {
+    var cfg = plan.cfg, geo = plan.geo;
+    var bands = [];
+    if (cfg.form === "wrap") {
+      var W = cfg.W, L = cfg.L, D = cfg.D, n = cfg.n;
+      (plan.levels || []).forEach(function (lv) {
+        var o = lv.o;
+        var rh = lv.k === 1 ? geo.h1 : geo.h;
+        bands.push({
+          key: "L" + lv.k, face: "left", level: lv.k,
+          label: "左侧踏面 · 第 " + lv.k + " 级",
+          x0: -o - n, x1: -o + D, y0: -o + D, y1: L,
+          cols: lv.sideCols, along: "y",
+          cutDepth: D + n, visible: D, riserH: rh,
+        });
+        bands.push({
+          key: "R" + lv.k, face: "right", level: lv.k,
+          label: "右侧踏面 · 第 " + lv.k + " 级",
+          x0: W + o - D, x1: W + o + n, y0: -o + D, y1: L,
+          cols: lv.sideCols, along: "y",
+          cutDepth: D + n, visible: D, riserH: rh,
+        });
+        bands.push({
+          key: "F" + lv.k, face: "front", level: lv.k,
+          label: "正面踏面 · 第 " + lv.k + " 级",
+          x0: -o, x1: W + o, y0: -o - n, y1: -o + D,
+          cols: lv.frontCols, along: "x",
+          cutDepth: D + n, visible: D, riserH: rh,
+        });
+      });
+      bands.push({
+        key: "P", face: "platform", level: cfg.N,
+        label: "平台",
+        x0: 0, x1: W, y0: -n, y1: L,
+        cols: plan.platform.cols, rows: plan.platform.rows, along: "x",
+        cutDepth: null, visible: null, riserH: geo.h,
+      });
+      var oMax = geo.oMax;
+      return { bands: bands, minX: -oMax - n, maxX: W + oMax + n, minY: -oMax - n, maxY: L };
+    }
+    var B = cfg.B, D2 = cfg.D, n2 = cfg.n;
+    var rows = plan.straight.rows;
+    rows.forEach(function (row, i) {
+      var front = i * D2 - n2;
+      var back = (i + 1 < rows.length) ? (i + 1) * D2 - n2 : (rows.length - 1) * D2 + cfg.D_top;
+      bands.push({
+        key: "S" + row.level, face: "front", level: row.level,
+        label: row.kind === "top" ? "平台" : "第 " + row.level + " 级踏面",
+        x0: 0, x1: B, y0: front, y1: back,
+        cols: plan.straight.cols, along: "x",
+        cutDepth: row.depth, visible: row.visible,
+        riserH: row.level === 1 ? geo.h1 : geo.h,
+      });
+    });
+    return {
+      bands: bands, minX: 0, maxX: B,
+      minY: -n2, maxY: (rows.length - 1) * D2 + cfg.D_top,
+    };
+  }
+
+  function paintBand(ctx, b, s, X, Y, hot, C, g) {
+    var rx = X(b.x0), rw = (b.x1 - b.x0) * s;
+    var ry = Y(b.y1), rh = (b.y1 - b.y0) * s;
+    if (rw <= 0 || rh <= 0) return;
+    ctx.fillStyle = C.joint;
+    ctx.fillRect(rx, ry, rw, rh);
+
+    var labelRow = null;
+    if (b.rows) {
+      var y = b.y0;
+      var rws = b.rows.slice().reverse();
+      rws.forEach(function (row, ri) {
+        var y1 = y + row.depth;
+        var x = b.x0;
+        b.cols.forEach(function (c) {
+          ctx.fillStyle = c.kind === "mid" ? C.mid : C.tile;
+          ctx.fillRect(X(x), Y(y1), c.w * s, row.depth * s);
+          x += c.w + g;
+        });
+        if (ri === 0) labelRow = { y0: y, y1: y1, depth: row.depth };
+        y = y1 + g;
+      });
+    } else if (b.along === "x") {
+      var p = b.x0;
+      b.cols.forEach(function (c) {
+        ctx.fillStyle = c.kind === "mid" ? C.mid : C.tile;
+        ctx.fillRect(X(p), ry, c.w * s, rh);
+        p += c.w + g;
+      });
+    } else {
+      var q = b.y0;
+      b.cols.forEach(function (c) {
+        ctx.fillStyle = c.kind === "mid" ? C.mid : C.tile;
+        ctx.fillRect(rx, Y(q + c.w), rw, c.w * s);
+        q += c.w + g;
+      });
+    }
+
+    ctx.strokeStyle = hot ? C.accent : C.ink;
+    ctx.lineWidth = hot ? 2 : 0.7;
+    ctx.strokeRect(rx + 0.5, ry + 0.5, Math.max(0, rw - 1), Math.max(0, rh - 1));
+
+    if (hot) {
+      ctx.save();
+      ctx.strokeStyle = C.accent;
+      ctx.lineWidth = 3;
+      ctx.strokeRect(rx - 2, ry - 2, rw + 4, rh + 4);
+      ctx.restore();
+    }
+
+    // 列宽文字
+    ctx.fillStyle = C.soft;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    if (b.rows && labelRow) {
+      // 平台分了几行：列宽只在最靠南那一行写一次，免得同一个数重复两遍
+      var pl = b.x0;
+      b.cols.forEach(function (c) {
+        colText(ctx, c.w, X(pl + c.w / 2), Y(labelRow.y0) - (labelRow.depth * s) / 2, c.w * s, labelRow.depth * s, 11);
+        pl += c.w + g;
+      });
+      // 左上角标「平台」，每行右侧标这行的下料深（南沿 310 / 里侧 718）
+      ctx.textAlign = "left";
+      ctx.fillStyle = C.accent;
+      ctx.font = "700 8.5px -apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif";
+      ctx.fillText("平台", rx + 3, ry + 11);
+      ctx.fillStyle = C.soft;
+      ctx.textAlign = "right";
+      ctx.font = "600 8.5px -apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif";
+      var yd = b.y0;
+      b.rows.slice().reverse().forEach(function (row) {
+        var y1d = yd + row.depth;
+        // 行太矮就先不写：列宽数字竖着占据这一行的正中，行高不够时
+        // 「深 310」会压到它头上。46px 是量出来的安全线（字高 8.5 + 列宽字竖排各占一半）
+        if (row.depth * s >= 46) {
+          ctx.fillText("深 " + E.fmt(row.depth), X(b.x1) - 3, Y(y1d) + 10);
+        }
+        yd = y1d + g;
+      });
+      ctx.textAlign = "center";
+    } else if (b.along === "x") {
+      // 直跑每一行右上角标这行的下料深（平台那一行再单独标个「平台」）
+      // 贴在行的上沿往里缩一点点：下沿就是下一级的分界线，写在那儿会压线
+      if (rh >= 40) {
+        ctx.textAlign = "right";
+        ctx.font = "600 8.5px -apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif";
+        ctx.fillText("深 " + E.fmt(b.cutDepth), X(b.x1) - 3, ry + 11);
+        ctx.textAlign = "center";
+      }
+      var px = b.x0;
+      b.cols.forEach(function (c) {
+        colText(ctx, c.w, X(px + c.w / 2), ry + rh / 2, c.w * s, rh, 11);
+        px += c.w + g;
+      });
+      if (String(b.label || "").indexOf("平台") === 0) {
+        ctx.textAlign = "left";
+        ctx.fillStyle = C.accent;
+        ctx.font = "700 8.5px -apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif";
+        ctx.fillText("平台", rx + 3, ry + 11);
+        ctx.textAlign = "center";
+        ctx.fillStyle = C.soft;
+      }
+    } else {
+      var py = b.y0;
+      b.cols.forEach(function (c) {
+        if (c.w * s >= 13) {
+          ctx.font = sizeFont(Math.min(10, c.w * s * 0.5, rw * 0.42));
+          ctx.save();
+          ctx.translate(rx + rw / 2, Y(py + c.w / 2));
+          ctx.rotate(-Math.PI / 2);
+          ctx.fillText(E.fmt(c.w), 0, 0);
+          ctx.restore();
+        }
+        py += c.w + g;
+      });
+    }
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+  }
+
+  /* 列宽数字：横着放得下就横着写；列太窄、行够高就转 90° 竖着写；
+     都塞不下就不写——宁可空着，也不让数字压到砖缝线或跟邻居打架 */
+  function colText(ctx, val, cx, cy, boxW, boxH, maxFont) {
+    if (boxW < 6 || boxH < 6) return;
+    var t = E.fmt(val);
+    ctx.font = sizeFont(Math.min(maxFont, boxW * 0.62, boxH * 0.42));
+    if (ctx.measureText(t).width <= boxW - 3) { ctx.fillText(t, cx, cy); return; }
+    ctx.font = sizeFont(Math.min(maxFont, boxH * 0.62, boxW * 0.4));
+    if (ctx.measureText(t).width <= boxH - 4) {
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(-Math.PI / 2);
+      ctx.fillText(t, 0, 0);
+      ctx.restore();
+    }
+  }
+
+  function sizeFont(px) {
+    var v = Math.max(7, Math.min(11, px));
+    return "600 " + v.toFixed(1) + "px -apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif";
+  }
+
+  function drawPlan() {
+    var cv = $("plan");
+    if (!cv) return;
+    var C = COL();
+    if (!plan || !plan.ok) {
+      fillEmpty(cv, C);
+      planBands = null;
+      return;
+    }
+    var meta = buildBands();
+    var spanX = meta.maxX - meta.minX, spanY = meta.maxY - meta.minY;
+    var cssW = cv.clientWidth || 340;
+    var padT = 26, padB = 24, padX = 10;
+    var s = (cssW - padX * 2) / spanX;
+    var cssH = spanY * s + padT + padB;
+    var maxH = Math.min(620, Math.round((window.innerHeight || 700) * 0.62));
+    if (cssH > maxH) {
+      cssH = maxH;
+      s = (cssH - padT - padB) / spanY;
+    }
+    cssH = Math.round(cssH);
+    var dpr = window.devicePixelRatio || 1;
+    cv.style.height = cssH + "px";
+    cv.width = Math.round(cssW * dpr);
+    cv.height = Math.round(cssH * dpr);
+    var ctx = cv.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssW, cssH);
+    ctx.fillStyle = C.paper;
+    ctx.fillRect(0, 0, cssW, cssH);
+
+    var tx = padX + (cssW - padX * 2 - spanX * s) / 2;
+    var ty = padT + (cssH - padT - padB - spanY * s) / 2;
+    var X = function (x) { return tx + (x - meta.minX) * s; };
+    var Y = function (y) { return ty + (meta.maxY - y) * s; };
+    meta.X = X; meta.Y = Y; meta.s = s;
+    planBands = meta;
+
+    meta.bands.forEach(function (b) {
+      paintBand(ctx, b, s, X, Y, selected === b.key, C, plan.cfg.g);
+    });
+
+    // 总尺寸
+    ctx.fillStyle = C.soft;
+    ctx.font = "600 10px -apple-system,'PingFang SC',sans-serif";
+    ctx.textAlign = "center";
+    var totalW = meta.maxX - meta.minX;
+    ctx.fillText("总宽 " + E.fmt(totalW), cssW / 2, cssH - 8);
+    ctx.textAlign = "left";
+    ctx.fillText("总深 " + E.fmt(meta.maxY - meta.minY), padX, padT - 9);
+  }
+
+  function fillEmpty(cv, C) {
+    var cssW = cv.clientWidth || 340, cssH = 90;
+    var dpr = window.devicePixelRatio || 1;
+    cv.style.height = cssH + "px";
+    cv.width = Math.round(cssW * dpr);
+    cv.height = Math.round(cssH * dpr);
+    var ctx = cv.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssW, cssH);
+    ctx.fillStyle = C.paper;
+    ctx.fillRect(0, 0, cssW, cssH);
+    ctx.fillStyle = C.soft;
+    ctx.font = "13px -apple-system,'PingFang SC',sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("尺寸还没填对，改好上面的数字就出图", cssW / 2, cssH / 2 + 4);
+    ctx.textAlign = "left";
+  }
+
+  /* ---------- 放大 ---------- */
+  function drawZoom() {
+    var card = $("zoomCard"), cv = $("zoom");
+    if (!card) return;
+    if (!planBands || !selected) { card.hidden = true; return; }
+    var b = null;
+    planBands.bands.forEach(function (x) { if (x.key === selected) b = x; });
+    if (!b) { card.hidden = true; return; }
+    card.hidden = false;
+    $("zoomTitle").textContent = b.label;
+
+    var C = COL(), g = plan.cfg.g;
+    var alongX = b.along !== "y";
+    var spanW = alongX ? (b.x1 - b.x0) : (b.y1 - b.y0);
+    var rowsH = (b.y1 - b.y0) + (b.x1 - b.x0); // 占位，行模式另算
+    var spanH = 0;
+    if (b.rows) {
+      var sumRows = 0;
+      b.rows.forEach(function (r) { sumRows += r.depth; });
+      spanH = Math.min(spanW, sumRows + (b.rows.length - 1) * g, (b.y1 - b.y0));
+    } else {
+      spanH = alongX ? (b.y1 - b.y0) : (b.x1 - b.x0);
+    }
+    if (!(spanH > 0)) spanH = 100;
+
+    var cssW = cv.clientWidth || 340;
+    var padL = 12, padR = 12, padT = 10, padB = 10;
+    var s = Math.min((cssW - padL - padR) / spanW, 150 / spanH);
+    var cssH = Math.round(spanH * s + padT + padB);
+    var dpr = window.devicePixelRatio || 1;
+    cv.style.height = cssH + "px";
+    cv.width = Math.round(cssW * dpr);
+    cv.height = Math.round(cssH * dpr);
+    var ctx = cv.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssW, cssH);
+    ctx.fillStyle = C.paper;
+    ctx.fillRect(0, 0, cssW, cssH);
+
+    // 把这块的“长方向”放到横轴
+    var ox = padL + (cssW - padL - padR - spanW * s) / 2;
+    var oy = padT + (cssH - padT - padB - spanH * s) / 2;
+    var X = alongX
+      ? function (mm) { return ox + (mm - b.x0) * s; }
+      : function (mm) { return ox + (mm - b.y0) * s; };
+    var base = alongX ? b.y0 : b.x0;
+
+    if (b.rows) {
+      // 行：南在后（先画），北在前
+      var y = 0;
+      b.rows.slice().reverse().forEach(function (row) {
+        var y1 = y + row.depth;
+        var x = 0;
+        b.cols.forEach(function (c) {
+          ctx.fillStyle = c.kind === "mid" ? C.mid : C.tile;
+          ctx.fillRect(ox + x * s, oy + (spanH - y1) * s, c.w * s, row.depth * s);
+          ctx.strokeStyle = C.joint;
+          ctx.lineWidth = 1;
+          ctx.strokeRect(ox + x * s, oy + (spanH - y1) * s, c.w * s, row.depth * s);
+          x += c.w + g;
+        });
+        y = y1 + g;
+      });
+      // 列宽
+      ctx.fillStyle = C.soft;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      var x2 = 0;
+      b.cols.forEach(function (c) {
+        if (c.w * s >= 18) {
+          ctx.font = sizeFont(Math.min(11, c.w * s * 0.5));
+          ctx.fillText(E.fmt(c.w), ox + (x2 + c.w / 2) * s, oy + spanH * s / 2);
+        }
+        x2 += c.w + g;
+      });
+    } else {
+      var p = 0;
+      b.cols.forEach(function (c) {
+        ctx.fillStyle = c.kind === "mid" ? C.mid : C.tile;
+        ctx.fillRect(ox + p * s, oy, c.w * s, spanH * s);
+        ctx.strokeStyle = C.joint;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(ox + p * s, oy, c.w * s, spanH * s);
+        if (c.w * s >= 18) {
+          ctx.fillStyle = C.soft;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.font = sizeFont(Math.min(11, c.w * s * 0.5, spanH * s * 0.5));
+          ctx.fillText(E.fmt(c.w), ox + (p + c.w / 2) * s, oy + spanH * s / 2);
+        }
+        p += c.w + g;
+      });
+    }
+
+    var kv = [];
+    if (b.cutDepth) kv.push("这一跑的每块踏面：<b>裁 " + E.fmt(b.cutDepth) + " 深</b>（铺完露出来 " + E.fmt(b.visible) + "）");
+    if (b.riserH) kv.push("立板高 <b>" + E.fmt(b.riserH) + "</b>");
+    kv.push("列宽 " + b.cols.map(function (c) { return E.fmt(c.w); }).join(" · ") +
+            "，共 " + b.cols.length + " 列");
+    if (b.rows) {
+      kv.push("行深（从南往北）" + b.rows.slice().reverse().map(function (r) { return E.fmt(r.depth); }).join(" · ") +
+              "，共 " + b.rows.length + " 行");
+    }
+    $("zoomKv").innerHTML = kv.join("<br>");
+  }
+
+  /* ---------- 剖面 ---------- */
+  function drawSection() {
+    var cv = $("sec");
+    if (!cv) return;
+    var C = COL();
+    var cssW = cv.clientWidth || 340;
+    if (!plan || !plan.ok) {
+      fillEmpty(cv, C);
+      return;
+    }
+    var cfg = plan.cfg, geo = plan.geo;
+    var N = Math.max(1, cfg.N), D = cfg.D, R = cfg.R, n = cfg.n;
+    var topD = cfg.form === "wrap" ? cfg.L : cfg.D_top;
+    var runX0 = -n, runX1 = (N - 1) * D + topD;
+    var H = N * R;
+    var padL = 14, padR = 14, padT = 14, padB = 26;
+    var s = Math.min((cssW - padL - padR) / (runX1 - runX0), 120 / H);
+    var cssH = Math.round(H * s + padT + padB);
+    var dpr = window.devicePixelRatio || 1;
+    cv.style.height = cssH + "px";
+    cv.width = Math.round(cssW * dpr);
+    cv.height = Math.round(cssH * dpr);
+    var ctx = cv.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssW, cssH);
+    ctx.fillStyle = C.paper;
+    ctx.fillRect(0, 0, cssW, cssH);
+
+    var tx = padL + (cssW - padL - padR - (runX1 - runX0) * s) / 2;
+    var X = function (x) { return tx + (x - runX0) * s; };
+    var Y = function (y) { return padT + (H - y) * s; };
+
+    // 混凝土轮廓
+    ctx.beginPath();
+    ctx.moveTo(X(runX0), Y(0));
+    ctx.lineTo(X(0), Y(0));
+    for (var k = 0; k < N; k++) {
+      ctx.lineTo(X(k * D), Y(k * R));
+      ctx.lineTo(X(k * D), Y((k + 1) * R));
+      var right = k === N - 1 ? (N - 1) * D + topD : (k + 1) * D;
+      ctx.lineTo(X(right), Y((k + 1) * R));
+    }
+    ctx.lineTo(X((N - 1) * D + topD), Y(0));
+    ctx.closePath();
+    ctx.fillStyle = C.conc;
+    ctx.fill();
+    ctx.strokeStyle = C.soft;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // 瓷砖层
+    var t = cfg.tau + cfg.a;
+    var tileFill = C.tile, joint = C.joint;
+    for (var kk = 1; kk <= N; kk++) {
+      var y = kk * R;
+      var x0 = (kk - 1) * D - n;
+      var x1 = kk === N ? (N - 1) * D + topD : kk * D + n;
+      ctx.fillStyle = tileFill;
+      ctx.fillRect(X(x0), Y(y + t), (x1 - x0) * s, Math.max(1, t * s));
+      ctx.strokeStyle = joint;
+      ctx.strokeRect(X(x0), Y(y + t), (x1 - x0) * s, Math.max(1, t * s));
+    }
+
+    // 标注
+    ctx.fillStyle = C.ink;
+    ctx.font = "600 10px -apple-system,'PingFang SC',sans-serif";
+    ctx.textAlign = "left";
+    ctx.fillText("平台高 " + E.fmt(H), X((N - 1) * D + topD) - 8, Y(H) - 4);
+    ctx.textAlign = "right";
+    ctx.fillText("出边 " + E.fmt(n), X(n) + 2, Y(R) - 5);
+    ctx.textAlign = "left";
+    ctx.fillText("首级 " + E.fmt(cfg.R + cfg.tau + cfg.a), X(-n), cssH - 9);
+  }
+
+  /* ---------- 下料图 ---------- */
+  function drawCut() {
+    var cv = $("cut");
+    if (!cv) return;
+    var C = COL();
+    var cssW = cv.clientWidth || 340;
+    var items = [];
+    if (plan && plan.ok && plan.pack) {
+      plan.pack.std.bins.forEach(function (b, i) { items.push({ b: b, name: "通用 " + (i + 1), kind: "std" }); });
+      if (plan.pack.mid) {
+        plan.pack.mid.bins.forEach(function (b, i) { items.push({ b: b, name: "中间 " + (i + 1), kind: "mid" }); });
+      }
+    }
+    if (!items.length) { fillEmpty(cv, C); return; }
+
+    var perRow = cssW > 420 ? 3 : 2;
+    var cellW = (cssW - (perRow - 1) * 8) / perRow;
+    var cellH = 118;
+    var rows = Math.ceil(items.length / perRow);
+    var cssH = rows * (cellH + 18) + 6;
+    var dpr = window.devicePixelRatio || 1;
+    cv.style.height = cssH + "px";
+    cv.width = Math.round(cssW * dpr);
+    cv.height = Math.round(cssH * dpr);
+    var ctx = cv.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssW, cssH);
+    ctx.fillStyle = C.paper;
+    ctx.fillRect(0, 0, cssW, cssH);
+
+    items.forEach(function (it, i) {
+      var col = i % perRow, row = Math.floor(i / perRow);
+      var bx = col * (cellW + 8), by = row * (cellH + 18);
+      var b = it.b;
+      var sc = Math.min((cellW - 6) / b.w, (cellH - 6) / b.h);
+      var w = b.w * sc, h = b.h * sc;
+      var x = bx + (cellW - w) / 2, y = by + (cellH - h) / 2;
+      ctx.fillStyle = C.conc;
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeStyle = C.ink;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x, y, w, h);
+      b.shelves.forEach(function (sh) {
+        sh.items.forEach(function (item) {
+          var ix = x + item.x * sc, iy = y + item.y * sc;
+          var iw = item.w * sc, ih = item.h * sc;
+          ctx.fillStyle = it.kind === "mid" ? C.mid : C.tile;
+          ctx.fillRect(ix, iy, iw, ih);
+          ctx.strokeStyle = C.joint;
+          ctx.strokeRect(ix, iy, iw, ih);
+          if (iw >= 30 && ih >= 12) {
+            ctx.fillStyle = C.soft;
+            ctx.font = "600 8px -apple-system,'PingFang SC',sans-serif";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText(E.fmt(item.w) + "×" + E.fmt(item.h), ix + iw / 2, iy + ih / 2);
+          }
+        });
+      });
+      ctx.fillStyle = C.soft;
+      ctx.font = "600 10px -apple-system,'PingFang SC',sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "alphabetic";
+      ctx.fillText(it.name + "  " + E.fmt(b.w) + "×" + E.fmt(b.h), bx + cellW / 2, by + cellH + 12);
+    });
+    ctx.textAlign = "left";
+  }
+
+  /* ---------- 下料单 ---------- */
+  function renderList() {
+    var tb = $("list");
+    if (!plan || !plan.ok) { tb.innerHTML = ""; return; }
+    var map = {}, order = [];
+    plan.pieces.forEach(function (p) {
+      var faceName = { front: "正面", left: "左侧", right: "右侧", platform: "平台" }[p.face] || p.face;
+      var part = p.part === "tread" ? "踏面" : "立板";
+      var tile = p.tile === "mid" ? "中间砖" : "通用砖";
+      var key = tile + "|" + faceName + "|" + part + "|" + p.cutW + "|" + p.cutH;
+      if (!map[key]) {
+        map[key] = { tile: tile, face: faceName, part: part, w: p.cutW, h: p.cutH, n: 0 };
+        order.push(key);
+      }
+      map[key].n++;
+    });
+    var rowsHtml = order.map(function (k) {
+      var r = map[k];
+      return "<tr><td>" + r.tile + "</td><td>" + r.face + "·" + r.part + "</td><td>" +
+        E.fmt(r.w) + "×" + E.fmt(r.h) + "</td><td>" + r.n + "</td></tr>";
+    }).join("");
+    tb.innerHTML = "<thead><tr><th>砖</th><th>位置</th><th>裁切尺寸</th><th>件数</th></tr></thead><tbody>" +
+      rowsHtml + "</tbody>";
+  }
+
+  /* ---------- 统计 / 提示 ---------- */
+  function renderStats() {
+    var box = $("stats");
+    if (!plan || !plan.ok) { box.innerHTML = ""; return; }
+    var s = plan.stats;
+    var chips = [
+      "总件数 <b>" + s.totalPieces + "</b>",
+      "通用砖 <b>" + s.sheetsStd + "</b> 张",
+    ];
+    if (s.sheetsMid) chips.push("中间砖 <b>" + s.sheetsMid + "</b> 张");
+    chips.push("备货 <b>" + s.orderStd + "</b>" + (s.sheetsMid ? " + <b>" + s.orderMid + "</b>" : "") + " 张");
+    chips.push("废料约 <b>" + Math.round(s.wasteTotal) + "%</b>");
+    if (Math.abs(plan.cfg.tileW - plan.cfg.tileH) > 1e-6) {
+      chips.push("按 <b>" + E.fmt(s.tileEdgeUsed) + "</b> 那条边排的列");
+    }
+    box.innerHTML = chips.map(function (t) { return '<span class="stat">' + t + "</span>"; }).join("");
+  }
+
+  function renderMsgs() {
+    var box = $("msgs");
+    if (!plan) { box.innerHTML = ""; return; }
+    var out = [];
+    (plan.errors || []).forEach(function (e) {
+      out.push('<div class="msg red">' + (e.fatal ? "<b>要先改：</b>" : "") + esc(e.text) + "</div>");
+    });
+    (plan.warnings || []).forEach(function (w) {
+      out.push('<div class="msg yel">' + esc(w.text) + "</div>");
+    });
+    if (plan.ok) {
+      var g = plan.cfg;
+      out.push('<div class="msg ok">首级铺完 <b>' + E.fmt(plan.geo.firstStep) + "</b>，中间踏步 <b>" +
+        E.fmt(g.R) + "</b>（差 " + E.fmt(plan.geo.t) + "，是地面不贴抬起来的）；平台铺完抬高 <b>" +
+        E.fmt(plan.geo.t) + "</b>，门口门槛要复核。</div>");
+      var real = plan.cfg.n - (plan.cfg.tau + plan.cfg.a);
+      out.push('<div class="msg ok">出边 <b>' + E.fmt(plan.cfg.n) + "</b> 里，真正悬出去 " +
+        E.fmt(real) + "，其余 " + E.fmt(plan.cfg.tau + plan.cfg.a) + " 压在立板上。</div>");
+      if (plan.stats.unplaced === 0) {
+        out.push('<div class="msg ok">所有裁砖都放得进原砖（切割缝 ' + E.fmt(plan.cfg.kerf) + "）。</div>");
+      }
+    }
+    box.innerHTML = out.join("");
+  }
+
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+
+  /* ---------- 重算 ---------- */
+  function recompute() {
+    applyVisibility();
+    plan = E.buildPlan(state);
+    renderStats();
+    drawPlan();
+    drawSection();
+    drawCut();
+    renderList();
+    renderMsgs();
+    drawZoom();
+  }
+
+  /* ---------- 事件 ---------- */
+  function bind() {
+    document.addEventListener("input", function (ev) {
+      var t = ev.target;
+      if (!t || !t.dataset || !t.dataset.k) return;
+      var k = t.dataset.k;
+      var v = parseFloat(t.value);
+      if (t.value !== "" && isFinite(v)) {
+        state[k] = v;
+        document.querySelectorAll('[data-k="' + k + '"]').forEach(function (el) {
+          if (el !== t && el.tagName === "INPUT" && el.value !== t.value) el.value = t.value;
+        });
+        recompute();
+        saveSoon();
+      }
+    });
+
+    $("midOn").addEventListener("change", function (e) {
+      state.midOn = e.target.checked;
+      applyVisibility();
+      recompute(); saveSoon();
+    });
+    $("allowRotate").addEventListener("change", function (e) {
+      state.allowRotate = e.target.checked;
+      recompute(); saveSoon();
+    });
+    $("platformRowMode").addEventListener("change", function (e) {
+      state.platformRowMode = e.target.value;
+      recompute(); saveSoon();
+    });
+
+    $("formSeg").addEventListener("click", function (e) {
+      var b = e.target.closest("button");
+      if (!b) return;
+      state.form = b.dataset.v;
+      selected = null;
+      setSeg("formSeg", state.form);
+      applyVisibility();
+      recompute(); saveSoon();
+    });
+
+    $("midSeg").addEventListener("click", function (e) {
+      var b = e.target.closest("button");
+      if (!b) return;
+      state.midOrient = b.dataset.v;
+      setSeg("midSeg", state.midOrient);
+      recompute(); saveSoon();
+    });
+
+    $("modeSeg").addEventListener("click", function (e) {
+      var b = e.target.closest("button");
+      if (!b) return;
+      state.layoutMode = b.dataset.v;
+      setSeg("modeSeg", state.layoutMode);
+      recompute(); saveSoon();
+    });
+
+    $("tilePresets").addEventListener("click", function (e) {
+      var b = e.target.closest("button");
+      if (!b) return;
+      var p = b.dataset.tile.split(",");
+      state.tileW = parseFloat(p[0]);
+      state.tileH = parseFloat(p[1]);
+      syncInputs();
+      recompute(); saveSoon();
+    });
+
+    var resetArmed = false, resetTimer = null;
+    $("resetBtn").addEventListener("click", function () {
+      if (!resetArmed) {
+        resetArmed = true;
+        this.classList.add("armed");
+        this.textContent = "再点一次：全部回到示例数字";
+        clearTimeout(resetTimer);
+        resetTimer = setTimeout(function () {
+          resetArmed = false;
+          var btn = $("resetBtn");
+          btn.classList.remove("armed");
+          btn.textContent = "恢复示例数字";
+        }, 4000);
+        return;
+      }
+      resetArmed = false;
+      clearTimeout(resetTimer);
+      var btn = $("resetBtn");
+      btn.classList.remove("armed");
+      btn.textContent = "恢复示例数字";
+      var keep = state.form;
+      Object.keys(DEFAULTS).forEach(function (k) { state[k] = DEFAULTS[k]; });
+      state.form = keep;
+      selected = null;
+      setSeg("midSeg", state.midOrient);
+      setSeg("modeSeg", state.layoutMode);
+      syncInputs();
+      recompute(); saveSoon();
+    });
+
+    $("plan").addEventListener("click", function (ev) {
+      if (!planBands || !plan || !plan.ok) return;
+      var cv = ev.currentTarget;
+      var r = cv.getBoundingClientRect();
+      var px = ev.clientX - r.left, py = ev.clientY - r.top;
+      var hit = null;
+      for (var i = planBands.bands.length - 1; i >= 0; i--) {
+        var b = planBands.bands[i];
+        var x0 = planBands.X(b.x0), x1 = planBands.X(b.x1);
+        var y0 = planBands.Y(b.y1), y1 = planBands.Y(b.y0);
+        if (px >= x0 - 2 && px <= x1 + 2 && py >= y0 - 2 && py <= y1 + 2) { hit = b; break; }
+      }
+      selected = hit ? (selected === hit.key ? null : hit.key) : null;
+      drawPlan();
+      drawZoom();
+    });
+
+    var rt = null;
+    function onResize() {
+      if (rt) clearTimeout(rt);
+      rt = setTimeout(function () {
+        drawPlan(); drawZoom(); drawSection(); drawCut();
+      }, 120);
+    }
+    window.addEventListener("resize", onResize);
+    window.addEventListener("orientationchange", onResize);
+    if (window.matchMedia) {
+      try {
+        window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", onResize);
+      } catch (e) {}
+    }
+  }
+
+  /* ---------- 启动 ---------- */
+  function boot() {
+    state = loadState();
+    buildFields();
+    syncInputs();
+    setSeg("formSeg", state.form);
+    setSeg("midSeg", state.midOrient);
+    setSeg("modeSeg", state.layoutMode);
+    bind();
+    recompute();
+    setTimeout(function () { drawPlan(); drawZoom(); drawSection(); drawCut(); }, 60);
+  }
+
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+  else boot();
+})();
+</script>
+</body>
+</html>
